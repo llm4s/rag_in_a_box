@@ -1,5 +1,37 @@
+# Scala/SBT
 *.class
 *.log
+target/
+project/target/
+project/project/
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+# IDE
+.idea/
+.bsp/
+.metals/
+.bloop/
+*.iml
+.vscode/
+
+# JVM
 hs_err_pid*
+
+# Docker
+data/
+
+# Environment
+.env
+.env.local
+*.env
+
+# Credentials (never commit)
+**/credentials*.json
+**/secrets*.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.jar
+*.war
