@@ -151,4 +151,182 @@ object Codecs {
 
   implicit val errorResponseEncoder: Encoder[ErrorResponse] = deriveEncoder
   implicit val errorResponseDecoder: Decoder[ErrorResponse] = deriveDecoder
+
+  // ============================================================
+  // Visibility Codecs
+  // ============================================================
+
+  implicit val changeabilityInfoEncoder: Encoder[ChangeabilityInfo] = deriveEncoder
+  implicit val changeabilityInfoDecoder: Decoder[ChangeabilityInfo] = deriveDecoder
+
+  implicit val configSettingEncoder: Encoder[ConfigSetting] = deriveEncoder
+  implicit val configSettingDecoder: Decoder[ConfigSetting] = deriveDecoder
+
+  implicit val visibilityEmbeddingConfigEncoder: Encoder[VisibilityEmbeddingConfig] = deriveEncoder
+  implicit val visibilityEmbeddingConfigDecoder: Decoder[VisibilityEmbeddingConfig] = deriveDecoder
+
+  implicit val visibilityLLMConfigEncoder: Encoder[VisibilityLLMConfig] = deriveEncoder
+  implicit val visibilityLLMConfigDecoder: Decoder[VisibilityLLMConfig] = deriveDecoder
+
+  implicit val detailedRAGConfigInfoEncoder: Encoder[DetailedRAGConfigInfo] = deriveEncoder
+  implicit val detailedRAGConfigInfoDecoder: Decoder[DetailedRAGConfigInfo] = deriveDecoder
+
+  implicit val visibilityDatabaseConfigEncoder: Encoder[VisibilityDatabaseConfig] = deriveEncoder
+  implicit val visibilityDatabaseConfigDecoder: Decoder[VisibilityDatabaseConfig] = deriveDecoder
+
+  implicit val runtimeConfigurableInfoEncoder: Encoder[RuntimeConfigurableInfo] = deriveEncoder
+  implicit val runtimeConfigurableInfoDecoder: Decoder[RuntimeConfigurableInfo] = deriveDecoder
+
+  implicit val detailedConfigResponseEncoder: Encoder[DetailedConfigResponse] = deriveEncoder
+  implicit val detailedConfigResponseDecoder: Decoder[DetailedConfigResponse] = deriveDecoder
+
+  implicit val chunkMetadataInfoEncoder: Encoder[ChunkMetadataInfo] = deriveEncoder
+  implicit val chunkMetadataInfoDecoder: Decoder[ChunkMetadataInfo] = deriveDecoder
+
+  implicit val chunkInfoEncoder: Encoder[ChunkInfo] = deriveEncoder
+  implicit val chunkInfoDecoder: Decoder[ChunkInfo] = deriveDecoder
+
+  implicit val chunkListResponseEncoder: Encoder[ChunkListResponse] = deriveEncoder
+  implicit val chunkListResponseDecoder: Decoder[ChunkListResponse] = deriveDecoder
+
+  implicit val chunkConfigSnapshotEncoder: Encoder[ChunkConfigSnapshot] = deriveEncoder
+  implicit val chunkConfigSnapshotDecoder: Decoder[ChunkConfigSnapshot] = deriveDecoder
+
+  implicit val documentChunksResponseEncoder: Encoder[DocumentChunksResponse] = deriveEncoder
+  implicit val documentChunksResponseDecoder: Decoder[DocumentChunksResponse] = deriveDecoder
+
+  implicit val sizeBucketEncoder: Encoder[SizeBucket] = deriveEncoder
+  implicit val sizeBucketDecoder: Decoder[SizeBucket] = deriveDecoder
+
+  implicit val chunkSizeDistributionEncoder: Encoder[ChunkSizeDistribution] = deriveEncoder
+  implicit val chunkSizeDistributionDecoder: Decoder[ChunkSizeDistribution] = deriveDecoder
+
+  implicit val detailedCollectionStatsEncoder: Encoder[DetailedCollectionStats] = deriveEncoder
+  implicit val detailedCollectionStatsDecoder: Decoder[DetailedCollectionStats] = deriveDecoder
+
+  implicit val detailedStatsResponseEncoder: Encoder[DetailedStatsResponse] = deriveEncoder
+  implicit val detailedStatsResponseDecoder: Decoder[DetailedStatsResponse] = deriveDecoder
+
+  implicit val collectionChunkingInfoEncoder: Encoder[CollectionChunkingInfo] = deriveEncoder
+  implicit val collectionChunkingInfoDecoder: Decoder[CollectionChunkingInfo] = deriveDecoder
+
+  implicit val effectiveChunkingInfoEncoder: Encoder[EffectiveChunkingInfo] = deriveEncoder
+  implicit val effectiveChunkingInfoDecoder: Decoder[EffectiveChunkingInfo] = deriveDecoder
+
+  implicit val collectionDetailInfoEncoder: Encoder[CollectionDetailInfo] = deriveEncoder
+  implicit val collectionDetailInfoDecoder: Decoder[CollectionDetailInfo] = deriveDecoder
+
+  implicit val collectionsResponseEncoder: Encoder[CollectionsResponse] = deriveEncoder
+  implicit val collectionsResponseDecoder: Decoder[CollectionsResponse] = deriveDecoder
+
+  // ============================================================
+  // Chunking Preview Codecs
+  // ============================================================
+
+  implicit val chunkingPreviewRequestDecoder: Decoder[ChunkingPreviewRequest] = deriveDecoder
+  implicit val chunkingPreviewRequestEncoder: Encoder[ChunkingPreviewRequest] = deriveEncoder
+
+  implicit val previewChunkEncoder: Encoder[PreviewChunk] = deriveEncoder
+  implicit val previewChunkDecoder: Decoder[PreviewChunk] = deriveDecoder
+
+  implicit val chunkingStatsEncoder: Encoder[ChunkingStats] = deriveEncoder
+  implicit val chunkingStatsDecoder: Decoder[ChunkingStats] = deriveDecoder
+
+  implicit val chunkingWarningEncoder: Encoder[ChunkingWarning] = deriveEncoder
+  implicit val chunkingWarningDecoder: Decoder[ChunkingWarning] = deriveDecoder
+
+  implicit val chunkingConfigUsedEncoder: Encoder[ChunkingConfigUsed] = deriveEncoder
+  implicit val chunkingConfigUsedDecoder: Decoder[ChunkingConfigUsed] = deriveDecoder
+
+  implicit val chunkingPreviewResponseEncoder: Encoder[ChunkingPreviewResponse] = deriveEncoder
+  implicit val chunkingPreviewResponseDecoder: Decoder[ChunkingPreviewResponse] = deriveDecoder
+
+  implicit val chunkingCompareRequestDecoder: Decoder[ChunkingCompareRequest] = deriveDecoder
+  implicit val chunkingCompareRequestEncoder: Encoder[ChunkingCompareRequest] = deriveEncoder
+
+  implicit val strategyResultEncoder: Encoder[StrategyResult] = deriveEncoder
+  implicit val strategyResultDecoder: Decoder[StrategyResult] = deriveDecoder
+
+  implicit val strategyRecommendationEncoder: Encoder[StrategyRecommendation] = deriveEncoder
+  implicit val strategyRecommendationDecoder: Decoder[StrategyRecommendation] = deriveDecoder
+
+  implicit val chunkingCompareResponseEncoder: Encoder[ChunkingCompareResponse] = deriveEncoder
+  implicit val chunkingCompareResponseDecoder: Decoder[ChunkingCompareResponse] = deriveDecoder
+
+  implicit val strategyInfoEncoder: Encoder[StrategyInfo] = deriveEncoder
+  implicit val strategyInfoDecoder: Decoder[StrategyInfo] = deriveDecoder
+
+  implicit val strategiesResponseEncoder: Encoder[StrategiesResponse] = deriveEncoder
+  implicit val strategiesResponseDecoder: Decoder[StrategiesResponse] = deriveDecoder
+
+  implicit val presetInfoEncoder: Encoder[PresetInfo] = deriveEncoder
+  implicit val presetInfoDecoder: Decoder[PresetInfo] = deriveDecoder
+
+  implicit val presetsResponseEncoder: Encoder[PresetsResponse] = deriveEncoder
+  implicit val presetsResponseDecoder: Decoder[PresetsResponse] = deriveDecoder
+
+  // ============================================================
+  // Runtime Configuration Codecs
+  // ============================================================
+
+  implicit val runtimeConfigEncoder: Encoder[RuntimeConfig] = deriveEncoder
+  implicit val runtimeConfigDecoder: Decoder[RuntimeConfig] = deriveDecoder
+
+  implicit val runtimeConfigUpdateRequestDecoder: Decoder[RuntimeConfigUpdateRequest] = deriveDecoder
+  implicit val runtimeConfigUpdateRequestEncoder: Encoder[RuntimeConfigUpdateRequest] = deriveEncoder
+
+  implicit val settingUpdateResultEncoder: Encoder[SettingUpdateResult] = deriveEncoder
+  implicit val settingUpdateResultDecoder: Decoder[SettingUpdateResult] = deriveDecoder
+
+  implicit val runtimeConfigUpdateResponseEncoder: Encoder[RuntimeConfigUpdateResponse] = deriveEncoder
+  implicit val runtimeConfigUpdateResponseDecoder: Decoder[RuntimeConfigUpdateResponse] = deriveDecoder
+
+  implicit val runtimeConfigValidateRequestDecoder: Decoder[RuntimeConfigValidateRequest] = deriveDecoder
+  implicit val runtimeConfigValidateRequestEncoder: Encoder[RuntimeConfigValidateRequest] = deriveEncoder
+
+  implicit val settingValidationEncoder: Encoder[SettingValidation] = deriveEncoder
+  implicit val settingValidationDecoder: Decoder[SettingValidation] = deriveDecoder
+
+  implicit val runtimeConfigValidateResponseEncoder: Encoder[RuntimeConfigValidateResponse] = deriveEncoder
+  implicit val runtimeConfigValidateResponseDecoder: Decoder[RuntimeConfigValidateResponse] = deriveDecoder
+
+  implicit val configChangeEncoder: Encoder[ConfigChange] = deriveEncoder
+  implicit val configChangeDecoder: Decoder[ConfigChange] = deriveDecoder
+
+  implicit val configHistoryResponseEncoder: Encoder[ConfigHistoryResponse] = deriveEncoder
+  implicit val configHistoryResponseDecoder: Decoder[ConfigHistoryResponse] = deriveDecoder
+
+  implicit val runtimeConfigResponseEncoder: Encoder[RuntimeConfigResponse] = deriveEncoder
+  implicit val runtimeConfigResponseDecoder: Decoder[RuntimeConfigResponse] = deriveDecoder
+
+  // ============================================================
+  // Collection Configuration Codecs
+  // ============================================================
+
+  implicit val collectionChunkingConfigEncoder: Encoder[CollectionChunkingConfig] = deriveEncoder
+  implicit val collectionChunkingConfigDecoder: Decoder[CollectionChunkingConfig] = deriveDecoder
+
+  implicit val collectionConfigUpdateRequestDecoder: Decoder[CollectionConfigUpdateRequest] = deriveDecoder
+  implicit val collectionConfigUpdateRequestEncoder: Encoder[CollectionConfigUpdateRequest] = deriveEncoder
+
+  implicit val effectiveCollectionConfigEncoder: Encoder[EffectiveCollectionConfig] = deriveEncoder
+  implicit val effectiveCollectionConfigDecoder: Decoder[EffectiveCollectionConfig] = deriveDecoder
+
+  implicit val collectionConfigResponseEncoder: Encoder[CollectionConfigResponse] = deriveEncoder
+  implicit val collectionConfigResponseDecoder: Decoder[CollectionConfigResponse] = deriveDecoder
+
+  implicit val collectionConfigUpdateResponseEncoder: Encoder[CollectionConfigUpdateResponse] = deriveEncoder
+  implicit val collectionConfigUpdateResponseDecoder: Decoder[CollectionConfigUpdateResponse] = deriveDecoder
+
+  implicit val collectionConfigDeleteResponseEncoder: Encoder[CollectionConfigDeleteResponse] = deriveEncoder
+  implicit val collectionConfigDeleteResponseDecoder: Decoder[CollectionConfigDeleteResponse] = deriveDecoder
+
+  implicit val effectiveConfigPreviewRequestDecoder: Decoder[EffectiveConfigPreviewRequest] = deriveDecoder
+  implicit val effectiveConfigPreviewRequestEncoder: Encoder[EffectiveConfigPreviewRequest] = deriveEncoder
+
+  implicit val effectiveConfigPreviewResponseEncoder: Encoder[EffectiveConfigPreviewResponse] = deriveEncoder
+  implicit val effectiveConfigPreviewResponseDecoder: Decoder[EffectiveConfigPreviewResponse] = deriveDecoder
+
+  implicit val allCollectionConfigsResponseEncoder: Encoder[AllCollectionConfigsResponse] = deriveEncoder
+  implicit val allCollectionConfigsResponseDecoder: Decoder[AllCollectionConfigsResponse] = deriveDecoder
 }

@@ -10,9 +10,11 @@ import org.http4s.server.middleware.{CORS, Logger}
 import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.slf4j.Slf4jFactory
 import cats.effect.std.Supervisor
-import ragbox.config.AppConfig
+import ragbox.config.{AppConfig, RuntimeConfigManager}
 import ragbox.ingestion.{IngestionScheduler, IngestionService}
+import ragbox.service.ChunkingService
 import ragbox.middleware.AuthMiddleware
+import ragbox.registry.PgCollectionConfigRegistry
 import ragbox.routes._
 import ragbox.service.RAGService
 
@@ -49,9 +51,18 @@ object Main extends IOApp {
       // Create RAG service with PostgreSQL-backed document registry
       ragService <- Resource.make(RAGService.create(config))(_.close())
 
+      // Create Runtime Config Manager
+      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config))(_.close())
+
+      // Create Collection Config Registry
+      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(config.database))(_.close())
+
       // Create Ingestion service and scheduler
       ingestionService = IngestionService(ragService.rag, config.ingestion)
       scheduler = IngestionScheduler(ingestionService, config.ingestion)
+
+      // Create Chunking service
+      chunkingService = ChunkingService(config)
 
       // Combine all routes (conditionally include metrics if enabled)
       baseRoutes = Seq(
@@ -59,7 +70,11 @@ object Main extends IOApp {
         "/" -> DocumentRoutes.routes(ragService),
         "/" -> QueryRoutes.routes(ragService),
         "/" -> ConfigRoutes.routes(ragService),
-        "/" -> IngestionRoutes.routes(ingestionService)
+        "/" -> IngestionRoutes.routes(ingestionService),
+        "/" -> VisibilityRoutes.routes(ragService),
+        "/" -> ChunkingRoutes.routes(chunkingService),
+        "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
+        "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager)
       )
       metricsRoute = if (config.metrics.enabled) Seq("/" -> MetricsRoutes.routes(ragService)) else Seq.empty
       allRoutes = Router((baseRoutes ++ metricsRoute)*)

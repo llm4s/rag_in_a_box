@@ -11,6 +11,10 @@ A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](htt
 - Hybrid search (vector + keyword) with RRF fusion
 - Incremental ingestion with content hash change detection
 - Built-in connectors (directory, URL) with scheduled sync
+- **Visibility API** - inspect chunks, view config, understand RAG behavior
+- **Chunking Preview** - test chunking strategies before committing
+- **Runtime Configuration** - modify settings without server restart
+- **Per-Collection Chunking** - different chunking strategies per collection with file-type overrides
 - Python SDK for custom ingesters
 - Docker Compose for easy deployment
 
@@ -251,6 +255,45 @@ All settings can be configured via environment variables:
 | GET | `/api/v1/config/providers` | List available providers |
 | GET | `/api/v1/stats` | Get RAG statistics |
 
+### Visibility
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/visibility/config` | Detailed config with changeability annotations |
+| GET | `/api/v1/visibility/chunks` | List all chunks (paginated) |
+| GET | `/api/v1/visibility/chunks/{docId}` | Get all chunks for a document |
+| GET | `/api/v1/visibility/chunks/{docId}/{idx}` | Get specific chunk |
+| GET | `/api/v1/visibility/stats` | Detailed stats with chunk size distribution |
+| GET | `/api/v1/visibility/collections` | Collection details with chunking info |
+
+### Chunking Preview
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/chunking/preview` | Preview chunking on sample text |
+| POST | `/api/v1/chunking/compare` | Compare multiple strategies |
+| GET | `/api/v1/chunking/strategies` | List available strategies |
+| GET | `/api/v1/chunking/presets` | Get preset configurations |
+
+### Runtime Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/config/runtime` | Get current runtime settings |
+| PUT | `/api/v1/config/runtime` | Update runtime settings |
+| POST | `/api/v1/config/runtime/validate` | Validate proposed changes |
+| GET | `/api/v1/config/runtime/history` | Get config change history |
+
+### Collection Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/collections/{name}/config` | Get collection chunking config |
+| PUT | `/api/v1/collections/{name}/config` | Set collection chunking config |
+| DELETE | `/api/v1/collections/{name}/config` | Remove custom config (use defaults) |
+| GET | `/api/v1/collections/configs` | List all collection configs |
+| POST | `/api/v1/collections/{name}/config/preview` | Preview effective config for a file |
+
 ### Health
 
 | Method | Endpoint | Description |
@@ -383,6 +426,239 @@ client.sync(keep_ids=[doc.id for doc in docs])
 
 See [sdk/python/README.md](sdk/python/README.md) for full documentation.
 
+## Runtime Configuration API
+
+The Runtime Configuration API allows you to modify settings without restarting the server. Settings are classified as:
+
+- **Hot**: Changes take effect immediately (topK, fusionStrategy, systemPrompt)
+- **Warm**: Changes affect new documents only (chunkingStrategy, chunkSize)
+
+### View Current Settings
+
+```bash
+curl http://localhost:8080/api/v1/config/runtime
+```
+
+### Update Settings
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/config/runtime \
+  -H "Content-Type: application/json" \
+  -d '{"topK": 10, "fusionStrategy": "weighted"}'
+```
+
+### Validate Before Applying
+
+```bash
+curl -X POST http://localhost:8080/api/v1/config/runtime/validate \
+  -H "Content-Type: application/json" \
+  -d '{"topK": 10, "chunkSize": 500}'
+```
+
+### View Change History
+
+```bash
+curl http://localhost:8080/api/v1/config/runtime/history
+```
+
+## Per-Collection Chunking API
+
+The Per-Collection Chunking API allows different collections to use different chunking configurations. This is useful when you have documents with different characteristics in different collections.
+
+### Configuration Resolution Order
+
+When determining the effective configuration for a file:
+1. **File-type override** - If the collection config has a file-type strategy for the file extension
+2. **Collection config** - The collection's custom settings
+3. **Runtime defaults** - The global default settings
+
+### View Collection Config
+
+```bash
+curl http://localhost:8080/api/v1/collections/my-collection/config
+```
+
+Response shows both the custom config (if any) and the effective config:
+```json
+{
+  "collection": "my-collection",
+  "hasCustomConfig": true,
+  "config": {
+    "strategy": "markdown",
+    "targetSize": 1000,
+    "fileTypeStrategies": {".md": "markdown", ".txt": "sentence"}
+  },
+  "effectiveConfig": {
+    "strategy": "markdown",
+    "targetSize": 1000,
+    "maxSize": 1600,
+    "overlap": 150,
+    "source": "collection"
+  },
+  "documentCount": 25
+}
+```
+
+### Set Collection Config
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/collections/my-collection/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy": "markdown",
+    "targetSize": 1000,
+    "fileTypeStrategies": {
+      ".md": "markdown",
+      ".txt": "sentence"
+    }
+  }'
+```
+
+### Preview Effective Config for a File
+
+Test which settings will apply for a specific file:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/collections/my-collection/config/preview \
+  -H "Content-Type: application/json" \
+  -d '{"collection": "my-collection", "filename": "README.md"}'
+```
+
+Response includes the resolution path showing how the config was determined:
+```json
+{
+  "collection": "my-collection",
+  "filename": "README.md",
+  "effectiveConfig": {
+    "strategy": "markdown",
+    "targetSize": 1000,
+    "source": "file-type",
+    "appliedFileTypeOverride": ".md"
+  },
+  "configResolutionPath": [
+    "Checked file extension: .md",
+    "Found file-type override in collection 'my-collection' config",
+    "Using strategy: markdown"
+  ]
+}
+```
+
+### List All Collection Configs
+
+```bash
+curl http://localhost:8080/api/v1/collections/configs
+```
+
+### Remove Custom Config
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/collections/my-collection/config
+```
+
+## Chunking Preview API
+
+The Chunking Preview API lets you test chunking strategies before committing to them. This is essential for tuning RAG performance.
+
+### Preview Chunking
+
+Test how content will be chunked with current or custom settings:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/chunking/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "# My Document\n\nThis is sample content to test chunking...",
+    "strategy": "markdown",
+    "targetSize": 500
+  }'
+```
+
+### Compare Strategies
+
+Compare multiple chunking strategies on the same content:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/chunking/compare \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Your sample content here...",
+    "strategies": ["simple", "sentence", "markdown"]
+  }'
+```
+
+The response includes a recommendation based on content analysis.
+
+### List Strategies
+
+View available strategies with their descriptions and trade-offs:
+
+```bash
+curl http://localhost:8080/api/v1/chunking/strategies
+```
+
+### View Presets
+
+Get preset configurations for different use cases:
+
+```bash
+curl http://localhost:8080/api/v1/chunking/presets
+```
+
+## Visibility API
+
+The Visibility API provides insight into how your RAG system is configured and how documents are being chunked. This is essential for understanding and tuning RAG performance.
+
+### Configuration Visibility
+
+View detailed configuration with changeability annotations:
+
+```bash
+curl http://localhost:8080/api/v1/visibility/config
+```
+
+Response includes changeability information for each setting:
+- **Hot**: Can change at runtime with immediate effect (topK, fusionStrategy)
+- **Warm**: Can change at runtime, affects new documents only (chunkSize, chunkingStrategy)
+- **Cold**: Requires restart and full re-indexing (embeddingProvider, embeddingModel)
+
+### Chunk Inspection
+
+View how documents are chunked:
+
+```bash
+# List all chunks (paginated)
+curl "http://localhost:8080/api/v1/visibility/chunks?page=1&pageSize=20"
+
+# Get all chunks for a specific document
+curl http://localhost:8080/api/v1/visibility/chunks/{documentId}
+
+# Get a specific chunk
+curl http://localhost:8080/api/v1/visibility/chunks/{documentId}/0
+```
+
+### Statistics
+
+Get detailed statistics including chunk size distribution:
+
+```bash
+curl http://localhost:8080/api/v1/visibility/stats
+```
+
+Response includes:
+- Document and chunk counts
+- Per-collection statistics
+- Chunk size distribution (min, max, avg, median, p90)
+- Histogram buckets for chunk sizes
+- Ingestion timestamps
+
+### Collection Details
+
+View collections with their chunking configuration:
+
+```bash
+curl http://localhost:8080/api/v1/visibility/collections
+```
+
 ## Persistence
 
 RAG in a Box uses PostgreSQL-backed document registry for durability:
@@ -425,9 +701,11 @@ sbt test
 │  │                        │  │  ┌─────────────────────────────┐   │ │
 │  │  • Document upload     │◀─│  │ rag_embeddings (vectors)    │   │ │
 │  │  • Upsert (idempotent) │  │  │ document_registry (tracking)│   │ │
-│  │  • Query + Answer      │  │  │ sync_status (sync state)    │   │ │
-│  │  • Incremental sync    │  │  └─────────────────────────────┘   │ │
-│  │      Port 8080         │  │        Port 5432                   │ │
+│  │  • Query + Answer      │  │  │ chunk_registry (visibility) │   │ │
+│  │  • Visibility API      │  │  │ collection_configs (tuning) │   │ │
+│  │  • Runtime Config      │  │  │ config_history (audit)      │   │ │
+│  │  • Collection Config   │  │  │ sync_status (sync state)    │   │ │
+│  │      Port 8080         │  │  └─────────────────────────────┘   │ │
 │  └────────────────────────┘  └────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
           │                              │

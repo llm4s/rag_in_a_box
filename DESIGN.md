@@ -93,35 +93,69 @@ RAG in a Box packages the production-grade RAG capabilities from [llm4s](https:/
 
 The core backend service exposing REST endpoints for all RAG operations.
 
-#### Endpoints
+#### Endpoints (Implemented)
 
 ```
 Document Management:
-  POST   /api/v1/documents              - Upload document(s)
-  POST   /api/v1/documents/url          - Ingest from URL
+  POST   /api/v1/documents              - Upload document
+  PUT    /api/v1/documents/{id}         - Upsert document (idempotent)
   GET    /api/v1/documents              - List documents
-  GET    /api/v1/documents/{id}         - Get document details
   DELETE /api/v1/documents/{id}         - Delete document
-  POST   /api/v1/documents/sync         - Re-sync all documents
+  DELETE /api/v1/documents              - Clear all documents
+  GET    /api/v1/collections            - List collections
+
+Sync (for custom ingesters):
+  GET    /api/v1/sync/status            - Get sync status
+  GET    /api/v1/sync/documents         - List synced document IDs
+  POST   /api/v1/sync                   - Mark sync complete (prune)
 
 Query:
   POST   /api/v1/query                  - Search + answer generation
   POST   /api/v1/search                 - Search only (no LLM)
 
-Collections (logical groupings):
-  GET    /api/v1/collections            - List collections
-  POST   /api/v1/collections            - Create collection
-  DELETE /api/v1/collections/{id}       - Delete collection
+Ingestion:
+  POST   /api/v1/ingest/directory       - Ingest from directory
+  POST   /api/v1/ingest/url             - Ingest from URLs
+  POST   /api/v1/ingest/run             - Run all configured sources
+  GET    /api/v1/ingest/status          - Get ingestion status
+  GET    /api/v1/ingest/sources         - List configured sources
 
 Configuration:
   GET    /api/v1/config                 - Get current config
-  PUT    /api/v1/config                 - Update config
   GET    /api/v1/config/providers       - List available providers
+  GET    /api/v1/stats                  - Get RAG statistics
+
+Runtime Configuration:
+  GET    /api/v1/config/runtime         - Get runtime settings
+  PUT    /api/v1/config/runtime         - Update runtime settings
+  POST   /api/v1/config/runtime/validate - Validate proposed changes
+  GET    /api/v1/config/runtime/history - Get config change history
+
+Collection Configuration:
+  GET    /api/v1/collections/{name}/config     - Get collection config
+  PUT    /api/v1/collections/{name}/config     - Set collection config
+  DELETE /api/v1/collections/{name}/config     - Remove custom config
+  GET    /api/v1/collections/configs           - List all collection configs
+  POST   /api/v1/collections/{name}/config/preview - Preview effective config
+
+Visibility:
+  GET    /api/v1/visibility/config      - Detailed config with annotations
+  GET    /api/v1/visibility/chunks      - List all chunks (paginated)
+  GET    /api/v1/visibility/chunks/{docId} - Get document chunks
+  GET    /api/v1/visibility/chunks/{docId}/{idx} - Get specific chunk
+  GET    /api/v1/visibility/stats       - Detailed stats
+  GET    /api/v1/visibility/collections - Collection details
+
+Chunking Preview:
+  POST   /api/v1/chunking/preview       - Preview chunking on sample
+  POST   /api/v1/chunking/compare       - Compare strategies
+  GET    /api/v1/chunking/strategies    - List strategies
+  GET    /api/v1/chunking/presets       - Get preset configs
 
 Health:
   GET    /health                        - Health check
   GET    /health/ready                  - Readiness check
-  GET    /metrics                       - Prometheus metrics
+  GET    /health/live                   - Liveness check
 ```
 
 #### Key Request/Response Types
@@ -527,15 +561,24 @@ final case class CollectionId(value: String) extends AnyVal
 
 ## Development Phases
 
-### Phase 1: Core API (Week 1-2)
-- [ ] Set up Scala project with sbt, http4s, llm4s dependency
-- [ ] Implement document ingestion endpoints
-- [ ] Implement query/search endpoints
-- [ ] Add PostgreSQL/pgvector integration
-- [ ] Docker build for API service
-- [ ] Basic health checks and logging
+### Phase 1: Core API ✅ COMPLETE
+- [x] Set up Scala project with sbt, http4s, llm4s dependency
+- [x] Implement document ingestion endpoints (POST, PUT, DELETE, GET)
+- [x] Implement query/search endpoints
+- [x] Add PostgreSQL/pgvector integration
+- [x] Docker build for API service
+- [x] Basic health checks and logging
+- [x] Sync endpoints for custom ingesters
+- [x] Built-in directory/URL ingestion with scheduling
+- [x] Python SDK for custom ingesters
 
-### Phase 2: Admin UI (Week 3-4)
+### Phase 1.5: RAG Tuning & Visibility ✅ COMPLETE
+- [x] Visibility API - inspect chunks, view config, stats
+- [x] Chunking Preview API - test strategies before committing
+- [x] Runtime Configuration API - modify settings without restart
+- [x] Per-Collection Chunking - different chunking per collection/file type
+
+### Phase 2: Admin UI (Future)
 - [ ] Vue.js + Vuetify project setup
 - [ ] Dashboard with statistics
 - [ ] Document list and detail views
@@ -543,7 +586,7 @@ final case class CollectionId(value: String) extends AnyVal
 - [ ] Configuration management screens
 - [ ] Docker build for Admin UI
 
-### Phase 3: Chat UI (Week 5-6)
+### Phase 3: Chat UI (Future)
 - [ ] Vue.js + Vuetify project setup
 - [ ] Chat interface with message history
 - [ ] Source citation display
@@ -551,11 +594,11 @@ final case class CollectionId(value: String) extends AnyVal
 - [ ] Collection filtering
 - [ ] Docker build for Chat UI
 
-### Phase 4: Integration & Polish (Week 7-8)
-- [ ] Docker Compose orchestration
-- [ ] Database initialization scripts
-- [ ] Environment variable configuration
-- [ ] README and documentation
+### Phase 4: Integration & Polish
+- [x] Docker Compose orchestration
+- [x] Database initialization scripts
+- [x] Environment variable configuration
+- [x] README and documentation
 - [ ] Example datasets for demo
 - [ ] End-to-end testing
 

@@ -2,7 +2,7 @@ package ragbox.service
 
 import cats.effect.IO
 import cats.syntax.all._
-import org.llm4s.chunking.ChunkerFactory
+import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk}
 import org.llm4s.llmconnect.{LLMClient, LLMConnect}
 import org.llm4s.llmconnect.config.{EmbeddingProviderConfig, OpenAIConfig, AnthropicConfig}
 import org.llm4s.rag.{EmbeddingProvider, RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
@@ -11,6 +11,7 @@ import org.llm4s.types.Result
 import ragbox.config.AppConfig
 import ragbox.model._
 import ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentRegistry}
+import ragbox.store.{ChunkStore, PgChunkStore}
 
 import java.security.MessageDigest
 import java.time.Instant
@@ -21,9 +22,11 @@ import java.time.Instant
  * Provides a high-level interface for document ingestion, search, and query operations.
  */
 
-class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
+class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkStore: ChunkStore) {
 
   private val startTime: Long = System.currentTimeMillis()
+  private var firstIngestionTime: Option[Instant] = None
+  private var lastIngestionTime: Option[Instant] = None
 
   // Create LLM client for answer generation
   private lazy val llmClient: Option[LLMClient] = {
@@ -131,14 +134,12 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
     content: String,
     documentId: String,
     metadata: Map[String, String]
-  ): IO[DocumentUploadResponse] =
-    rag.flatMap { r =>
-      IO.fromEither(
-        r.ingestText(content, documentId, metadata)
-          .map(chunks => DocumentUploadResponse(documentId, chunks, s"Successfully ingested $chunks chunks"))
-          .left.map(e => new RuntimeException(e.message))
-      )
+  ): IO[DocumentUploadResponse] = {
+    val contentHash = computeContentHash(content)
+    ingestAndRegister(documentId, content, contentHash, metadata).map { result =>
+      DocumentUploadResponse(documentId, result.chunks, s"Successfully ingested ${result.chunks} chunks")
     }
+  }
 
   /**
    * Delete a document by ID.
@@ -149,7 +150,7 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
         r.deleteDocument(documentId)
           .left.map(e => new RuntimeException(e.message))
       )
-    } *> documentRegistry.remove(documentId)
+    } *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
 
   /**
    * Get RAG statistics.
@@ -174,7 +175,7 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
       IO.fromEither(
         r.clear().left.map(e => new RuntimeException(e.message))
       )
-    } *> documentRegistry.clear()
+    } *> chunkStore.clear() *> documentRegistry.clear()
 
   // ============================================================
   // Upsert Operations (SDK/Sidecar Pattern)
@@ -246,25 +247,70 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
       IO.fromEither(
         r.ingestText(content, documentId, metadata)
           .left.map(e => new RuntimeException(e.message))
-      ).flatMap { chunks =>
+      ).flatMap { chunkCount =>
         val now = Instant.now()
         val collection = metadata.get("collection")
-        documentRegistry.put(DocumentEntry(
+
+        // Create chunks for visibility using the same chunking strategy
+        val chunker = ChunkerFactory.create(config.rag.chunking.strategy).getOrElse(ChunkerFactory.default)
+        val chunkingConfig = ChunkingConfig(
+          targetSize = config.rag.chunking.size,
+          maxSize = (config.rag.chunking.size * 1.5).toInt,
+          overlap = config.rag.chunking.overlap
+        )
+        val filename = metadata.get("filename")
+        val docChunks = filename.map(f => chunker.chunkWithSource(content, f, chunkingConfig))
+          .getOrElse(chunker.chunk(content, chunkingConfig))
+
+        // Convert to ChunkInfo for storage
+        val chunkInfos = docChunks.map(toChunkInfo(documentId, collection, _))
+
+        for {
+          // Store chunks for visibility
+          _ <- chunkStore.store(documentId, chunkInfos)
+          // Track ingestion time
+          _ <- IO {
+            if (firstIngestionTime.isEmpty) firstIngestionTime = Some(now)
+            lastIngestionTime = Some(now)
+          }
+          // Register document
+          _ <- documentRegistry.put(DocumentEntry(
+            documentId = documentId,
+            contentHash = contentHash,
+            chunkCount = chunkCount,
+            metadata = metadata,
+            collection = collection,
+            indexedAt = now,
+            updatedAt = now
+          ))
+        } yield DocumentUpsertResponse(
           documentId = documentId,
-          contentHash = contentHash,
-          chunkCount = chunks,
-          metadata = metadata,
-          collection = collection,
-          indexedAt = now,
-          updatedAt = now
-        )).as(DocumentUpsertResponse(
-          documentId = documentId,
-          chunks = chunks,
+          chunks = chunkCount,
           action = "created",
-          message = s"Successfully indexed $chunks chunks"
-        ))
+          message = s"Successfully indexed $chunkCount chunks"
+        )
       }
     }
+
+  /**
+   * Convert a DocumentChunk to ChunkInfo for storage.
+   */
+  private def toChunkInfo(documentId: String, collection: Option[String], chunk: DocumentChunk): ChunkInfo =
+    ChunkInfo(
+      id = s"$documentId-${chunk.index}",
+      documentId = documentId,
+      index = chunk.index,
+      content = chunk.content,
+      contentLength = chunk.length,
+      metadata = Map("collection" -> collection.getOrElse("")),
+      chunkMetadata = ChunkMetadataInfo(
+        headings = chunk.metadata.headings,
+        isCodeBlock = chunk.metadata.isCodeBlock,
+        language = chunk.metadata.language,
+        startOffset = chunk.metadata.startOffset,
+        endOffset = chunk.metadata.endOffset
+      )
+    )
 
   /**
    * Prune documents not in the provided keep list.
@@ -435,6 +481,167 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
   }
 
   // ============================================================
+  // Visibility Operations
+  // ============================================================
+
+  /**
+   * Get detailed configuration with changeability annotations.
+   */
+  def getDetailedConfig: IO[DetailedConfigResponse] = IO.pure {
+    DetailedConfigResponse(
+      embedding = VisibilityEmbeddingConfig(
+        provider = config.embedding.provider,
+        model = config.embedding.model,
+        dimensions = config.embedding.dimensions,
+        changeability = ChangeabilityInfo.cold
+      ),
+      llm = VisibilityLLMConfig(
+        model = config.llm.model,
+        temperature = config.llm.temperature,
+        changeability = ChangeabilityInfo.hot
+      ),
+      rag = DetailedRAGConfigInfo(
+        chunkingStrategy = ConfigSetting("chunkingStrategy", config.rag.chunking.strategy, ChangeabilityInfo.warm),
+        chunkSize = ConfigSetting("chunkSize", config.rag.chunking.size.toString, ChangeabilityInfo.warm),
+        chunkOverlap = ConfigSetting("chunkOverlap", config.rag.chunking.overlap.toString, ChangeabilityInfo.warm),
+        topK = ConfigSetting("topK", config.rag.search.topK.toString, ChangeabilityInfo.hot),
+        fusionStrategy = ConfigSetting("fusionStrategy", config.rag.search.fusionStrategy, ChangeabilityInfo.hot),
+        rrfK = ConfigSetting("rrfK", config.rag.search.rrfK.toString, ChangeabilityInfo.hot),
+        systemPrompt = Some(config.rag.systemPrompt)
+      ),
+      database = VisibilityDatabaseConfig(
+        host = config.database.host,
+        port = config.database.port,
+        database = config.database.database,
+        tableName = config.database.tableName,
+        connected = ragInstance.isRight
+      ),
+      runtimeConfigurable = RuntimeConfigurableInfo(
+        hotSettings = Seq("topK", "fusionStrategy", "rrfK", "systemPrompt", "llmModel", "llmTemperature"),
+        warmSettings = Seq("chunkingStrategy", "chunkSize", "chunkOverlap"),
+        coldSettings = Seq("embeddingProvider", "embeddingModel", "databaseHost", "databasePort")
+      )
+    )
+  }
+
+  /**
+   * List all chunks with pagination.
+   */
+  def listChunks(page: Int, pageSize: Int): IO[ChunkListResponse] =
+    chunkStore.listChunks(page, pageSize)
+
+  /**
+   * Get all chunks for a specific document.
+   */
+  def getDocumentChunks(documentId: String): IO[Option[DocumentChunksResponse]] =
+    for {
+      entry <- documentRegistry.get(documentId)
+      chunks <- chunkStore.getChunks(documentId)
+    } yield {
+      if (chunks.nonEmpty || entry.isDefined) {
+        Some(DocumentChunksResponse(
+          documentId = documentId,
+          filename = entry.flatMap(_.metadata.get("filename")),
+          collection = entry.flatMap(_.collection),
+          chunkCount = chunks.size,
+          chunks = chunks,
+          chunkingConfig = ChunkConfigSnapshot(
+            strategy = config.rag.chunking.strategy,
+            targetSize = config.rag.chunking.size,
+            maxSize = (config.rag.chunking.size * 1.5).toInt,
+            overlap = config.rag.chunking.overlap
+          )
+        ))
+      } else {
+        None
+      }
+    }
+
+  /**
+   * Get a specific chunk by document ID and index.
+   */
+  def getChunk(documentId: String, index: Int): IO[Option[ChunkInfo]] =
+    chunkStore.getChunk(documentId, index)
+
+  /**
+   * Get detailed statistics.
+   */
+  def getDetailedStats: IO[DetailedStatsResponse] =
+    for {
+      basicStats <- getStats
+      chunkDist <- chunkStore.getChunkSizeDistribution()
+      collections <- getDetailedCollectionStats
+      chunkCount <- chunkStore.count()
+    } yield DetailedStatsResponse(
+      documentCount = basicStats.documentCount,
+      chunkCount = chunkCount,
+      vectorCount = basicStats.vectorCount,
+      collections = collections,
+      chunkSizeDistribution = chunkDist,
+      indexedSince = firstIngestionTime,
+      lastIngestion = lastIngestionTime,
+      currentConfig = ChunkConfigSnapshot(
+        strategy = config.rag.chunking.strategy,
+        targetSize = config.rag.chunking.size,
+        maxSize = (config.rag.chunking.size * 1.5).toInt,
+        overlap = config.rag.chunking.overlap
+      )
+    )
+
+  /**
+   * Get detailed collection statistics.
+   */
+  private def getDetailedCollectionStats: IO[Seq[DetailedCollectionStats]] =
+    for {
+      collections <- documentRegistry.listCollections()
+      stats <- collections.traverse { coll =>
+        for {
+          docCount <- documentRegistry.countByCollection(coll)
+          chunkCount <- chunkStore.countByCollection(coll)
+          avgSize <- chunkStore.avgChunkSizeByCollection(coll)
+        } yield DetailedCollectionStats(
+          name = coll,
+          documentCount = docCount,
+          chunkCount = chunkCount,
+          avgChunksPerDoc = if (docCount > 0) chunkCount.toDouble / docCount else 0.0,
+          avgChunkSize = avgSize,
+          chunkingStrategy = None // Per-collection config comes in Phase 4
+        )
+      }
+    } yield stats
+
+  /**
+   * Get collection details with chunking rules.
+   */
+  def getCollectionDetails: IO[CollectionsResponse] =
+    for {
+      detailedStats <- getDetailedCollectionStats
+    } yield {
+      val defaultConfig = EffectiveChunkingInfo(
+        strategy = config.rag.chunking.strategy,
+        targetSize = config.rag.chunking.size,
+        maxSize = (config.rag.chunking.size * 1.5).toInt,
+        overlap = config.rag.chunking.overlap,
+        source = "default"
+      )
+
+      val collectionDetails = detailedStats.map { stats =>
+        CollectionDetailInfo(
+          name = stats.name,
+          documentCount = stats.documentCount,
+          chunkCount = stats.chunkCount,
+          customConfig = None, // Per-collection config comes in Phase 4
+          effectiveConfig = defaultConfig
+        )
+      }
+
+      CollectionsResponse(
+        collections = collectionDetails,
+        defaultConfig = defaultConfig
+      )
+    }
+
+  // ============================================================
   // Health Operations
   // ============================================================
 
@@ -491,19 +698,25 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry) {
   }
 
   /**
+   * Get the document registry for direct access.
+   */
+  def getDocumentRegistry: DocumentRegistry = documentRegistry
+
+  /**
    * Close resources.
    */
   def close(): IO[Unit] =
-    rag.flatMap(r => IO(r.close())) *> documentRegistry.close()
+    rag.flatMap(r => IO(r.close())) *> documentRegistry.close() *> chunkStore.close()
 }
 
 object RAGService {
 
   /**
-   * Create a new RAGService with PostgreSQL-backed document registry.
+   * Create a new RAGService with PostgreSQL-backed document registry and chunk store.
    */
   def create(config: AppConfig): IO[RAGService] =
-    PgDocumentRegistry(config.database).map { registry =>
-      new RAGService(config, registry)
-    }
+    for {
+      registry <- PgDocumentRegistry(config.database)
+      chunks <- PgChunkStore(config.database)
+    } yield new RAGService(config, registry, chunks)
 }
