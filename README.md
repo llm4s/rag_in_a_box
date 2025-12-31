@@ -64,7 +64,47 @@ cp .env.example .env
 
 ### Access Points
 - **API**: http://localhost:8080
+- **Admin UI**: http://localhost:8080/admin
 - **PostgreSQL**: localhost:15432 (user: rag, password: rag)
+
+## Admin UI
+
+RAG in a Box includes a built-in web-based admin interface for managing documents, configuration, and monitoring.
+
+### Features
+
+- **Dashboard** - Overview of document counts, chunk statistics, and system health
+- **Documents** - Browse, search, upload, and delete documents
+- **Upload** - Add documents via text, file upload, or URL ingestion
+- **Configuration** - View and modify runtime settings
+- **Collections** - Manage per-collection chunking configurations
+- **Chunking Preview** - Test and compare chunking strategies before applying
+- **Visibility** - Inspect chunks and understand RAG behavior
+- **Ingestion** - Monitor and trigger ingestion jobs
+
+### Accessing the Admin UI
+
+The Admin UI is bundled with the API server and available at `/admin`:
+
+```bash
+# Start the server
+docker-compose up -d
+
+# Open in browser
+open http://localhost:8080/admin
+```
+
+### Development Mode
+
+For frontend development with hot reload:
+
+```bash
+cd admin-ui
+npm install
+npm run dev
+```
+
+This starts a development server at http://localhost:3000 that proxies API requests to the backend.
 
 ## API Usage
 
