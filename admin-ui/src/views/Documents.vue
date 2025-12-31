@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '@/stores/documents'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import DocumentPreviewDialog from '@/components/DocumentPreviewDialog.vue'
 import { TableSkeleton } from '@/components/skeletons'
 
 const router = useRouter()
@@ -19,13 +20,15 @@ const deleteId = ref<string | null>(null)
 const selected = ref<string[]>([])
 const bulkDeleteDialog = ref(false)
 const bulkDeleting = ref(false)
+const previewDialog = ref(false)
+const previewDocumentId = ref<string | null>(null)
 
 const headers = [
   { title: 'ID', key: 'id', width: '200px' },
   { title: 'Filename', key: 'filename' },
   { title: 'Collection', key: 'collection' },
   { title: 'Chunks', key: 'chunkCount', width: '100px' },
-  { title: 'Actions', key: 'actions', sortable: false, width: '120px' }
+  { title: 'Actions', key: 'actions', sortable: false, width: '160px' }
 ]
 
 const hasSelection = computed(() => selected.value.length > 0)
@@ -41,6 +44,11 @@ watch([search, collection], () => {
 
 function viewDocument(id: string) {
   router.push(`/documents/${id}`)
+}
+
+function previewDocument(id: string) {
+  previewDocumentId.value = id
+  previewDialog.value = true
 }
 
 function confirmDelete(id: string) {
@@ -182,10 +190,13 @@ function onPageChange(page: number) {
         </template>
 
         <template v-slot:item.actions="{ item }">
-          <v-btn icon size="small" variant="text" @click="viewDocument(item.id)">
-            <v-icon>mdi-eye</v-icon>
+          <v-btn icon size="small" variant="text" @click="previewDocument(item.id)" title="Quick Preview">
+            <v-icon>mdi-eye-outline</v-icon>
           </v-btn>
-          <v-btn icon size="small" variant="text" color="error" @click="confirmDelete(item.id)">
+          <v-btn icon size="small" variant="text" @click="viewDocument(item.id)" title="View Details">
+            <v-icon>mdi-open-in-new</v-icon>
+          </v-btn>
+          <v-btn icon size="small" variant="text" color="error" @click="confirmDelete(item.id)" title="Delete">
             <v-icon>mdi-delete</v-icon>
           </v-btn>
         </template>
@@ -250,5 +261,11 @@ function onPageChange(page: number) {
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Document Preview Dialog -->
+    <DocumentPreviewDialog
+      v-model="previewDialog"
+      :document-id="previewDocumentId"
+    />
   </div>
 </template>
