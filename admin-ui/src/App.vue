@@ -76,6 +76,9 @@ onMounted(() => {
 
 <template>
   <v-app>
+    <!-- Skip to main content link for keyboard/screen reader users -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
     <!-- App Bar -->
     <v-app-bar color="primary" :prominent="!mobile">
       <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
@@ -146,7 +149,7 @@ onMounted(() => {
 
     <!-- Main Content -->
     <v-main>
-      <v-container fluid class="pa-2 pa-sm-4 pa-md-6">
+      <v-container id="main-content" fluid class="pa-2 pa-sm-4 pa-md-6" tabindex="-1">
         <router-view />
       </v-container>
     </v-main>
