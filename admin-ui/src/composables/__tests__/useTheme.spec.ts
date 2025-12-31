@@ -55,7 +55,16 @@ describe('useTheme', () => {
 
   it('should use light theme by default when no stored preference', async () => {
     localStorageMock.getItem.mockReturnValue(null)
-    matchMediaMock.mockReturnValue({ matches: false })
+    matchMediaMock.mockReturnValue({
+      matches: false,
+      media: '',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    })
 
     // Re-import to get fresh state
     vi.resetModules()

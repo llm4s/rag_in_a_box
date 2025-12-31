@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
 import { useTheme } from '@/composables/useTheme'
 import NotificationContainer from '@/components/NotificationContainer.vue'
 
 const statsStore = useStatsStore()
 const { isDark, toggleTheme } = useTheme()
+const { mobile } = useDisplay()
 
-const drawer = ref(true)
+// Drawer starts closed on mobile, open on desktop
+const drawer = ref(!mobile.value)
 const healthStatus = ref<'healthy' | 'unhealthy' | 'unknown'>('unknown')
 
 const navItems = [
@@ -44,7 +47,7 @@ onMounted(() => {
 <template>
   <v-app>
     <!-- App Bar -->
-    <v-app-bar color="primary" prominent>
+    <v-app-bar color="primary" :prominent="!mobile">
       <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
 
       <v-toolbar-title>
@@ -59,12 +62,14 @@ onMounted(() => {
         :color="healthStatus === 'healthy' ? 'success' : healthStatus === 'unhealthy' ? 'error' : 'grey'"
         variant="flat"
         size="small"
-        class="mr-4"
+        class="mr-2 mr-sm-4"
       >
-        <v-icon start size="small">
+        <v-icon :start="!mobile" size="small">
           {{ healthStatus === 'healthy' ? 'mdi-check-circle' : healthStatus === 'unhealthy' ? 'mdi-alert-circle' : 'mdi-help-circle' }}
         </v-icon>
-        {{ healthStatus === 'healthy' ? 'Healthy' : healthStatus === 'unhealthy' ? 'Unhealthy' : 'Checking...' }}
+        <span class="d-none d-sm-inline">
+          {{ healthStatus === 'healthy' ? 'Healthy' : healthStatus === 'unhealthy' ? 'Unhealthy' : 'Checking...' }}
+        </span>
       </v-chip>
 
       <!-- Dark Mode Toggle -->
@@ -74,7 +79,7 @@ onMounted(() => {
     </v-app-bar>
 
     <!-- Navigation Drawer -->
-    <v-navigation-drawer v-model="drawer" permanent>
+    <v-navigation-drawer v-model="drawer" :permanent="!mobile">
       <v-list density="compact" nav>
         <template v-for="(item, index) in navItems" :key="index">
           <v-divider v-if="item.divider" class="my-2"></v-divider>
@@ -83,6 +88,7 @@ onMounted(() => {
             :prepend-icon="item.icon"
             :title="item.title"
             :to="item.to"
+            @click="mobile && (drawer = false)"
           ></v-list-item>
         </template>
       </v-list>
@@ -100,7 +106,7 @@ onMounted(() => {
 
     <!-- Main Content -->
     <v-main>
-      <v-container fluid class="pa-6">
+      <v-container fluid class="pa-2 pa-sm-4 pa-md-6">
         <router-view />
       </v-container>
     </v-main>
