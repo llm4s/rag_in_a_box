@@ -25,12 +25,15 @@ export default tseslint.config(
         alert: 'readonly',
         window: 'readonly',
         document: 'readonly',
+        navigator: 'readonly',
         File: 'readonly',
         FileReader: 'readonly',
         FormData: 'readonly',
         URL: 'readonly',
         HTMLInputElement: 'readonly',
+        HTMLElement: 'readonly',
         DragEvent: 'readonly',
+        KeyboardEvent: 'readonly',
         Event: 'readonly',
         Promise: 'readonly'
       }

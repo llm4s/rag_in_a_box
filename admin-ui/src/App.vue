@@ -1,17 +1,47 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
 import { useTheme } from '@/composables/useTheme'
+import { useKeyboardShortcuts, setSearchDialogCallback } from '@/composables/useKeyboardShortcuts'
 import NotificationContainer from '@/components/NotificationContainer.vue'
+import SearchDialog from '@/components/SearchDialog.vue'
+import KeyboardShortcutsDialog from '@/components/KeyboardShortcutsDialog.vue'
 
 const statsStore = useStatsStore()
 const { isDark, toggleTheme } = useTheme()
 const { mobile } = useDisplay()
+const { shortcuts } = useKeyboardShortcuts()
 
 // Drawer starts closed on mobile, open on desktop
 const drawer = ref(!mobile.value)
 const healthStatus = ref<'healthy' | 'unhealthy' | 'unknown'>('unknown')
+const searchDialog = ref(false)
+const shortcutsDialog = ref(false)
+
+// Register search dialog callback
+setSearchDialogCallback(() => {
+  searchDialog.value = true
+})
+
+// Listen for '?' key to show shortcuts help
+function handleQuestionMark(event: KeyboardEvent) {
+  const target = event.target as HTMLElement
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+
+  if (event.key === '?') {
+    event.preventDefault()
+    shortcutsDialog.value = true
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleQuestionMark)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleQuestionMark)
+})
 
 const navItems = [
   { title: 'Dashboard', icon: 'mdi-view-dashboard', to: '/' },
@@ -56,6 +86,16 @@ onMounted(() => {
       </v-toolbar-title>
 
       <v-spacer></v-spacer>
+
+      <!-- Search Button -->
+      <v-btn
+        icon
+        @click="searchDialog = true"
+        aria-label="Search (Ctrl+K)"
+        class="mr-1"
+      >
+        <v-icon>mdi-magnify</v-icon>
+      </v-btn>
 
       <!-- Health Status -->
       <v-chip
@@ -113,6 +153,12 @@ onMounted(() => {
 
     <!-- Global Notifications -->
     <NotificationContainer />
+
+    <!-- Search Dialog -->
+    <SearchDialog v-model="searchDialog" />
+
+    <!-- Keyboard Shortcuts Help -->
+    <KeyboardShortcutsDialog v-model="shortcutsDialog" :shortcuts="shortcuts" />
   </v-app>
 </template>
 
