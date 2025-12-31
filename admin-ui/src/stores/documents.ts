@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Document, Chunk } from '@/types/api'
 import * as documentsApi from '@/api/documents'
+import { type AppError, getErrorMessage, isAppError } from '@/composables/useApiError'
 
 export const useDocumentsStore = defineStore('documents', () => {
   const documents = ref<Document[]>([])
@@ -11,14 +12,22 @@ export const useDocumentsStore = defineStore('documents', () => {
   const page = ref(1)
   const pageSize = ref(20)
   const loading = ref(false)
-  const error = ref<string | null>(null)
+  const error = ref<AppError | null>(null)
+
+  // Track last fetch params for retry
+  let lastFetchParams: { collection?: string; search?: string } | undefined
 
   const hasDocuments = computed(() => documents.value.length > 0)
   const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
 
+  function clearError() {
+    error.value = null
+  }
+
   async function fetchDocuments(params?: { collection?: string; search?: string }) {
     loading.value = true
     error.value = null
+    lastFetchParams = params
     try {
       const response = await documentsApi.getDocuments({
         page: page.value,
@@ -28,10 +37,18 @@ export const useDocumentsStore = defineStore('documents', () => {
       documents.value = response.documents
       total.value = response.total
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch documents'
+      error.value = isAppError(e) ? e : {
+        code: 'UNKNOWN_ERROR',
+        message: getErrorMessage(e),
+        retryable: true
+      }
     } finally {
       loading.value = false
     }
+  }
+
+  async function retryFetchDocuments() {
+    return fetchDocuments(lastFetchParams)
   }
 
   async function fetchDocument(id: string) {
@@ -41,7 +58,11 @@ export const useDocumentsStore = defineStore('documents', () => {
       currentDocument.value = await documentsApi.getDocument(id)
       currentChunks.value = await documentsApi.getDocumentChunks(id)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch document'
+      error.value = isAppError(e) ? e : {
+        code: 'UNKNOWN_ERROR',
+        message: getErrorMessage(e),
+        retryable: true
+      }
     } finally {
       loading.value = false
     }
@@ -56,7 +77,11 @@ export const useDocumentsStore = defineStore('documents', () => {
       total.value++
       return doc
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create document'
+      error.value = isAppError(e) ? e : {
+        code: 'UNKNOWN_ERROR',
+        message: getErrorMessage(e),
+        retryable: false
+      }
       throw e
     } finally {
       loading.value = false
@@ -75,7 +100,11 @@ export const useDocumentsStore = defineStore('documents', () => {
         currentChunks.value = []
       }
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete document'
+      error.value = isAppError(e) ? e : {
+        code: 'UNKNOWN_ERROR',
+        message: getErrorMessage(e),
+        retryable: false
+      }
       throw e
     } finally {
       loading.value = false
@@ -103,10 +132,12 @@ export const useDocumentsStore = defineStore('documents', () => {
     hasDocuments,
     totalPages,
     fetchDocuments,
+    retryFetchDocuments,
     fetchDocument,
     createDocument,
     deleteDocument,
     setPage,
-    clearCurrent
+    clearCurrent,
+    clearError
   }
 })

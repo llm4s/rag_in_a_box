@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useStatsStore } from '@/stores/stats'
+import NotificationContainer from '@/components/NotificationContainer.vue'
 
 const statsStore = useStatsStore()
 
@@ -102,6 +103,9 @@ onMounted(() => {
         <router-view />
       </v-container>
     </v-main>
+
+    <!-- Global Notifications -->
+    <NotificationContainer />
   </v-app>
 </template>
 

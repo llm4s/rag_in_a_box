@@ -3,16 +3,20 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '@/stores/documents'
 import * as ingestionApi from '@/api/ingestion'
+import { useNotification } from '@/composables/useNotification'
+import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const router = useRouter()
 const documentsStore = useDocumentsStore()
+const notification = useNotification()
 
 const tab = ref('text')
 const content = ref('')
 const collection = ref('')
 const metadata = ref<{ key: string; value: string }[]>([])
 const loading = ref(false)
-const error = ref<string | null>(null)
+const error = ref<AppError | null>(null)
 const success = ref(false)
 
 // File upload state
@@ -91,10 +95,18 @@ async function readFileContent(file: File): Promise<string> {
   })
 }
 
+function setError(e: unknown, defaultMsg: string) {
+  error.value = isAppError(e) ? e : {
+    code: 'VALIDATION_ERROR',
+    message: getErrorMessage(e) || defaultMsg,
+    retryable: false
+  }
+}
+
 // Submit handlers for each tab
 async function submitText() {
   if (!content.value.trim()) {
-    error.value = 'Content is required'
+    setError({ code: 'VALIDATION_ERROR', message: 'Content is required', retryable: false }, 'Content is required')
     return
   }
 
@@ -116,11 +128,12 @@ async function submitText() {
     })
 
     success.value = true
+    notification.success('Document created successfully!')
     setTimeout(() => {
       router.push('/documents')
     }, 1500)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to create document'
+    setError(e, 'Failed to create document')
   } finally {
     loading.value = false
   }
@@ -128,7 +141,7 @@ async function submitText() {
 
 async function submitFiles() {
   if (files.value.length === 0) {
-    error.value = 'Please select at least one file'
+    setError({ code: 'VALIDATION_ERROR', message: 'Please select at least one file', retryable: false }, 'Please select at least one file')
     return
   }
 
@@ -154,11 +167,12 @@ async function submitFiles() {
     }
 
     success.value = true
+    notification.success(`${files.value.length} file(s) uploaded successfully!`)
     setTimeout(() => {
       router.push('/documents')
     }, 1500)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to upload files'
+    setError(e, 'Failed to upload files')
   } finally {
     loading.value = false
   }
@@ -166,7 +180,7 @@ async function submitFiles() {
 
 async function submitUrl() {
   if (!url.value.trim()) {
-    error.value = 'URL is required'
+    setError({ code: 'VALIDATION_ERROR', message: 'URL is required', retryable: false }, 'URL is required')
     return
   }
 
@@ -174,7 +188,7 @@ async function submitUrl() {
   try {
     new URL(url.value)
   } catch {
-    error.value = 'Please enter a valid URL'
+    setError({ code: 'VALIDATION_ERROR', message: 'Please enter a valid URL', retryable: false }, 'Please enter a valid URL')
     return
   }
 
@@ -195,11 +209,12 @@ async function submitUrl() {
     })
 
     success.value = true
+    notification.success('URL content ingested successfully!')
     setTimeout(() => {
       router.push('/documents')
     }, 1500)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to ingest URL'
+    setError(e, 'Failed to ingest URL')
   } finally {
     loading.value = false
   }
@@ -249,12 +264,14 @@ function formatFileSize(bytes: number): string {
       </v-tabs>
 
       <v-card-text>
-        <v-alert v-if="error" type="error" class="mb-4" closable @click:close="error = null">
-          {{ error }}
-        </v-alert>
+        <ErrorAlert
+          :error="error"
+          dismissible
+          @dismiss="error = null"
+        />
 
         <v-alert v-if="success" type="success" class="mb-4">
-          Document created successfully! Redirecting...
+          Success! Redirecting...
         </v-alert>
 
         <v-window v-model="tab">

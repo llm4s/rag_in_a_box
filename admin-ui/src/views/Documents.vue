@@ -2,6 +2,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '@/stores/documents'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const router = useRouter()
 const documentsStore = useDocumentsStore()
@@ -60,6 +61,14 @@ function onPageChange(page: number) {
         Upload
       </v-btn>
     </div>
+
+    <!-- Error Alert -->
+    <ErrorAlert
+      :error="documentsStore.error"
+      :on-retry="documentsStore.retryFetchDocuments"
+      dismissible
+      @dismiss="documentsStore.clearError"
+    />
 
     <!-- Filters -->
     <v-card class="mb-4 pa-4">
