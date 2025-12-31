@@ -3,13 +3,16 @@ import { onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStatsStore } from '@/stores/stats'
 import { StatsCardSkeleton } from '@/components/skeletons'
+import { CollectionBarChart, ChunkDistributionChart } from '@/components/charts'
 
 const router = useRouter()
 const statsStore = useStatsStore()
 
 const stats = computed(() => statsStore.visibilityStats)
+const collections = computed(() => statsStore.stats?.collections ?? [])
 const loading = computed(() => statsStore.loading)
 const hasData = computed(() => stats.value !== null)
+const hasCollections = computed(() => collections.value.length > 0)
 
 onMounted(() => {
   statsStore.fetchStats()
@@ -125,6 +128,34 @@ function navigateTo(path: string) {
         >
           Run Ingestion
         </v-btn>
+      </v-col>
+    </v-row>
+
+    <!-- Analytics Charts -->
+    <h2 class="text-h5 mt-8 mb-4">Analytics</h2>
+    <v-row>
+      <!-- Collection Statistics Bar Chart -->
+      <v-col cols="12" md="8">
+        <v-card class="pa-4">
+          <h3 class="text-subtitle-1 font-weight-medium mb-4">Documents & Chunks by Collection</h3>
+          <v-skeleton-loader v-if="loading && !hasCollections" type="image" height="300" />
+          <CollectionBarChart v-else-if="hasCollections" :collections="collections" />
+          <div v-else class="text-center text-grey py-8">
+            No collection data available
+          </div>
+        </v-card>
+      </v-col>
+
+      <!-- Chunk Distribution Doughnut Chart -->
+      <v-col cols="12" md="4">
+        <v-card class="pa-4">
+          <h3 class="text-subtitle-1 font-weight-medium mb-4">Chunk Distribution</h3>
+          <v-skeleton-loader v-if="loading && !hasCollections" type="image" height="250" />
+          <ChunkDistributionChart v-else-if="hasCollections" :collections="collections" />
+          <div v-else class="text-center text-grey py-8">
+            No chunk data available
+          </div>
+        </v-card>
       </v-col>
     </v-row>
 
