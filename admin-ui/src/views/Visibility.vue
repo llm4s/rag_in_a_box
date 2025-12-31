@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import * as visibilityApi from '@/api/visibility'
 import type { VisibilityStats, Chunk, CollectionStats } from '@/types/api'
 import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import { StatsCardSkeleton, ListSkeleton } from '@/components/skeletons'
 
 const stats = ref<VisibilityStats | null>(null)
 const collections = ref<CollectionStats[]>([])
 const chunks = ref<Chunk[]>([])
 const loading = ref(false)
 const error = ref<AppError | null>(null)
+
+const isInitialLoad = computed(() => loading.value && stats.value === null)
 const page = ref(1)
 const pageSize = ref(20)
 const totalChunks = ref(0)
@@ -50,8 +53,6 @@ function onPageChange(newPage: number) {
   <div>
     <h1 class="text-h4 mb-6">System Visibility</h1>
 
-    <v-progress-linear v-if="loading" indeterminate class="mb-4"></v-progress-linear>
-
     <ErrorAlert
       :error="error"
       :on-retry="fetchData"
@@ -59,8 +60,11 @@ function onPageChange(newPage: number) {
       @dismiss="error = null"
     />
 
+    <!-- Stats Overview - Skeleton -->
+    <StatsCardSkeleton v-if="isInitialLoad" :count="4" />
+
     <!-- Stats Overview -->
-    <v-row v-if="stats">
+    <v-row v-else-if="stats">
       <v-col cols="6" sm="3">
         <v-card class="pa-4 text-center">
           <div class="text-h4">{{ stats.documentCount }}</div>
@@ -89,7 +93,8 @@ function onPageChange(newPage: number) {
 
     <!-- Collections -->
     <h2 class="text-h5 mt-8 mb-4">Collections</h2>
-    <v-card>
+    <ListSkeleton v-if="isInitialLoad" :items="3" show-avatar />
+    <v-card v-else>
       <v-list v-if="collections?.length">
         <v-list-item v-for="col in collections" :key="col.name">
           <template v-slot:prepend>
@@ -108,7 +113,8 @@ function onPageChange(newPage: number) {
 
     <!-- Chunk Browser -->
     <h2 class="text-h5 mt-8 mb-4">Chunk Browser</h2>
-    <v-card>
+    <ListSkeleton v-if="isInitialLoad" :items="5" />
+    <v-card v-else>
       <v-expansion-panels v-if="chunks?.length">
         <v-expansion-panel v-for="chunk in chunks" :key="chunk.id">
           <v-expansion-panel-title>

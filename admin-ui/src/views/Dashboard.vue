@@ -2,12 +2,14 @@
 import { onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStatsStore } from '@/stores/stats'
+import { StatsCardSkeleton } from '@/components/skeletons'
 
 const router = useRouter()
 const statsStore = useStatsStore()
 
 const stats = computed(() => statsStore.visibilityStats)
 const loading = computed(() => statsStore.loading)
+const hasData = computed(() => stats.value !== null)
 
 onMounted(() => {
   statsStore.fetchStats()
@@ -23,14 +25,17 @@ function navigateTo(path: string) {
   <div>
     <h1 class="text-h4 mb-6">Dashboard</h1>
 
-    <!-- Stats Cards -->
-    <v-row>
+    <!-- Stats Cards - Skeleton -->
+    <StatsCardSkeleton v-if="loading && !hasData" :count="4" />
+
+    <!-- Stats Cards - Content -->
+    <v-row v-else>
       <v-col cols="12" sm="6" md="3">
         <v-card class="pa-4" color="primary" variant="tonal" @click="navigateTo('/documents')">
           <div class="d-flex align-center">
             <v-icon size="48" class="mr-4">mdi-file-document-multiple</v-icon>
             <div>
-              <div class="text-h4">{{ stats?.documentCount ?? '...' }}</div>
+              <div class="text-h4">{{ stats?.documentCount ?? 0 }}</div>
               <div class="text-subtitle-1">Documents</div>
             </div>
           </div>
@@ -42,7 +47,7 @@ function navigateTo(path: string) {
           <div class="d-flex align-center">
             <v-icon size="48" class="mr-4">mdi-puzzle</v-icon>
             <div>
-              <div class="text-h4">{{ stats?.chunkCount ?? '...' }}</div>
+              <div class="text-h4">{{ stats?.chunkCount ?? 0 }}</div>
               <div class="text-subtitle-1">Chunks</div>
             </div>
           </div>
@@ -54,7 +59,7 @@ function navigateTo(path: string) {
           <div class="d-flex align-center">
             <v-icon size="48" class="mr-4">mdi-folder-multiple</v-icon>
             <div>
-              <div class="text-h4">{{ stats?.collectionCount ?? '...' }}</div>
+              <div class="text-h4">{{ stats?.collectionCount ?? 0 }}</div>
               <div class="text-subtitle-1">Collections</div>
             </div>
           </div>
@@ -66,7 +71,7 @@ function navigateTo(path: string) {
           <div class="d-flex align-center">
             <v-icon size="48" class="mr-4">mdi-chart-bar</v-icon>
             <div>
-              <div class="text-h4">{{ stats?.avgChunksPerDocument?.toFixed(1) ?? '...' }}</div>
+              <div class="text-h4">{{ stats?.avgChunksPerDocument?.toFixed(1) ?? '0' }}</div>
               <div class="text-subtitle-1">Avg Chunks/Doc</div>
             </div>
           </div>
@@ -124,9 +129,23 @@ function navigateTo(path: string) {
     </v-row>
 
     <!-- Chunk Size Distribution -->
-    <div v-if="stats?.chunkSizeDistribution" class="mt-8">
+    <div class="mt-8">
       <h2 class="text-h5 mb-4">Chunk Size Distribution</h2>
-      <v-card class="pa-4">
+
+      <!-- Skeleton for distribution -->
+      <v-card v-if="loading && !hasData" class="pa-4">
+        <v-row>
+          <v-col v-for="i in 4" :key="i" cols="6" sm="3">
+            <div class="text-center">
+              <v-skeleton-loader type="heading" class="mx-auto mb-1" width="60px" />
+              <v-skeleton-loader type="text" class="mx-auto" width="80px" />
+            </div>
+          </v-col>
+        </v-row>
+      </v-card>
+
+      <!-- Content -->
+      <v-card v-else-if="stats?.chunkSizeDistribution" class="pa-4">
         <v-row>
           <v-col cols="6" sm="3">
             <div class="text-center">
@@ -154,11 +173,11 @@ function navigateTo(path: string) {
           </v-col>
         </v-row>
       </v-card>
-    </div>
 
-    <!-- Loading Overlay -->
-    <v-overlay :model-value="loading" class="align-center justify-center">
-      <v-progress-circular indeterminate size="64"></v-progress-circular>
-    </v-overlay>
+      <!-- Empty state -->
+      <v-card v-else class="pa-4 text-center text-grey">
+        No chunk data available yet
+      </v-card>
+    </div>
   </div>
 </template>

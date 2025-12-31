@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '@/stores/documents'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import { TableSkeleton } from '@/components/skeletons'
 
 const router = useRouter()
 const documentsStore = useDocumentsStore()
+
+const isInitialLoad = computed(() =>
+  documentsStore.loading && documentsStore.documents.length === 0
+)
 
 const search = ref('')
 const collection = ref('')
@@ -94,8 +99,11 @@ function onPageChange(page: number) {
       </v-row>
     </v-card>
 
+    <!-- Documents Table - Skeleton -->
+    <TableSkeleton v-if="isInitialLoad" :rows="5" :columns="5" />
+
     <!-- Documents Table -->
-    <v-card>
+    <v-card v-else>
       <v-data-table
         :headers="headers"
         :items="documentsStore.documents"
