@@ -37,6 +37,16 @@ node_modules/
 admin-ui/node_modules/
 admin-ui/dist/
 
+# TypeScript build info
+*.tsbuildinfo
+
+# Vite generated JS
+admin-ui/vite.config.js
+
+# Playwright test reports
+admin-ui/playwright-report/
+admin-ui/test-results/
+
 # Build artifacts
 *.jar
 *.war
