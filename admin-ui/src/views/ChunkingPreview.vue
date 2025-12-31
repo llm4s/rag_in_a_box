@@ -2,12 +2,15 @@
 import { ref } from 'vue'
 import * as chunkingApi from '@/api/chunking'
 import type { ChunkPreview, ChunkingStrategy, ChunkingCompareResult } from '@/types/api'
+import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 // Shared state
 const text = ref('')
 const chunkSize = ref(1000)
 const chunkOverlap = ref(200)
 const loading = ref(false)
+const error = ref<AppError | null>(null)
 const strategies = ref<ChunkingStrategy[]>([])
 const activeTab = ref('preview')
 
@@ -26,7 +29,11 @@ async function loadStrategies() {
       strategy.value = strategies.value[0].name
     }
   } catch (e) {
-    console.error('Failed to load strategies', e)
+    error.value = isAppError(e) ? e : {
+      code: 'LOAD_STRATEGIES_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   }
 }
 
@@ -36,6 +43,7 @@ async function runPreview() {
   if (!text.value.trim()) return
 
   loading.value = true
+  error.value = null
   try {
     preview.value = await chunkingApi.previewChunking({
       text: text.value,
@@ -44,7 +52,11 @@ async function runPreview() {
       chunkOverlap: chunkOverlap.value
     })
   } catch (e) {
-    console.error('Preview failed', e)
+    error.value = isAppError(e) ? e : {
+      code: 'PREVIEW_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     loading.value = false
   }
@@ -54,6 +66,7 @@ async function runComparison() {
   if (!text.value.trim() || selectedStrategies.value.length === 0) return
 
   loading.value = true
+  error.value = null
   try {
     comparison.value = await chunkingApi.compareStrategies({
       text: text.value,
@@ -62,7 +75,11 @@ async function runComparison() {
       chunkOverlap: chunkOverlap.value
     })
   } catch (e) {
-    console.error('Comparison failed', e)
+    error.value = isAppError(e) ? e : {
+      code: 'COMPARISON_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     loading.value = false
   }
@@ -95,6 +112,13 @@ function getWarningColor(level: string): 'info' | 'warning' | 'error' | 'success
 <template>
   <div>
     <h1 class="text-h4 mb-6">Chunking Preview</h1>
+
+    <ErrorAlert
+      :error="error"
+      :on-retry="activeTab === 'preview' ? runPreview : runComparison"
+      dismissible
+      @dismiss="error = null"
+    />
 
     <v-tabs v-model="activeTab" class="mb-4">
       <v-tab value="preview">Preview</v-tab>

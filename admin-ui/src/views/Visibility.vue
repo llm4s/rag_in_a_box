@@ -2,25 +2,37 @@
 import { ref, onMounted } from 'vue'
 import * as visibilityApi from '@/api/visibility'
 import type { VisibilityStats, Chunk, CollectionStats } from '@/types/api'
+import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const stats = ref<VisibilityStats | null>(null)
 const collections = ref<CollectionStats[]>([])
 const chunks = ref<Chunk[]>([])
 const loading = ref(false)
+const error = ref<AppError | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 const totalChunks = ref(0)
 
-onMounted(async () => {
+async function fetchData() {
   loading.value = true
+  error.value = null
   try {
     stats.value = await visibilityApi.getVisibilityStats()
     collections.value = await visibilityApi.getCollections()
     await loadChunks()
+  } catch (e) {
+    error.value = isAppError(e) ? e : {
+      code: 'FETCH_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(fetchData)
 
 async function loadChunks() {
   const result = await visibilityApi.getAllChunks({ page: page.value, pageSize: pageSize.value })
@@ -39,6 +51,13 @@ function onPageChange(newPage: number) {
     <h1 class="text-h4 mb-6">System Visibility</h1>
 
     <v-progress-linear v-if="loading" indeterminate class="mb-4"></v-progress-linear>
+
+    <ErrorAlert
+      :error="error"
+      :on-retry="fetchData"
+      dismissible
+      @dismiss="error = null"
+    />
 
     <!-- Stats Overview -->
     <v-row v-if="stats">

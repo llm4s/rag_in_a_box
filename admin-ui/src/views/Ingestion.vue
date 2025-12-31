@@ -2,12 +2,17 @@
 import { ref, onMounted } from 'vue'
 import * as ingestionApi from '@/api/ingestion'
 import type { IngestionStatus, IngestionSource } from '@/types/api'
+import { useNotification } from '@/composables/useNotification'
+import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
+import ErrorAlert from '@/components/ErrorAlert.vue'
+
+const notification = useNotification()
 
 const status = ref<IngestionStatus | null>(null)
 const sources = ref<IngestionSource[]>([])
 const loading = ref(false)
 const running = ref(false)
-const message = ref<{ type: 'success' | 'error'; text: string } | null>(null)
+const error = ref<AppError | null>(null)
 
 // Manual ingestion
 const urlInput = ref('')
@@ -25,13 +30,17 @@ onMounted(async () => {
 
 async function runFullIngestion() {
   running.value = true
-  message.value = null
+  error.value = null
   try {
     const result = await ingestionApi.runIngestion()
-    message.value = { type: 'success', text: result.message }
+    notification.success(result.message)
     status.value = await ingestionApi.getStatus()
   } catch (e) {
-    message.value = { type: 'error', text: e instanceof Error ? e.message : 'Ingestion failed' }
+    error.value = isAppError(e) ? e : {
+      code: 'INGESTION_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     running.value = false
   }
@@ -41,16 +50,20 @@ async function ingestUrl() {
   if (!urlInput.value.trim()) return
 
   running.value = true
-  message.value = null
+  error.value = null
   try {
     const result = await ingestionApi.ingestUrl(urlInput.value, {
       collection: urlCollection.value || undefined
     })
-    message.value = { type: 'success', text: `Document created: ${result.documentId}` }
+    notification.success(`Document created: ${result.documentId}`)
     urlInput.value = ''
     urlCollection.value = ''
   } catch (e) {
-    message.value = { type: 'error', text: e instanceof Error ? e.message : 'URL ingestion failed' }
+    error.value = isAppError(e) ? e : {
+      code: 'URL_INGESTION_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     running.value = false
   }
@@ -63,9 +76,11 @@ async function ingestUrl() {
 
     <v-progress-linear v-if="loading" indeterminate class="mb-4"></v-progress-linear>
 
-    <v-alert v-if="message" :type="message.type" class="mb-4" closable @click:close="message = null">
-      {{ message.text }}
-    </v-alert>
+    <ErrorAlert
+      :error="error"
+      dismissible
+      @dismiss="error = null"
+    />
 
     <!-- Status Card -->
     <v-card class="mb-4">

@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useConfigStore } from '@/stores/config'
+import { useNotification } from '@/composables/useNotification'
+import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const configStore = useConfigStore()
+const notification = useNotification()
 
 const editing = ref(false)
 const formData = ref<Record<string, any>>({})
 const saving = ref(false)
-const saveError = ref<string | null>(null)
-const saveSuccess = ref(false)
+const saveError = ref<AppError | null>(null)
 
 const config = computed(() => configStore.runtimeConfig)
 
@@ -34,11 +37,14 @@ async function saveConfig() {
 
   try {
     await configStore.updateRuntimeConfig(formData.value)
-    saveSuccess.value = true
+    notification.success('Configuration saved successfully!')
     editing.value = false
-    setTimeout(() => { saveSuccess.value = false }, 3000)
   } catch (e) {
-    saveError.value = e instanceof Error ? e.message : 'Failed to save configuration'
+    saveError.value = isAppError(e) ? e : {
+      code: 'SAVE_ERROR',
+      message: getErrorMessage(e),
+      retryable: true
+    }
   } finally {
     saving.value = false
   }
@@ -70,13 +76,12 @@ function getTypeColor(type: string): string {
       </v-btn>
     </div>
 
-    <v-alert v-if="saveSuccess" type="success" class="mb-4" closable>
-      Configuration saved successfully!
-    </v-alert>
-
-    <v-alert v-if="saveError" type="error" class="mb-4" closable @click:close="saveError = null">
-      {{ saveError }}
-    </v-alert>
+    <ErrorAlert
+      :error="saveError"
+      :on-retry="saveConfig"
+      dismissible
+      @dismiss="saveError = null"
+    />
 
     <v-progress-linear v-if="configStore.loading" indeterminate class="mb-4"></v-progress-linear>
 
