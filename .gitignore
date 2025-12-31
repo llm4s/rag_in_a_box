@@ -32,6 +32,11 @@ data/
 .DS_Store
 Thumbs.db
 
+# Node.js/npm
+node_modules/
+admin-ui/node_modules/
+admin-ui/dist/
+
 # Build artifacts
 *.jar
 *.war

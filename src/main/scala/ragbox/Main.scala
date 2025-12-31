@@ -74,7 +74,8 @@ object Main extends IOApp {
         "/" -> VisibilityRoutes.routes(ragService),
         "/" -> ChunkingRoutes.routes(chunkingService),
         "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
-        "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager)
+        "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
+        "/" -> StaticRoutes.routes
       )
       metricsRoute = if (config.metrics.enabled) Seq("/" -> MetricsRoutes.routes(ragService)) else Seq.empty
       allRoutes = Router((baseRoutes ++ metricsRoute)*)
@@ -124,6 +125,8 @@ object Main extends IOApp {
         .evalTap(_ => IO(println("  GET  /api/v1/stats            - Get statistics")))
         .evalTap(_ => IO(println("  GET  /health                  - Health check")))
         .evalTap(_ => IO(println("  GET  /health/ready            - Readiness check")))
+        .evalTap(_ => IO(println("\nAdmin UI:")))
+        .evalTap(_ => IO(println("  GET  /admin                   - Admin Dashboard")))
         .evalTap(_ => runOnStartupIngestion(config, ingestionService))
         .evalTap(_ => startScheduler(scheduler, config, supervisor))
         .evalTap(_ => IO(println("\nPress Ctrl+C to stop")))

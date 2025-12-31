@@ -1,10 +1,6 @@
 import sbt._
 
-// Reference local llm4s checkout (not yet released as JAR)
-lazy val llm4s = ProjectRef(file("../llm4s"), "core")
-
 lazy val root = (project in file("."))
-  .dependsOn(llm4s)
   .settings(
     name := "rag-in-a-box",
     organization := "org.llm4s",
@@ -21,6 +17,9 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
+      // LLM4s - RAG framework
+      "org.llm4s" %% "core" % "0.2.5",
+
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
       "org.http4s" %% "http4s-ember-client" % "0.23.30",
@@ -55,5 +54,20 @@ lazy val root = (project in file("."))
       case x if x.endsWith(".proto") => MergeStrategy.first
       case x if x.contains("io.netty.versions.properties") => MergeStrategy.first
       case x => MergeStrategy.first
-    }
+    },
+
+    // Copy admin-ui dist to resources during build
+    Compile / resourceGenerators += Def.task {
+      val adminUiDist = baseDirectory.value / "admin-ui" / "dist"
+      val targetDir = (Compile / resourceManaged).value / "public" / "admin"
+      if (adminUiDist.exists()) {
+        IO.copyDirectory(adminUiDist, targetDir)
+        println(s"[info] Copied admin-ui from $adminUiDist to $targetDir")
+        // Return all copied files for proper sbt caching
+        (targetDir ** "*").get.filter(_.isFile).toSeq
+      } else {
+        println(s"[warn] Admin UI dist not found at $adminUiDist - skipping copy")
+        Seq.empty[File]
+      }
+    }.taskValue
   )

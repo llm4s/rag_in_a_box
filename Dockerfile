@@ -1,7 +1,21 @@
 # RAG in a Box - Docker build
+# Multi-stage build: Admin UI + Scala Backend
 
-# Stage 1: Build the application
-FROM eclipse-temurin:17-jdk-jammy AS builder
+# Stage 1: Build Admin UI
+FROM node:20-alpine AS admin-builder
+
+WORKDIR /admin-ui
+
+# Copy package files and install dependencies
+COPY admin-ui/package*.json ./
+RUN npm ci
+
+# Copy source and build
+COPY admin-ui/ ./
+RUN npm run build
+
+# Stage 2: Build Scala Backend
+FROM eclipse-temurin:21-jdk-jammy AS builder
 
 WORKDIR /app
 
@@ -11,10 +25,6 @@ RUN apt-get update && apt-get install -y curl gnupg && \
     curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | apt-key add && \
     apt-get update && apt-get install -y sbt && \
     rm -rf /var/lib/apt/lists/*
-
-# Copy llm4s dependency (for local build)
-# Note: In production, this would be a published artifact
-COPY ../llm4s /llm4s
 
 # Copy project files
 COPY project /app/project
@@ -26,13 +36,19 @@ RUN sbt update
 # Copy source code
 COPY src /app/src
 
-# Build the fat JAR
+# Copy built admin-ui from first stage (SBT will bundle it into JAR)
+COPY --from=admin-builder /admin-ui/dist /app/admin-ui/dist
+
+# Build the fat JAR (includes admin-ui via resourceGenerators)
 RUN sbt assembly
 
-# Stage 2: Runtime image
-FROM eclipse-temurin:17-jre-jammy
+# Stage 3: Runtime image
+FROM eclipse-temurin:21-jre-jammy
 
 WORKDIR /app
+
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
 RUN groupadd -r ragbox && useradd -r -g ragbox ragbox

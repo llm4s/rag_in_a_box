@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+admin-ui/node_modules/
+
+# Build outputs (will be built in Docker)
+target/
+admin-ui/dist/
+project/target/
+project/project/
+
+# IDE and editor
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.metals/
+.bloop/
+.bsp/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Logs and temp files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Environment files (secrets)
+.env
+.env.*
+*.env
+
+# Test data
+data/
+test-data/
+
+# Coverage and reports
+coverage/
+.nyc_output/
+htmlcov/
+
+# Cache
+.cache/
+.npm/
+.sbt/
