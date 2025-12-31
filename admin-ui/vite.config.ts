@@ -1,12 +1,60 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vuetify from 'vite-plugin-vuetify'
+import { VitePWA } from 'vite-plugin-pwa'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [
     vue(),
     vuetify({ autoImport: true }),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.svg', 'robots.txt'],
+      manifest: {
+        name: 'RAG in a Box Admin',
+        short_name: 'RAG Admin',
+        description: 'Admin interface for RAG in a Box',
+        theme_color: '#1976D2',
+        background_color: '#ffffff',
+        display: 'standalone',
+        scope: '/admin/',
+        start_url: '/admin/',
+        icons: [
+          {
+            src: 'favicon.svg',
+            sizes: 'any',
+            type: 'image/svg+xml',
+            purpose: 'any'
+          },
+          {
+            src: 'favicon.svg',
+            sizes: 'any',
+            type: 'image/svg+xml',
+            purpose: 'maskable'
+          }
+        ]
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/.*\/api\/.*/i,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              expiration: {
+                maxEntries: 50,
+                maxAgeSeconds: 60 * 60 // 1 hour
+              },
+              cacheableResponse: {
+                statuses: [0, 200]
+              }
+            }
+          }
+        ]
+      }
+    }),
   ],
   resolve: {
     alias: {
@@ -36,7 +84,8 @@ export default defineConfig({
           // Split vendor chunks
           'vendor-vue': ['vue', 'vue-router', 'pinia'],
           'vendor-vuetify': ['vuetify'],
-          'vendor-axios': ['axios']
+          'vendor-axios': ['axios'],
+          'vendor-chartjs': ['chart.js', 'vue-chartjs']
         }
       }
     }
