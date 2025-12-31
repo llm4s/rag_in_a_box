@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useStatsStore } from '@/stores/stats'
+import { useTheme } from '@/composables/useTheme'
 import NotificationContainer from '@/components/NotificationContainer.vue'
 
 const statsStore = useStatsStore()
+const { isDark, toggleTheme } = useTheme()
 
 const drawer = ref(true)
-const darkMode = ref(false)
 const healthStatus = ref<'healthy' | 'unhealthy' | 'unknown'>('unknown')
 
 const navItems = [
@@ -41,7 +42,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <v-app :theme="darkMode ? 'dark' : 'light'">
+  <v-app>
     <!-- App Bar -->
     <v-app-bar color="primary" prominent>
       <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
@@ -67,8 +68,8 @@ onMounted(() => {
       </v-chip>
 
       <!-- Dark Mode Toggle -->
-      <v-btn icon @click="darkMode = !darkMode">
-        <v-icon>{{ darkMode ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
+      <v-btn icon @click="toggleTheme" :aria-label="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
+        <v-icon>{{ isDark ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
       </v-btn>
     </v-app-bar>
 
