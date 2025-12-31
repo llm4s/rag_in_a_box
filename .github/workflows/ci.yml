@@ -55,7 +55,9 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '21'
-          cache: 'sbt'
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
 
       - name: Download admin-ui build
         uses: actions/download-artifact@v4
