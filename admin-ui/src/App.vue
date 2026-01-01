@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
+import { useWebSocketStore } from '@/stores/websocket'
 import { useTheme } from '@/composables/useTheme'
 import { useKeyboardShortcuts, setSearchDialogCallback } from '@/composables/useKeyboardShortcuts'
 import NotificationContainer from '@/components/NotificationContainer.vue'
@@ -9,6 +10,7 @@ import SearchDialog from '@/components/SearchDialog.vue'
 import KeyboardShortcutsDialog from '@/components/KeyboardShortcutsDialog.vue'
 
 const statsStore = useStatsStore()
+const wsStore = useWebSocketStore()
 const { isDark, toggleTheme } = useTheme()
 const { mobile } = useDisplay()
 const { shortcuts } = useKeyboardShortcuts()
@@ -71,8 +73,13 @@ async function checkHealth() {
 onMounted(() => {
   checkHealth()
   statsStore.fetchStats()
+  wsStore.connect()
   // Refresh health every 30 seconds
   setInterval(checkHealth, 30000)
+})
+
+onUnmounted(() => {
+  wsStore.disconnect()
 })
 </script>
 
