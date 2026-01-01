@@ -1,0 +1,795 @@
+openapi: 3.0.3
+info:
+  title: RAG in a Box API
+  description: REST API for RAG in a Box - a complete RAG (Retrieval-Augmented Generation) system
+  version: 0.1.0
+  contact:
+    name: RAG in a Box
+    url: https://github.com/llm4s/rag_in_a_box
+
+servers:
+  - url: /api/v1
+    description: API v1
+
+tags:
+  - name: Documents
+    description: Document management operations
+  - name: Query
+    description: Query and search operations
+  - name: Chunking
+    description: Text chunking preview and comparison
+  - name: Collections
+    description: Collection management and configuration
+  - name: Configuration
+    description: System configuration
+  - name: Ingestion
+    description: Batch ingestion operations
+  - name: Visibility
+    description: RAG visibility and debugging
+  - name: Health
+    description: Health check endpoints
+
+paths:
+  /documents:
+    get:
+      tags: [Documents]
+      summary: List all documents
+      responses:
+        '200':
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentListResponse'
+    post:
+      tags: [Documents]
+      summary: Upload a new document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentUploadRequest'
+      responses:
+        '201':
+          description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUploadResponse'
+    delete:
+      tags: [Documents]
+      summary: Clear all documents
+      responses:
+        '200':
+          description: All documents cleared
+
+  /documents/{id}:
+    get:
+      tags: [Documents]
+      summary: Get document details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Document details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          description: Document not found
+    put:
+      tags: [Documents]
+      summary: Upsert document (create or update)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentUpsertRequest'
+      responses:
+        '200':
+          description: Document updated or unchanged
+        '201':
+          description: Document created
+    delete:
+      tags: [Documents]
+      summary: Delete a document
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Document deleted
+
+  /collections:
+    get:
+      tags: [Collections]
+      summary: List all collections
+      responses:
+        '200':
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collections:
+                    type: array
+                    items:
+                      type: string
+
+  /collections/configs:
+    get:
+      tags: [Collections]
+      summary: Get all collection configurations
+      responses:
+        '200':
+          description: Collection configurations
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/CollectionConfig'
+
+  /collections/{collection}/config:
+    get:
+      tags: [Collections]
+      summary: Get collection configuration
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Collection configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionConfig'
+    put:
+      tags: [Collections]
+      summary: Update collection configuration
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionConfig'
+      responses:
+        '200':
+          description: Configuration updated
+    delete:
+      tags: [Collections]
+      summary: Delete collection configuration
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Configuration deleted
+
+  /query:
+    post:
+      tags: [Query]
+      summary: Query with RAG
+      description: Submit a query to get AI-generated response with retrieved context
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Query response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+
+  /search:
+    post:
+      tags: [Query]
+      summary: Search documents
+      description: Search for relevant document chunks without AI generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  /chunking/preview:
+    post:
+      tags: [Chunking]
+      summary: Preview chunking
+      description: Preview how text will be chunked with given strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChunkingPreviewRequest'
+      responses:
+        '200':
+          description: Chunking preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkingPreviewResponse'
+
+  /chunking/compare:
+    post:
+      tags: [Chunking]
+      summary: Compare chunking strategies
+      description: Compare multiple chunking strategies on the same text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChunkingCompareRequest'
+      responses:
+        '200':
+          description: Comparison results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkingCompareResponse'
+
+  /chunking/strategies:
+    get:
+      tags: [Chunking]
+      summary: List available chunking strategies
+      responses:
+        '200':
+          description: Available strategies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  strategies:
+                    type: array
+                    items:
+                      type: string
+
+  /chunking/presets:
+    get:
+      tags: [Chunking]
+      summary: Get chunking presets
+      responses:
+        '200':
+          description: Available presets
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /config:
+    get:
+      tags: [Configuration]
+      summary: Get system configuration
+      responses:
+        '200':
+          description: System configuration
+    put:
+      tags: [Configuration]
+      summary: Update system configuration
+      responses:
+        '200':
+          description: Configuration updated
+
+  /config/runtime:
+    get:
+      tags: [Configuration]
+      summary: Get runtime configuration
+      responses:
+        '200':
+          description: Runtime configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeConfig'
+    put:
+      tags: [Configuration]
+      summary: Update runtime configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeConfig'
+      responses:
+        '200':
+          description: Configuration updated
+
+  /config/providers:
+    get:
+      tags: [Configuration]
+      summary: Get available providers
+      responses:
+        '200':
+          description: Available providers
+
+  /stats:
+    get:
+      tags: [Documents]
+      summary: Get statistics
+      responses:
+        '200':
+          description: System statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stats'
+
+  /sync/status:
+    get:
+      tags: [Documents]
+      summary: Get sync status
+      responses:
+        '200':
+          description: Sync status
+
+  /sync:
+    post:
+      tags: [Documents]
+      summary: Complete sync and optionally prune
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncPruneRequest'
+      responses:
+        '200':
+          description: Sync completed
+
+  /sync/documents:
+    get:
+      tags: [Documents]
+      summary: List synced document IDs
+      responses:
+        '200':
+          description: Document IDs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentIds:
+                    type: array
+                    items:
+                      type: string
+
+  /ingest/directory:
+    post:
+      tags: [Ingestion]
+      summary: Ingest from directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DirectoryIngestionRequest'
+      responses:
+        '200':
+          description: Ingestion started
+
+  /ingest/url:
+    post:
+      tags: [Ingestion]
+      summary: Ingest from URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UrlIngestionRequest'
+      responses:
+        '200':
+          description: Ingestion started
+
+  /ingest/run:
+    post:
+      tags: [Ingestion]
+      summary: Run all ingestion sources
+      responses:
+        '200':
+          description: Ingestion started
+
+  /ingest/run/{source}:
+    post:
+      tags: [Ingestion]
+      summary: Run specific ingestion source
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ingestion started
+
+  /ingest/status:
+    get:
+      tags: [Ingestion]
+      summary: Get ingestion status
+      responses:
+        '200':
+          description: Ingestion status
+
+  /ingest/sources:
+    get:
+      tags: [Ingestion]
+      summary: List ingestion sources
+      responses:
+        '200':
+          description: Ingestion sources
+
+  /visibility/stats:
+    get:
+      tags: [Visibility]
+      summary: Get visibility statistics
+      responses:
+        '200':
+          description: Visibility stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisibilityStats'
+
+  /visibility/chunks:
+    get:
+      tags: [Visibility]
+      summary: Get all chunks
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+        - name: documentId
+          in: query
+          schema:
+            type: string
+        - name: collection
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chunks list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunksResponse'
+
+  /visibility/chunks/{docId}:
+    get:
+      tags: [Visibility]
+      summary: Get chunks for document
+      parameters:
+        - name: docId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Document chunks
+
+  /visibility/collections:
+    get:
+      tags: [Visibility]
+      summary: Get collection statistics
+      responses:
+        '200':
+          description: Collection stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CollectionStats'
+
+  /visibility/config:
+    get:
+      tags: [Visibility]
+      summary: Get visible configuration
+      responses:
+        '200':
+          description: Configuration visibility
+
+components:
+  schemas:
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        collection:
+          type: string
+        chunkCount:
+          type: integer
+        metadata:
+          type: object
+
+    DocumentUploadRequest:
+      type: object
+      required: [content, filename]
+      properties:
+        content:
+          type: string
+        filename:
+          type: string
+        collection:
+          type: string
+        metadata:
+          type: object
+
+    DocumentUploadResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        chunkCount:
+          type: integer
+
+    DocumentUpsertRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+        contentHash:
+          type: string
+        metadata:
+          type: object
+
+    DocumentListResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+        total:
+          type: integer
+
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        collection:
+          type: string
+        maxResults:
+          type: integer
+
+    QueryResponse:
+      type: object
+      properties:
+        response:
+          type: string
+        sources:
+          type: array
+          items:
+            type: object
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        collection:
+          type: string
+        limit:
+          type: integer
+
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+
+    ChunkingPreviewRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+        strategy:
+          type: string
+        targetSize:
+          type: integer
+        overlap:
+          type: integer
+
+    ChunkingPreviewResponse:
+      type: object
+      properties:
+        chunks:
+          type: array
+          items:
+            type: object
+        stats:
+          type: object
+
+    ChunkingCompareRequest:
+      type: object
+      required: [content, strategies]
+      properties:
+        content:
+          type: string
+        strategies:
+          type: array
+          items:
+            type: string
+        targetSize:
+          type: integer
+        overlap:
+          type: integer
+
+    ChunkingCompareResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+        recommendation:
+          type: object
+
+    CollectionConfig:
+      type: object
+      properties:
+        chunkingStrategy:
+          type: string
+        chunkSize:
+          type: integer
+        chunkOverlap:
+          type: integer
+
+    RuntimeConfig:
+      type: object
+      properties:
+        embeddingProvider:
+          type: string
+        embeddingModel:
+          type: string
+        llmProvider:
+          type: string
+        llmModel:
+          type: string
+
+    Stats:
+      type: object
+      properties:
+        documentCount:
+          type: integer
+        chunkCount:
+          type: integer
+
+    VisibilityStats:
+      type: object
+      properties:
+        documentCount:
+          type: integer
+        chunkCount:
+          type: integer
+        collectionCount:
+          type: integer
+        avgChunksPerDocument:
+          type: number
+        totalContentSize:
+          type: integer
+        chunkSizeDistribution:
+          type: object
+
+    CollectionStats:
+      type: object
+      properties:
+        name:
+          type: string
+        documentCount:
+          type: integer
+        chunkCount:
+          type: integer
+
+    ChunksResponse:
+      type: object
+      properties:
+        chunks:
+          type: array
+          items:
+            type: object
+        total:
+          type: integer
+
+    SyncPruneRequest:
+      type: object
+      properties:
+        keepDocumentIds:
+          type: array
+          items:
+            type: string
+
+    DirectoryIngestionRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        collection:
+          type: string
+        patterns:
+          type: array
+          items:
+            type: string
+
+    UrlIngestionRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+        collection:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: string

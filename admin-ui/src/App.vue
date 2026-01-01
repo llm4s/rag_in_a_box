@@ -55,6 +55,8 @@ const navItems = [
   { title: 'Chunking Preview', icon: 'mdi-scissors-cutting', to: '/chunking' },
   { title: 'Visibility', icon: 'mdi-eye', to: '/visibility' },
   { title: 'Ingestion', icon: 'mdi-database-import', to: '/ingestion' },
+  { divider: true },
+  { title: 'API Docs', icon: 'mdi-api', to: '/api-docs' },
 ]
 
 async function checkHealth() {

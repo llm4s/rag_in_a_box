@@ -89,7 +89,8 @@ export default defineConfig(({ mode }) => {
           'vendor-vue': ['vue', 'vue-router', 'pinia'],
           'vendor-vuetify': ['vuetify'],
           'vendor-axios': ['axios'],
-          'vendor-chartjs': ['chart.js', 'vue-chartjs']
+          'vendor-chartjs': ['chart.js', 'vue-chartjs'],
+          'vendor-swagger': ['swagger-ui-dist']
         }
       }
     }

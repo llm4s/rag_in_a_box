@@ -63,6 +63,12 @@ const router = createRouter({
       component: () => import('@/views/Ingestion.vue'),
       meta: { title: 'Ingestion' }
     },
+    {
+      path: '/api-docs',
+      name: 'api-docs',
+      component: () => import('@/views/ApiDocs.vue'),
+      meta: { title: 'API Documentation' }
+    },
   ],
 })
 
