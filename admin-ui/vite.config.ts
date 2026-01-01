@@ -4,11 +4,15 @@ import vuetify from 'vite-plugin-vuetify'
 import { VitePWA } from 'vite-plugin-pwa'
 import { fileURLToPath, URL } from 'node:url'
 
-export default defineConfig({
-  plugins: [
-    vue(),
-    vuetify({ autoImport: true }),
-    VitePWA({
+export default defineConfig(({ mode }) => {
+  // Disable PWA for Storybook builds
+  const isStorybook = process.env.STORYBOOK === 'true'
+
+  return {
+    plugins: [
+      vue(),
+      vuetify({ autoImport: true }),
+      !isStorybook && VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'robots.txt'],
       manifest: {
@@ -55,7 +59,7 @@ export default defineConfig({
         ]
       }
     }),
-  ],
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
@@ -90,4 +94,4 @@ export default defineConfig({
       }
     }
   }
-})
+}})

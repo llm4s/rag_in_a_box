@@ -50,3 +50,6 @@ admin-ui/test-results/
 # Build artifacts
 *.jar
 *.war
+
+*storybook.log
+storybook-static
