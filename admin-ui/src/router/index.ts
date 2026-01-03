@@ -64,6 +64,12 @@ const router = createRouter({
       meta: { title: 'Ingestion' }
     },
     {
+      path: '/analytics',
+      name: 'analytics',
+      component: () => import('@/views/Analytics.vue'),
+      meta: { title: 'Query Analytics' }
+    },
+    {
       path: '/api-docs',
       name: 'api-docs',
       component: () => import('@/views/ApiDocs.vue'),

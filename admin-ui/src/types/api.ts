@@ -205,6 +205,65 @@ export interface HealthResponse {
   checks: Record<string, { status: string; message?: string }>
 }
 
+// Analytics types
+export interface QueryLogEntry {
+  id: string
+  queryText: string
+  collectionPattern?: string
+  userId?: string
+  embeddingLatencyMs?: number
+  searchLatencyMs?: number
+  llmLatencyMs?: number
+  totalLatencyMs: number
+  chunksRetrieved: number
+  chunksUsed: number
+  answerTokens?: number
+  userRating?: number
+  createdAt: string
+}
+
+export interface QueryLogListResponse {
+  queries: QueryLogEntry[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface CollectionQueryStats {
+  collection: string
+  queryCount: number
+  averageLatencyMs: number
+  averageRating?: number
+}
+
+export interface QueryAnalyticsSummary {
+  totalQueries: number
+  averageLatencyMs: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  p99LatencyMs: number
+  averageChunksRetrieved: number
+  averageChunksUsed: number
+  averageRating?: number
+  ratedQueriesCount: number
+  queriesWithFeedback: number
+  topCollections: CollectionQueryStats[]
+  periodStart: string
+  periodEnd: string
+}
+
+export interface QueryFeedbackRequest {
+  queryId: string
+  rating: number
+  relevantChunks?: string[]
+  comment?: string
+}
+
+export interface QueryFeedbackResponse {
+  success: boolean
+  message: string
+}
+
 // API response wrapper
 export interface ApiResponse<T> {
   data?: T

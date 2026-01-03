@@ -50,6 +50,8 @@ const navItems = [
   { title: 'Documents', icon: 'mdi-file-document-multiple', to: '/documents' },
   { title: 'Upload', icon: 'mdi-upload', to: '/documents/upload' },
   { divider: true },
+  { title: 'Analytics', icon: 'mdi-chart-line', to: '/analytics' },
+  { divider: true },
   { title: 'Configuration', icon: 'mdi-cog', to: '/config' },
   { title: 'Runtime Config', icon: 'mdi-tune', to: '/config/runtime' },
   { title: 'Collections', icon: 'mdi-folder-cog', to: '/config/collections' },
