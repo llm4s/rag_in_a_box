@@ -136,6 +136,52 @@ Response:
 }
 ```
 
+## Batch Delete
+
+For deleting multiple specific documents at once:
+
+```bash
+# Dry run - preview what would be deleted
+curl -X DELETE "http://localhost:8080/api/v1/documents" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documentIds": ["doc-001", "doc-002", "doc-003"],
+    "dryRun": true
+  }'
+```
+
+Response:
+```json
+{
+  "message": "Dry run: would delete 3 documents",
+  "deletedCount": 3,
+  "deletedIds": ["doc-001", "doc-002", "doc-003"],
+  "failedIds": null,
+  "dryRun": true
+}
+```
+
+Execute the delete:
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/documents" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documentIds": ["doc-001", "doc-002", "doc-003"]
+  }'
+```
+
+Response:
+```json
+{
+  "message": "Deleted 3 documents",
+  "deletedCount": 3,
+  "deletedIds": ["doc-001", "doc-002", "doc-003"],
+  "failedIds": null,
+  "dryRun": false
+}
+```
+
 ## Incremental Sync
 
 For large document sets, use timestamp-based incremental sync:

@@ -325,18 +325,61 @@ object DocumentRoutes {
         response <- Ok(SyncCheckResponse(found = found, missing = missing).asJson)
       } yield response
 
-    // DELETE /api/v1/documents - Clear all documents
-    case DELETE -> Root / "api" / "v1" / "documents" =>
+    // DELETE /api/v1/documents - Batch delete documents or clear all
+    // With body: delete specific documents
+    // Without body: clear all documents
+    case req @ DELETE -> Root / "api" / "v1" / "documents" =>
       for {
-        result <- ragService.clearAll.attempt
-        response <- result match {
-          case Right(_) =>
-            Ok(Map("message" -> "All documents cleared").asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to clear documents",
-              Some(e.getMessage)
-            ).asJson)
+        bodyOpt <- req.attemptAs[BatchDeleteRequest].value
+        response <- bodyOpt match {
+          case Right(batchReq) =>
+            // Batch delete specific documents
+            val isDryRun = batchReq.dryRun.getOrElse(false)
+            if (isDryRun) {
+              // Dry run - check which documents exist
+              for {
+                entries <- ragService.getDocumentEntries(batchReq.documentIds)
+                existingIds = entries.map(_.documentId)
+                missingIds = batchReq.documentIds.filterNot(existingIds.contains)
+                resp <- Ok(BatchDeleteResponse(
+                  message = s"Dry run: would delete ${existingIds.size} documents",
+                  deletedCount = existingIds.size,
+                  deletedIds = Some(existingIds),
+                  failedIds = if (missingIds.nonEmpty) Some(missingIds) else None,
+                  dryRun = true
+                ).asJson)
+              } yield resp
+            } else {
+              // Actually delete the documents
+              for {
+                results <- batchReq.documentIds.toList.traverse { id =>
+                  ragService.deleteDocument(id).attempt.map(r => id -> r.isRight)
+                }
+                deleted = results.filter(_._2).map(_._1)
+                failed = results.filterNot(_._2).map(_._1)
+                resp <- Ok(BatchDeleteResponse(
+                  message = s"Deleted ${deleted.size} documents",
+                  deletedCount = deleted.size,
+                  deletedIds = Some(deleted),
+                  failedIds = if (failed.nonEmpty) Some(failed) else None,
+                  dryRun = false
+                ).asJson)
+              } yield resp
+            }
+          case Left(_) =>
+            // No body - clear all documents
+            for {
+              result <- ragService.clearAll.attempt
+              resp <- result match {
+                case Right(_) =>
+                  Ok(Map("message" -> "All documents cleared").asJson)
+                case Left(e) =>
+                  InternalServerError(ErrorResponse.internalError(
+                    "Failed to clear documents",
+                    Some(e.getMessage)
+                  ).asJson)
+              }
+            } yield resp
         }
       } yield response
 

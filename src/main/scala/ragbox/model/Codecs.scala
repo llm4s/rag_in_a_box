@@ -68,6 +68,12 @@ object Codecs {
   implicit val syncCheckResponseEncoder: Encoder[SyncCheckResponse] = deriveEncoder
   implicit val syncCheckResponseDecoder: Decoder[SyncCheckResponse] = deriveDecoder
 
+  implicit val batchDeleteRequestDecoder: Decoder[BatchDeleteRequest] = deriveDecoder
+  implicit val batchDeleteRequestEncoder: Encoder[BatchDeleteRequest] = deriveEncoder
+
+  implicit val batchDeleteResponseEncoder: Encoder[BatchDeleteResponse] = deriveEncoder
+  implicit val batchDeleteResponseDecoder: Decoder[BatchDeleteResponse] = deriveDecoder
+
   implicit val syncStatusResponseEncoder: Encoder[SyncStatusResponse] = deriveEncoder
   implicit val syncStatusResponseDecoder: Decoder[SyncStatusResponse] = deriveDecoder
 

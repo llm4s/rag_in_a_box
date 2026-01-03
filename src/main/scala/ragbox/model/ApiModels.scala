@@ -153,6 +153,28 @@ final case class SyncCheckResponse(
 )
 
 /**
+ * Request to delete multiple documents at once.
+ *
+ * @param documentIds List of document IDs to delete
+ * @param dryRun If true, returns what would be deleted without actually deleting
+ */
+final case class BatchDeleteRequest(
+  documentIds: Seq[String],
+  dryRun: Option[Boolean] = None
+)
+
+/**
+ * Response from batch delete operation.
+ */
+final case class BatchDeleteResponse(
+  message: String,
+  deletedCount: Int,
+  deletedIds: Option[Seq[String]] = None,
+  failedIds: Option[Seq[String]] = None,
+  dryRun: Boolean = false
+)
+
+/**
  * Sync status response.
  */
 final case class SyncStatusResponse(

@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: RAG in a Box API
   description: REST API for RAG in a Box - a complete RAG (Retrieval-Augmented Generation) system
-  version: 0.1.0
+  version: 0.2.0
   contact:
     name: RAG in a Box
     url: https://github.com/llm4s/rag_in_a_box
@@ -12,10 +12,18 @@ servers:
     description: API v1
 
 tags:
+  - name: Auth
+    description: Authentication and user management
+  - name: Tokens
+    description: Access token management for external systems
   - name: Documents
     description: Document management operations
+  - name: Sync
+    description: Sync operations for external ingesters
   - name: Query
     description: Query and search operations
+  - name: Analytics
+    description: Query analytics and feedback
   - name: Chunking
     description: Text chunking preview and comparison
   - name: Collections
@@ -30,6 +38,220 @@ tags:
     description: Health check endpoints
 
 paths:
+  # ============================================================
+  # Authentication Endpoints
+  # ============================================================
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get JWT token
+      description: Authenticate with username and password to receive a JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user info
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/password:
+    put:
+      tags: [Auth]
+      summary: Change password
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          description: Password changed successfully
+        '400':
+          description: Invalid current password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users:
+    get:
+      tags: [Auth]
+      summary: List users (admin only)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '403':
+          description: Admin access required
+    post:
+      tags: [Auth]
+      summary: Create user (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        '400':
+          description: Username already exists
+        '403':
+          description: Admin access required
+
+  /users/{id}:
+    delete:
+      tags: [Auth]
+      summary: Delete user (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: User deleted
+        '404':
+          description: User not found
+        '403':
+          description: Admin access required
+
+  # ============================================================
+  # Access Token Endpoints
+  # ============================================================
+  /tokens:
+    get:
+      tags: [Tokens]
+      summary: List access tokens (admin only)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of access tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenListResponse'
+        '403':
+          description: Admin access required
+    post:
+      tags: [Tokens]
+      summary: Create access token (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '201':
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          description: Invalid scopes
+        '403':
+          description: Admin access required
+
+  /tokens/{id}:
+    get:
+      tags: [Tokens]
+      summary: Get token details (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Token details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenInfo'
+        '404':
+          description: Token not found
+        '403':
+          description: Admin access required
+    delete:
+      tags: [Tokens]
+      summary: Revoke token (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Token revoked
+        '404':
+          description: Token not found
+        '403':
+          description: Admin access required
+
+  # ============================================================
+  # Document Endpoints
+  # ============================================================
   /documents:
     get:
       tags: [Documents]
@@ -59,10 +281,22 @@ paths:
                 $ref: '#/components/schemas/DocumentUploadResponse'
     delete:
       tags: [Documents]
-      summary: Clear all documents
+      summary: Batch delete or clear all documents
+      description: |
+        With request body: Delete specific documents by ID.
+        Without request body: Clear all documents.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
       responses:
         '200':
-          description: All documents cleared
+          description: Documents deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteResponse'
 
   /documents/{id}:
     get:
@@ -101,8 +335,16 @@ paths:
       responses:
         '200':
           description: Document updated or unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUpsertResponse'
         '201':
           description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUpsertResponse'
     delete:
       tags: [Documents]
       summary: Delete a document
@@ -116,6 +358,254 @@ paths:
         '204':
           description: Document deleted
 
+  # ============================================================
+  # Sync Endpoints
+  # ============================================================
+  /sync/status:
+    get:
+      tags: [Sync]
+      summary: Get sync status
+      responses:
+        '200':
+          description: Sync status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncStatusResponse'
+
+  /sync:
+    post:
+      tags: [Sync]
+      summary: Complete sync and optionally prune orphaned documents
+      description: |
+        Marks sync complete. If keepDocumentIds is provided, deletes all
+        documents not in the list. Use dryRun to preview deletions.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncPruneRequest'
+      responses:
+        '200':
+          description: Sync completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncPruneResponse'
+
+  /sync/documents:
+    get:
+      tags: [Sync]
+      summary: List synced document states
+      description: |
+        Returns document states for sync operations. Use query parameters
+        to include additional fields or filter by modification time.
+      parameters:
+        - name: include
+          in: query
+          description: Comma-separated fields to include (hash, updatedAt)
+          schema:
+            type: string
+            example: "hash,updatedAt"
+        - name: since
+          in: query
+          description: Only return documents modified since this timestamp (ISO-8601)
+          schema:
+            type: string
+            format: date-time
+            example: "2024-01-01T00:00:00Z"
+      responses:
+        '200':
+          description: Document states
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentSyncListResponse'
+
+  /sync/documents/{id}:
+    get:
+      tags: [Sync]
+      summary: Get single document state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Document state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentSyncState'
+        '404':
+          description: Document not found
+
+  /sync/check:
+    post:
+      tags: [Sync]
+      summary: Batch check document states
+      description: Efficiently check which documents exist and get their hashes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncCheckRequest'
+      responses:
+        '200':
+          description: Check results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncCheckResponse'
+
+  # ============================================================
+  # Analytics Endpoints
+  # ============================================================
+  /analytics/queries:
+    get:
+      tags: [Analytics]
+      summary: List query logs
+      parameters:
+        - name: from
+          in: query
+          description: Start time (ISO-8601)
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End time (ISO-8601)
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Query logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryLogListResponse'
+
+  /analytics/queries/summary:
+    get:
+      tags: [Analytics]
+      summary: Get query analytics summary
+      parameters:
+        - name: from
+          in: query
+          description: Start time (ISO-8601)
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End time (ISO-8601)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryAnalyticsSummary'
+
+  /analytics/queries/{id}:
+    get:
+      tags: [Analytics]
+      summary: Get single query log entry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Query log entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryLogEntry'
+        '404':
+          description: Query not found
+
+  /feedback:
+    post:
+      tags: [Analytics]
+      summary: Submit query feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryFeedbackRequest'
+      responses:
+        '200':
+          description: Feedback recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFeedbackResponse'
+
+  # ============================================================
+  # Query Endpoints
+  # ============================================================
+  /query:
+    post:
+      tags: [Query]
+      summary: Query with RAG
+      description: Submit a query to get AI-generated response with retrieved context
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Query response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+
+  /search:
+    post:
+      tags: [Query]
+      summary: Search documents
+      description: Search for relevant document chunks without AI generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  # ============================================================
+  # Collection Endpoints
+  # ============================================================
   /collections:
     get:
       tags: [Collections]
@@ -195,44 +685,9 @@ paths:
         '204':
           description: Configuration deleted
 
-  /query:
-    post:
-      tags: [Query]
-      summary: Query with RAG
-      description: Submit a query to get AI-generated response with retrieved context
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/QueryRequest'
-      responses:
-        '200':
-          description: Query response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueryResponse'
-
-  /search:
-    post:
-      tags: [Query]
-      summary: Search documents
-      description: Search for relevant document chunks without AI generation
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchRequest'
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResponse'
-
+  # ============================================================
+  # Chunking Endpoints
+  # ============================================================
   /chunking/preview:
     post:
       tags: [Chunking]
@@ -300,6 +755,9 @@ paths:
               schema:
                 type: object
 
+  # ============================================================
+  # Configuration Endpoints
+  # ============================================================
   /config:
     get:
       tags: [Configuration]
@@ -358,44 +816,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Stats'
 
-  /sync/status:
-    get:
-      tags: [Documents]
-      summary: Get sync status
-      responses:
-        '200':
-          description: Sync status
-
-  /sync:
-    post:
-      tags: [Documents]
-      summary: Complete sync and optionally prune
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SyncPruneRequest'
-      responses:
-        '200':
-          description: Sync completed
-
-  /sync/documents:
-    get:
-      tags: [Documents]
-      summary: List synced document IDs
-      responses:
-        '200':
-          description: Document IDs
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  documentIds:
-                    type: array
-                    items:
-                      type: string
-
+  # ============================================================
+  # Ingestion Endpoints
+  # ============================================================
   /ingest/directory:
     post:
       tags: [Ingestion]
@@ -462,6 +885,9 @@ paths:
         '200':
           description: Ingestion sources
 
+  # ============================================================
+  # Visibility Endpoints
+  # ============================================================
   /visibility/stats:
     get:
       tags: [Visibility]
@@ -542,8 +968,200 @@ paths:
         '200':
           description: Configuration visibility
 
+  # ============================================================
+  # Health Endpoints
+  # ============================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      responses:
+        '200':
+          description: Service is ready
+        '503':
+          description: Service not ready
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      responses:
+        '200':
+          description: Service is alive
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from /auth/login or access token (rat_...)
+
   schemas:
+    # ============================================================
+    # Auth Schemas
+    # ============================================================
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT token
+        expiresIn:
+          type: integer
+          description: Token lifetime in seconds
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        createdAt:
+          type: string
+          format: date-time
+
+    UserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserInfo'
+
+    CreateUserRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+          default: user
+
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+
+    # ============================================================
+    # Token Schemas
+    # ============================================================
+    CreateTokenRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          description: Descriptive name for the token
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [documents:read, documents:write, sync:read, sync:write, query, admin]
+        collections:
+          type: array
+          items:
+            type: string
+          description: Optional collection restrictions
+        expiresAt:
+          type: string
+          format: date-time
+          description: Optional expiration timestamp
+
+    CreateTokenResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        token:
+          type: string
+          description: Full token value (only returned once)
+        scopes:
+          type: array
+          items:
+            type: string
+        collections:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    TokenInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tokenPrefix:
+          type: string
+          description: First 12 characters of token
+        scopes:
+          type: array
+          items:
+            type: string
+        collections:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    TokenListResponse:
+      type: object
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenInfo'
+        total:
+          type: integer
+
+    # ============================================================
+    # Document Schemas
+    # ============================================================
     Document:
       type: object
       properties:
@@ -570,14 +1188,21 @@ components:
           type: string
         metadata:
           type: object
+        readableBy:
+          type: array
+          items:
+            type: string
+          description: Principal IDs who can read this document
 
     DocumentUploadResponse:
       type: object
       properties:
-        id:
+        documentId:
           type: string
-        chunkCount:
+        chunks:
           type: integer
+        message:
+          type: string
 
     DocumentUpsertRequest:
       type: object
@@ -587,8 +1212,28 @@ components:
           type: string
         contentHash:
           type: string
+          description: Optional content hash for change detection
+        collection:
+          type: string
         metadata:
           type: object
+        readableBy:
+          type: array
+          items:
+            type: string
+
+    DocumentUpsertResponse:
+      type: object
+      properties:
+        documentId:
+          type: string
+        chunks:
+          type: integer
+        action:
+          type: string
+          enum: [created, updated, unchanged]
+        message:
+          type: string
 
     DocumentListResponse:
       type: object
@@ -600,26 +1245,251 @@ components:
         total:
           type: integer
 
+    BatchDeleteRequest:
+      type: object
+      required: [documentIds]
+      properties:
+        documentIds:
+          type: array
+          items:
+            type: string
+        dryRun:
+          type: boolean
+          default: false
+
+    BatchDeleteResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        deletedCount:
+          type: integer
+        deletedIds:
+          type: array
+          items:
+            type: string
+        failedIds:
+          type: array
+          items:
+            type: string
+        dryRun:
+          type: boolean
+
+    # ============================================================
+    # Sync Schemas
+    # ============================================================
+    SyncStatusResponse:
+      type: object
+      properties:
+        lastSyncTime:
+          type: string
+          format: date-time
+        documentCount:
+          type: integer
+        chunkCount:
+          type: integer
+        pendingDeletes:
+          type: integer
+
+    SyncPruneRequest:
+      type: object
+      properties:
+        keepDocumentIds:
+          type: array
+          items:
+            type: string
+          description: Documents to keep (all others deleted)
+        dryRun:
+          type: boolean
+          default: false
+          description: Preview deletions without executing
+
+    SyncPruneResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        prunedCount:
+          type: integer
+        prunedIds:
+          type: array
+          items:
+            type: string
+        dryRun:
+          type: boolean
+
+    DocumentSyncState:
+      type: object
+      properties:
+        id:
+          type: string
+        hash:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        collection:
+          type: string
+
+    DocumentSyncListResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentSyncState'
+        total:
+          type: integer
+
+    SyncCheckRequest:
+      type: object
+      required: [documentIds]
+      properties:
+        documentIds:
+          type: array
+          items:
+            type: string
+
+    SyncCheckResponse:
+      type: object
+      properties:
+        found:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentSyncState'
+        missing:
+          type: array
+          items:
+            type: string
+
+    # ============================================================
+    # Analytics Schemas
+    # ============================================================
+    QueryLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        queryText:
+          type: string
+        collectionPattern:
+          type: string
+        userId:
+          type: string
+        embeddingLatencyMs:
+          type: integer
+        searchLatencyMs:
+          type: integer
+        llmLatencyMs:
+          type: integer
+        totalLatencyMs:
+          type: integer
+        chunksRetrieved:
+          type: integer
+        chunksUsed:
+          type: integer
+        answerTokens:
+          type: integer
+        userRating:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    QueryLogListResponse:
+      type: object
+      properties:
+        queries:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueryLogEntry'
+        total:
+          type: integer
+
+    QueryAnalyticsSummary:
+      type: object
+      properties:
+        totalQueries:
+          type: integer
+        avgLatencyMs:
+          type: number
+        p50LatencyMs:
+          type: integer
+        p95LatencyMs:
+          type: integer
+        p99LatencyMs:
+          type: integer
+        avgChunksRetrieved:
+          type: number
+        avgUserRating:
+          type: number
+        collectionStats:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionQueryStats'
+
+    CollectionQueryStats:
+      type: object
+      properties:
+        collection:
+          type: string
+        queryCount:
+          type: integer
+        avgLatencyMs:
+          type: number
+
+    QueryFeedbackRequest:
+      type: object
+      required: [queryId, rating]
+      properties:
+        queryId:
+          type: string
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        relevantChunks:
+          type: array
+          items:
+            type: string
+        comment:
+          type: string
+
+    QueryFeedbackResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        queryId:
+          type: string
+
+    # ============================================================
+    # Query Schemas
+    # ============================================================
     QueryRequest:
       type: object
-      required: [query]
+      required: [question]
       properties:
-        query:
+        question:
           type: string
         collection:
           type: string
-        maxResults:
+        topK:
           type: integer
+        includeMetadata:
+          type: boolean
 
     QueryResponse:
       type: object
       properties:
-        response:
+        answer:
           type: string
-        sources:
+        contexts:
           type: array
           items:
             type: object
+        usage:
+          type: object
 
     SearchRequest:
       type: object
@@ -640,6 +1510,9 @@ components:
           items:
             type: object
 
+    # ============================================================
+    # Chunking Schemas
+    # ============================================================
     ChunkingPreviewRequest:
       type: object
       required: [content]
@@ -688,6 +1561,9 @@ components:
         recommendation:
           type: object
 
+    # ============================================================
+    # Configuration Schemas
+    # ============================================================
     CollectionConfig:
       type: object
       properties:
@@ -718,6 +1594,9 @@ components:
         chunkCount:
           type: integer
 
+    # ============================================================
+    # Visibility Schemas
+    # ============================================================
     VisibilityStats:
       type: object
       properties:
@@ -754,14 +1633,9 @@ components:
         total:
           type: integer
 
-    SyncPruneRequest:
-      type: object
-      properties:
-        keepDocumentIds:
-          type: array
-          items:
-            type: string
-
+    # ============================================================
+    # Ingestion Schemas
+    # ============================================================
     DirectoryIngestionRequest:
       type: object
       required: [path]
@@ -784,6 +1658,9 @@ components:
         collection:
           type: string
 
+    # ============================================================
+    # Error Schema
+    # ============================================================
     ErrorResponse:
       type: object
       properties:
