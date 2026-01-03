@@ -306,12 +306,24 @@ final case class ProviderInfo(
 // ============================================================
 
 /**
- * Health check response.
+ * Health check response with system info.
  */
 final case class HealthResponse(
   status: String,
   version: String,
-  uptime: Long
+  uptime: Long,
+  system: Option[SystemInfo] = None
+)
+
+/**
+ * System information for health checks.
+ */
+final case class SystemInfo(
+  memoryUsedMb: Long,
+  memoryMaxMb: Long,
+  memoryFreePercent: Int,
+  cpuCount: Int,
+  javaVersion: String
 )
 
 /**

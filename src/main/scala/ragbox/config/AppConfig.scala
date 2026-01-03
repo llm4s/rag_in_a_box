@@ -23,7 +23,8 @@ final case class AppConfig(
   apiKeys: ApiKeysConfig,
   ingestion: IngestionConfig,
   security: SecurityConfig,
-  metrics: MetricsConfig
+  metrics: MetricsConfig,
+  production: ProductionConfig
 )
 
 final case class ServerConfig(
@@ -222,6 +223,42 @@ final case class MetricsConfig(
   enabled: Boolean
 )
 
+/**
+ * Production hardening configuration.
+ */
+final case class ProductionConfig(
+  rateLimit: RateLimitConfig,
+  requestSize: RequestSizeConfig,
+  shutdown: ShutdownConfig
+)
+
+/**
+ * Rate limiting configuration.
+ */
+final case class RateLimitConfig(
+  enabled: Boolean,
+  maxRequests: Int,
+  windowSeconds: Int
+)
+
+/**
+ * Request size limiting configuration.
+ */
+final case class RequestSizeConfig(
+  enabled: Boolean,
+  maxBodySizeMb: Int
+) {
+  def maxBodySizeBytes: Long = maxBodySizeMb.toLong * 1024 * 1024
+}
+
+/**
+ * Graceful shutdown configuration.
+ */
+final case class ShutdownConfig(
+  timeoutSeconds: Int,
+  drainConnectionsSeconds: Int
+)
+
 object AppConfig {
 
   /**
@@ -305,6 +342,21 @@ object AppConfig {
       ),
       metrics = MetricsConfig(
         enabled = Try(config.getBoolean("metrics.enabled")).getOrElse(false)
+      ),
+      production = ProductionConfig(
+        rateLimit = RateLimitConfig(
+          enabled = Try(config.getBoolean("production.rate-limit.enabled")).getOrElse(false),
+          maxRequests = Try(config.getInt("production.rate-limit.max-requests")).getOrElse(100),
+          windowSeconds = Try(config.getInt("production.rate-limit.window-seconds")).getOrElse(60)
+        ),
+        requestSize = RequestSizeConfig(
+          enabled = Try(config.getBoolean("production.request-size.enabled")).getOrElse(true),
+          maxBodySizeMb = Try(config.getInt("production.request-size.max-body-size-mb")).getOrElse(10)
+        ),
+        shutdown = ShutdownConfig(
+          timeoutSeconds = Try(config.getInt("production.shutdown.timeout-seconds")).getOrElse(30),
+          drainConnectionsSeconds = Try(config.getInt("production.shutdown.drain-connections-seconds")).getOrElse(5)
+        )
       )
     )
   }

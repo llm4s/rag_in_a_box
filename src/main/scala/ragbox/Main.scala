@@ -1,6 +1,6 @@
 package ragbox
 
-import cats.effect.{ExitCode, IO, IOApp, Resource}
+import cats.effect.{ExitCode, IO, IOApp, Ref, Resource}
 import cats.syntax.all._
 import com.comcast.ip4s._
 import org.http4s.ember.server.EmberServerBuilder
@@ -15,10 +15,12 @@ import org.llm4s.rag.permissions.pg.PgSearchIndex
 import ragbox.config.{AppConfig, RuntimeConfigManager}
 import ragbox.ingestion.{IngestionScheduler, IngestionService}
 import ragbox.service.ChunkingService
-import ragbox.middleware.AuthMiddleware
+import ragbox.middleware.{AuthMiddleware, RateLimitMiddleware, RequestSizeMiddleware}
 import ragbox.registry.{PgCollectionConfigRegistry, QueryLogRegistry}
 import ragbox.routes._
 import ragbox.service.RAGService
+
+import scala.concurrent.duration._
 
 /**
  * RAG in a Box - Main entry point.
@@ -41,6 +43,8 @@ object Main extends IOApp {
       _ <- IO(println("Document registry: PostgreSQL (persistent)"))
       _ <- IO(println(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}"))
       _ <- IO(println(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}"))
+      _ <- IO(println(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}"))
+      _ <- IO(println(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}"))
       _ <- IO(println("Permission-based RAG: enabled (LLM4S v0.2.6+)"))
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
@@ -108,8 +112,29 @@ object Main extends IOApp {
       metricsRoute = if (config.metrics.enabled) Seq("/" -> MetricsRoutes.routes(ragService)) else Seq.empty
       allRoutes = Router((baseRoutes ++ permissionRoutes ++ metricsRoute)*)
 
+      // Create rate limit state
+      rateLimitState <- Resource.eval(RateLimitMiddleware.createState)
+
+      // Configure rate limiting
+      rateLimitConfig = RateLimitMiddleware.Config(
+        maxRequests = config.production.rateLimit.maxRequests,
+        window = config.production.rateLimit.windowSeconds.seconds,
+        enabled = config.production.rateLimit.enabled
+      )
+
+      // Configure request size limits
+      requestSizeConfig = RequestSizeMiddleware.Config(
+        maxBodySize = config.production.requestSize.maxBodySizeBytes,
+        enabled = config.production.requestSize.enabled
+      )
+
+      // Apply production middlewares (rate limiting, request size)
+      productionRoutes = RateLimitMiddleware(rateLimitConfig, rateLimitState)(
+        RequestSizeMiddleware(requestSizeConfig)(allRoutes)
+      )
+
       // Apply authentication middleware
-      authedRoutes = AuthMiddleware(config.security)(allRoutes).orNotFound
+      authedRoutes = AuthMiddleware(config.security)(productionRoutes).orNotFound
 
       // Add CORS and logging middleware
       httpApp = Logger.httpApp(
@@ -121,11 +146,15 @@ object Main extends IOApp {
       host = Host.fromString(config.server.host).getOrElse(host"0.0.0.0")
       port = Port.fromInt(config.server.port).getOrElse(port"8080")
 
-      // Start server
+      // Graceful shutdown timeout
+      shutdownTimeout = config.production.shutdown.timeoutSeconds.seconds
+
+      // Start server with graceful shutdown
       _ <- EmberServerBuilder.default[IO]
         .withHost(host)
         .withPort(port)
         .withHttpApp(httpApp)
+        .withShutdownTimeout(shutdownTimeout)
         .build
         .evalTap(_ => IO(println(s"\n✓ Server started on http://${config.server.host}:${config.server.port}")))
         .evalTap(_ => IO(println("\nDocument Endpoints:")))

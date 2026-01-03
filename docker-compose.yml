@@ -72,7 +72,16 @@ services:
 
       # Observability
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      LOG_FORMAT: ${LOG_FORMAT:-console}  # console or json
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}  # Enable metrics in production
+
+      # Production hardening
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-100}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      REQUEST_SIZE_ENABLED: ${REQUEST_SIZE_ENABLED:-true}
+      MAX_BODY_SIZE_MB: ${MAX_BODY_SIZE_MB:-10}
+      SHUTDOWN_TIMEOUT_SECONDS: ${SHUTDOWN_TIMEOUT_SECONDS:-30}
     ports:
       - "8080:8080"
     volumes:

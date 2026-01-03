@@ -38,6 +38,12 @@ lazy val root = (project in file("."))
       // Logging
       "ch.qos.logback" % "logback-classic" % "1.4.14",
       "org.typelevel" %% "log4cats-slf4j" % "2.7.0",
+      // JSON structured logging
+      "ch.qos.logback.contrib" % "logback-json-classic" % "0.1.5",
+      "ch.qos.logback.contrib" % "logback-jackson" % "0.1.5",
+      "com.fasterxml.jackson.core" % "jackson-databind" % "2.17.0",
+      // Conditional processing in logback.xml
+      "org.codehaus.janino" % "janino" % "3.1.12",
 
       // Testing
       "org.scalatest" %% "scalatest" % "3.2.18" % Test,

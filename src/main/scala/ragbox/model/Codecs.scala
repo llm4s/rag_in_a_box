@@ -128,6 +128,9 @@ object Codecs {
   // Health Codecs
   // ============================================================
 
+  implicit val systemInfoEncoder: Encoder[SystemInfo] = deriveEncoder
+  implicit val systemInfoDecoder: Decoder[SystemInfo] = deriveDecoder
+
   implicit val healthResponseEncoder: Encoder[HealthResponse] = deriveEncoder
   implicit val healthResponseDecoder: Decoder[HealthResponse] = deriveDecoder
 

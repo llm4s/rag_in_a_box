@@ -884,13 +884,27 @@ class RAGService(
   // ============================================================
 
   /**
-   * Basic health check.
+   * Basic health check with system information.
    */
-  def healthCheck: IO[HealthResponse] = IO.pure {
+  def healthCheck: IO[HealthResponse] = IO {
+    val runtime = Runtime.getRuntime
+    val maxMemory = runtime.maxMemory() / (1024 * 1024)
+    val usedMemory = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+    val freePercent = if (maxMemory > 0) ((maxMemory - usedMemory) * 100 / maxMemory).toInt else 0
+
+    val systemInfo = SystemInfo(
+      memoryUsedMb = usedMemory,
+      memoryMaxMb = maxMemory,
+      memoryFreePercent = freePercent,
+      cpuCount = runtime.availableProcessors(),
+      javaVersion = System.getProperty("java.version", "unknown")
+    )
+
     HealthResponse(
       status = "healthy",
       version = "0.1.0",
-      uptime = System.currentTimeMillis() - startTime
+      uptime = System.currentTimeMillis() - startTime,
+      system = Some(systemInfo)
     )
   }
 
