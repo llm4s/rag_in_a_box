@@ -32,6 +32,16 @@ curl -H "Authorization: Bearer rat_abc123..." ...
 
 | Category | Endpoint | Description |
 |----------|----------|-------------|
+| **Auth** | [POST /auth/login](/api/auth#login) | Login and get JWT token |
+| | [GET /auth/me](/api/auth#get-current-user) | Get current user info |
+| | [PUT /auth/password](/api/auth#change-password) | Change password |
+| **Users** | [POST /users](/api/auth#create-user) | Create user (admin) |
+| | [GET /users](/api/auth#list-users) | List users (admin) |
+| | [DELETE /users/:id](/api/auth#delete-user) | Delete user (admin) |
+| **Tokens** | [POST /tokens](/api/tokens#create-token) | Create access token (admin) |
+| | [GET /tokens](/api/tokens#list-tokens) | List tokens (admin) |
+| | [GET /tokens/:id](/api/tokens#get-token) | Get token details (admin) |
+| | [DELETE /tokens/:id](/api/tokens#revoke-token) | Revoke token (admin) |
 | **Documents** | [POST /documents](/api/documents#upload) | Upload a document |
 | | [PUT /documents/:id](/api/documents#upsert) | Upsert document (idempotent) |
 | | [GET /documents](/api/documents#list) | List documents |
