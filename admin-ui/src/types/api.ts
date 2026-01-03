@@ -178,25 +178,30 @@ export interface StrategyRecommendation {
 
 // Ingestion types
 export interface IngestionSource {
-  id: string
   name: string
-  type: string
-  path?: string
-  url?: string
+  sourceType: string
   enabled: boolean
-  schedule?: string
-  lastRun?: string
-  lastStatus?: string
+  config: Record<string, string>
+}
+
+export interface IngestResult {
+  sourceName: string
+  sourceType: string
+  documentsAdded: number
+  documentsUpdated: number
+  documentsDeleted: number
+  documentsUnchanged: number
+  documentsFailed: number
+  durationMs: number
+  error?: string
 }
 
 export interface IngestionStatus {
   running: boolean
-  currentSource?: string
-  documentsProcessed?: number
-  documentsTotal?: number
-  startedAt?: string
-  lastCompletedAt?: string
-  lastResult?: string
+  lastRun?: string
+  lastResults: IngestResult[]
+  nextScheduledRun?: string
+  sources: IngestionSource[]
 }
 
 // Health types

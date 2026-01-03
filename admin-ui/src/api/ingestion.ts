@@ -1,23 +1,18 @@
 import client from './client'
-import type { IngestionSource, IngestionStatus } from '@/types/api'
-
-export async function getSources(): Promise<IngestionSource[]> {
-  const response = await client.get('/ingest/sources')
-  return response.data.sources
-}
+import type { IngestionStatus, IngestResult } from '@/types/api'
 
 export async function getStatus(): Promise<IngestionStatus> {
-  const response = await client.get('/ingest/status')
+  const response = await client.get<IngestionStatus>('/ingest/status')
   return response.data
 }
 
-export async function runIngestion(): Promise<{ message: string }> {
-  const response = await client.post('/ingest/run')
+export async function runAllSources(): Promise<IngestResult[]> {
+  const response = await client.post<IngestResult[]>('/ingest/run')
   return response.data
 }
 
-export async function runSourceIngestion(sourceId: string): Promise<{ message: string }> {
-  const response = await client.post(`/ingest/run/${sourceId}`)
+export async function runSource(sourceName: string): Promise<IngestResult> {
+  const response = await client.post<IngestResult>(`/ingest/run/${sourceName}`)
   return response.data
 }
 
