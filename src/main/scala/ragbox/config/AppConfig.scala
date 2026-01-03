@@ -150,16 +150,57 @@ final case class ApiKeysConfig(
 }
 
 /**
+ * Authentication mode.
+ */
+sealed trait AuthMode
+object AuthMode {
+  case object Open extends AuthMode     // No authentication
+  case object Basic extends AuthMode    // Username/password with JWT
+  case object OAuth extends AuthMode    // OAuth2/OIDC (future)
+
+  def fromString(s: String): AuthMode = s.toLowerCase match {
+    case "open" => Open
+    case "basic" => Basic
+    case "oauth" => OAuth
+    case other => throw new IllegalArgumentException(s"Unknown auth mode: $other. Use: open, basic, or oauth")
+  }
+}
+
+/**
+ * Authentication configuration.
+ */
+final case class AuthConfig(
+  mode: AuthMode,
+  basic: BasicAuthConfig,
+  jwtSecret: String,
+  jwtExpiration: Long  // Expiration in seconds (default: 24 hours)
+)
+
+/**
+ * Basic authentication configuration.
+ */
+final case class BasicAuthConfig(
+  adminUsername: String,
+  adminPassword: Option[String]  // Required if mode=basic
+)
+
+/**
  * Security configuration for API authentication.
  */
 final case class SecurityConfig(
   apiKey: Option[String],
-  allowAdminHeader: Boolean = false
+  allowAdminHeader: Boolean = false,
+  auth: AuthConfig
 ) {
   /**
-   * Check if API key authentication is enabled.
+   * Check if API key authentication is enabled (legacy mode).
    */
-  def isEnabled: Boolean = apiKey.isDefined && apiKey.exists(_.nonEmpty)
+  def isEnabled: Boolean = auth.mode != AuthMode.Open || (apiKey.isDefined && apiKey.exists(_.nonEmpty))
+
+  /**
+   * Check if basic auth is enabled.
+   */
+  def isBasicAuthEnabled: Boolean = auth.mode == AuthMode.Basic
 
   /**
    * Validate a provided API key.
@@ -248,7 +289,19 @@ object AppConfig {
       },
       security = SecurityConfig(
         apiKey = getOptionalString(config, "security.api-key"),
-        allowAdminHeader = Try(config.getBoolean("security.allow-admin-header")).getOrElse(false)
+        allowAdminHeader = Try(config.getBoolean("security.allow-admin-header")).getOrElse(false),
+        auth = AuthConfig(
+          mode = AuthMode.fromString(Try(config.getString("security.auth.mode")).getOrElse("open")),
+          basic = BasicAuthConfig(
+            adminUsername = Try(config.getString("security.auth.basic.admin-username")).getOrElse("admin"),
+            adminPassword = getOptionalString(config, "security.auth.basic.admin-password")
+          ),
+          jwtSecret = Try(config.getString("security.auth.jwt-secret")).getOrElse {
+            // Generate a random secret if not configured (not recommended for production)
+            java.util.UUID.randomUUID().toString
+          },
+          jwtExpiration = Try(config.getLong("security.auth.jwt-expiration")).getOrElse(86400L)  // 24 hours
+        )
       ),
       metrics = MetricsConfig(
         enabled = Try(config.getBoolean("metrics.enabled")).getOrElse(false)
