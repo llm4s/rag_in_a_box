@@ -6,49 +6,100 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
+import org.llm4s.rag.permissions._
+import ragbox.middleware.UserContextMiddleware
 import ragbox.model._
 import ragbox.model.Codecs._
 import ragbox.service.RAGService
 
 /**
  * HTTP routes for query operations.
+ *
+ * Supports permission-aware queries when SearchIndex is available.
+ * User authorization is extracted from headers:
+ * - X-User-Id: External user identifier
+ * - X-Group-Ids: Comma-separated group names
+ * - X-Admin: Set to "true" for admin access (bypasses permissions)
+ *   NOTE: X-Admin is only honored if allowAdminHeader is true in security config
+ *
+ * Collection patterns are supported in requests:
+ * - "*" - All collections (default)
+ * - "exact" - Exact collection match
+ * - "parent/wildcard" - Direct children of parent
+ * - "parent/deep-wildcard" - All descendants of parent
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // POST /api/v1/query - Search and generate answer
+    // Supports permission-aware queries when SearchIndex is available
     case req @ POST -> Root / "api" / "v1" / "query" =>
       for {
         body <- req.as[QueryRequest]
-        result <- ragService.queryWithAnswer(body.question, body.topK).attempt
+        result <- ((ragService.hasPermissions, ragService.principals) match {
+          // Permission-aware query when SearchIndex is available
+          case (true, Some(principals)) =>
+            for {
+              auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+              collectionPattern = body.collection.getOrElse("*")
+              response <- ragService.queryWithPermissionsAndAnswer(
+                question = body.question,
+                auth = auth,
+                collectionPattern = collectionPattern,
+                topK = body.topK
+              )
+            } yield response
+
+          // Fall back to legacy query (no permissions)
+          case _ =>
+            ragService.queryWithAnswer(body.question, body.topK)
+        }).attempt
         response <- result match {
           case Right(queryResponse) =>
             Ok(queryResponse.asJson)
-          case Left(e) if e.getMessage.contains("LLM client required") =>
+          case Left(e) if e.getMessage != null && e.getMessage.contains("LLM client required") =>
             BadRequest(ErrorResponse.configError(
               "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
             ).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Query failed",
-              Some(e.getMessage)
+              Option(e.getMessage)
             ).asJson)
         }
       } yield response
 
     // POST /api/v1/search - Search without answer generation
+    // Supports permission-aware search when SearchIndex is available
     case req @ POST -> Root / "api" / "v1" / "search" =>
       for {
         body <- req.as[SearchRequest]
-        result <- ragService.search(body.query, body.topK).attempt
+        result <- ((ragService.hasPermissions, ragService.principals) match {
+          // Permission-aware search when SearchIndex is available
+          case (true, Some(principals)) =>
+            for {
+              auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+              collectionPattern = body.collection.getOrElse("*")
+              response <- ragService.searchWithPermissions(
+                query = body.query,
+                auth = auth,
+                collectionPattern = collectionPattern,
+                topK = body.topK
+              )
+            } yield response
+
+          // Fall back to legacy search (no permissions)
+          case _ =>
+            ragService.search(body.query, body.topK)
+        }).attempt
         response <- result match {
           case Right(searchResponse) =>
             Ok(searchResponse.asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Search failed",
-              Some(e.getMessage)
+              Option(e.getMessage)
             ).asJson)
         }
       } yield response

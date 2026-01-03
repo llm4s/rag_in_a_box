@@ -153,7 +153,8 @@ final case class ApiKeysConfig(
  * Security configuration for API authentication.
  */
 final case class SecurityConfig(
-  apiKey: Option[String]
+  apiKey: Option[String],
+  allowAdminHeader: Boolean = false
 ) {
   /**
    * Check if API key authentication is enabled.
@@ -164,6 +165,13 @@ final case class SecurityConfig(
    * Validate a provided API key.
    */
   def validateKey(key: String): Boolean = apiKey.contains(key)
+
+  /**
+   * Check if X-Admin header is allowed for admin bypass.
+   * Disabled by default for security. Enable only in development
+   * or when API key authentication is also enabled.
+   */
+  def isAdminHeaderAllowed: Boolean = allowAdminHeader
 }
 
 /**
@@ -239,7 +247,8 @@ object AppConfig {
         if (envIngestion.enabled) envIngestion else configIngestion
       },
       security = SecurityConfig(
-        apiKey = getOptionalString(config, "security.api-key")
+        apiKey = getOptionalString(config, "security.api-key"),
+        allowAdminHeader = Try(config.getBoolean("security.allow-admin-header")).getOrElse(false)
       ),
       metrics = MetricsConfig(
         enabled = Try(config.getBoolean("metrics.enabled")).getOrElse(false)

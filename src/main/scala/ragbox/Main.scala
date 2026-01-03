@@ -10,6 +10,8 @@ import org.http4s.server.middleware.{CORS, Logger}
 import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.slf4j.Slf4jFactory
 import cats.effect.std.Supervisor
+import org.llm4s.rag.permissions._
+import org.llm4s.rag.permissions.pg.PgSearchIndex
 import ragbox.config.{AppConfig, RuntimeConfigManager}
 import ragbox.ingestion.{IngestionScheduler, IngestionService}
 import ragbox.service.ChunkingService
@@ -39,6 +41,7 @@ object Main extends IOApp {
       _ <- IO(println("Document registry: PostgreSQL (persistent)"))
       _ <- IO(println(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}"))
       _ <- IO(println(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}"))
+      _ <- IO(println("Permission-based RAG: enabled (LLM4S v0.2.6+)"))
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
   }
@@ -48,8 +51,18 @@ object Main extends IOApp {
       // Create supervisor for background tasks
       supervisor <- Supervisor[IO]
 
+      // Try to create SearchIndex for permission-based RAG
+      // Falls back to legacy mode if SearchIndex creation fails
+      searchIndexOpt <- Resource.eval(createSearchIndex(config))
+
       // Create RAG service with PostgreSQL-backed document registry
-      ragService <- Resource.make(RAGService.create(config))(_.close())
+      // Use permission-aware mode if SearchIndex is available
+      ragService <- searchIndexOpt match {
+        case Some(si) =>
+          Resource.make(RAGService.createWithPermissions(config, si))(_.close())
+        case None =>
+          Resource.make(RAGService.create(config))(_.close())
+      }
 
       // Create Runtime Config Manager
       runtimeConfigManager <- Resource.make(RuntimeConfigManager(config))(_.close())
@@ -64,11 +77,11 @@ object Main extends IOApp {
       // Create Chunking service
       chunkingService = ChunkingService(config)
 
-      // Combine all routes (conditionally include metrics if enabled)
+      // Base routes
       baseRoutes = Seq(
         "/" -> HealthRoutes.routes(ragService),
         "/" -> DocumentRoutes.routes(ragService),
-        "/" -> QueryRoutes.routes(ragService),
+        "/" -> QueryRoutes.routes(ragService, config.security.isAdminHeaderAllowed),
         "/" -> ConfigRoutes.routes(ragService),
         "/" -> IngestionRoutes.routes(ingestionService),
         "/" -> VisibilityRoutes.routes(ragService),
@@ -77,8 +90,19 @@ object Main extends IOApp {
         "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
         "/" -> StaticRoutes.routes
       )
+
+      // Permission routes (only when SearchIndex is available)
+      permissionRoutes = (ragService.principals, ragService.collections) match {
+        case (Some(ps), Some(cs)) =>
+          Seq(
+            "/" -> PrincipalRoutes.routes(ps),
+            "/" -> CollectionPermissionRoutes.routes(cs, ps)
+          )
+        case _ => Seq.empty
+      }
+
       metricsRoute = if (config.metrics.enabled) Seq("/" -> MetricsRoutes.routes(ragService)) else Seq.empty
-      allRoutes = Router((baseRoutes ++ metricsRoute)*)
+      allRoutes = Router((baseRoutes ++ permissionRoutes ++ metricsRoute)*)
 
       // Apply authentication middleware
       authedRoutes = AuthMiddleware(config.security)(allRoutes).orNotFound
@@ -125,12 +149,51 @@ object Main extends IOApp {
         .evalTap(_ => IO(println("  GET  /api/v1/stats            - Get statistics")))
         .evalTap(_ => IO(println("  GET  /health                  - Health check")))
         .evalTap(_ => IO(println("  GET  /health/ready            - Readiness check")))
+        .evalTap(_ => IO(println("\nPermission Endpoints (when SearchIndex enabled):")))
+        .evalTap(_ => IO(println("  POST   /api/v1/principals/users   - Create/get user principal")))
+        .evalTap(_ => IO(println("  POST   /api/v1/principals/groups  - Create/get group principal")))
+        .evalTap(_ => IO(println("  GET    /api/v1/principals/users   - List users")))
+        .evalTap(_ => IO(println("  GET    /api/v1/principals/groups  - List groups")))
+        .evalTap(_ => IO(println("  POST   /api/v1/collections        - Create collection")))
+        .evalTap(_ => IO(println("  GET    /api/v1/collections        - List collections")))
+        .evalTap(_ => IO(println("  GET    /api/v1/collections/accessible - User-accessible collections")))
+        .evalTap(_ => IO(println("  PUT    /api/v1/collections/{path}/permissions - Update queryableBy")))
         .evalTap(_ => IO(println("\nAdmin UI:")))
         .evalTap(_ => IO(println("  GET  /admin                   - Admin Dashboard")))
         .evalTap(_ => runOnStartupIngestion(config, ingestionService))
         .evalTap(_ => startScheduler(scheduler, config, supervisor))
         .evalTap(_ => IO(println("\nPress Ctrl+C to stop")))
     } yield ()
+  }
+
+  /**
+   * Create SearchIndex for permission-based RAG.
+   * Returns None if creation fails (falls back to legacy mode).
+   */
+  private def createSearchIndex(config: AppConfig): IO[Option[SearchIndex]] = {
+    val jdbcUrl = s"jdbc:postgresql://${config.database.host}:${config.database.port}/${config.database.database}"
+    IO {
+      PgSearchIndex.fromJdbcUrl(
+        jdbcUrl = jdbcUrl,
+        user = config.database.user,
+        password = config.database.password,
+        vectorTableName = config.database.tableName
+      ).toOption.flatMap { si =>
+        // Initialize schema (adds permission columns if missing)
+        si.initializeSchema() match {
+          case Right(_) =>
+            println("  SearchIndex initialized with permission schema")
+            Some(si)
+          case Left(err) =>
+            println(s"  Warning: SearchIndex schema init failed: ${err.message}")
+            None
+        }
+      }
+    }.handleError { e =>
+      println(s"  Warning: Failed to create SearchIndex: ${e.getMessage}")
+      println("  Falling back to legacy RAG mode (no permissions)")
+      None
+    }
   }
 
   /**

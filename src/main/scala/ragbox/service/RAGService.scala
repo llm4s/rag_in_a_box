@@ -7,6 +7,7 @@ import org.llm4s.llmconnect.{LLMClient, LLMConnect}
 import org.llm4s.llmconnect.config.{EmbeddingProviderConfig, OpenAIConfig, AnthropicConfig}
 import org.llm4s.rag.{EmbeddingProvider, RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
 import org.llm4s.rag.RAG.RAGConfigOps
+import org.llm4s.rag.permissions._
 import org.llm4s.types.Result
 import ragbox.config.AppConfig
 import ragbox.model._
@@ -22,11 +23,33 @@ import java.time.Instant
  * Provides a high-level interface for document ingestion, search, and query operations.
  */
 
-class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkStore: ChunkStore) {
+class RAGService(
+  config: AppConfig,
+  documentRegistry: DocumentRegistry,
+  chunkStore: ChunkStore,
+  val searchIndex: Option[SearchIndex] = None
+) {
 
   private val startTime: Long = System.currentTimeMillis()
   private var firstIngestionTime: Option[Instant] = None
   private var lastIngestionTime: Option[Instant] = None
+
+  /**
+   * Get PrincipalStore for user/group ID management.
+   * Only available when SearchIndex is configured.
+   */
+  def principals: Option[PrincipalStore] = searchIndex.map(_.principals)
+
+  /**
+   * Get CollectionStore for collection hierarchy management.
+   * Only available when SearchIndex is configured.
+   */
+  def collections: Option[CollectionStore] = searchIndex.map(_.collections)
+
+  /**
+   * Check if permission-based RAG is enabled.
+   */
+  def hasPermissions: Boolean = searchIndex.isDefined
 
   // Create LLM client for answer generation
   private lazy val llmClient: Option[LLMClient] = {
@@ -96,12 +119,6 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkSto
   private lazy val ragConfig: RAGConfig = {
     val baseConfig = RAGConfig.default
       .withEmbeddings(config.embedding.toEmbeddingProvider, config.embedding.model)
-      .withPgVector(
-        connectionString = config.database.connectionString,
-        user = config.database.effectiveUser,
-        password = config.database.effectivePassword,
-        tableName = config.database.tableName
-      )
       .withChunking(
         config.rag.chunking.toChunkerStrategy,
         config.rag.chunking.size,
@@ -111,8 +128,23 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkSto
       .withFusion(config.rag.search.toFusionStrategy)
       .withSystemPrompt(config.rag.systemPrompt)
 
+    // Configure storage: use SearchIndex if available, otherwise pgvector directly
+    val withStorage = searchIndex match {
+      case Some(si) =>
+        // Permission-based RAG with SearchIndex
+        baseConfig.withSearchIndex(si)
+      case None =>
+        // Basic pgvector without permissions
+        baseConfig.withPgVector(
+          connectionString = config.database.connectionString,
+          user = config.database.effectiveUser,
+          password = config.database.effectivePassword,
+          tableName = config.database.tableName
+        )
+    }
+
     // Add LLM client if available
-    llmClient.fold(baseConfig)(baseConfig.withLLM)
+    llmClient.fold(withStorage)(withStorage.withLLM)
   }
 
   // Build the RAG instance
@@ -373,12 +405,12 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkSto
   /**
    * Get collection statistics.
    */
-  def getCollectionStats: IO[Seq[CollectionStats]] =
+  def getCollectionStats: IO[Seq[ragbox.model.CollectionStats]] =
     for {
       collections <- documentRegistry.listCollections()
       stats <- collections.traverse { coll =>
         documentRegistry.countByCollection(coll).map { count =>
-          CollectionStats(name = coll, documentCount = count, chunkCount = 0) // Chunk count per collection requires llm4s changes
+          ragbox.model.CollectionStats(name = coll, documentCount = count, chunkCount = 0) // Chunk count per collection requires llm4s changes
         }
       }
     } yield stats
@@ -425,6 +457,187 @@ class RAGService(config: AppConfig, documentRegistry: DocumentRegistry, chunkSto
           .left.map(e => new RuntimeException(e.message))
       )
     }
+
+  // ============================================================
+  // Permission-Aware Query Operations
+  // ============================================================
+
+  /**
+   * Search with permission filtering.
+   *
+   * @param query Search query text
+   * @param auth User authorization (from UserContextMiddleware)
+   * @param collectionPattern Collection pattern: "*", "exact", "parent/wildcard", "parent/deep-wildcard"
+   * @param topK Number of results to return
+   * @return Filtered search results
+   */
+  def searchWithPermissions(
+    query: String,
+    auth: UserAuthorization,
+    collectionPattern: String,
+    topK: Option[Int]
+  ): IO[SearchResponse] =
+    rag.flatMap { r =>
+      val pattern = CollectionPattern.parse(collectionPattern)
+        .getOrElse(CollectionPattern.All)
+
+      IO.fromEither(
+        r.queryWithPermissions(auth, pattern, query, topK)
+          .map { results =>
+            SearchResponse(
+              results = results.map(toContextItem),
+              count = results.size
+            )
+          }
+          .left.map(e => new RuntimeException(e.message))
+      )
+    }
+
+  /**
+   * Query with answer generation and permission filtering.
+   */
+  def queryWithPermissionsAndAnswer(
+    question: String,
+    auth: UserAuthorization,
+    collectionPattern: String,
+    topK: Option[Int]
+  ): IO[QueryResponse] =
+    rag.flatMap { r =>
+      val pattern = CollectionPattern.parse(collectionPattern)
+        .getOrElse(CollectionPattern.All)
+
+      IO.fromEither(
+        r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)
+          .map { result =>
+            QueryResponse(
+              answer = result.answer,
+              contexts = result.contexts.map(toContextItem),
+              usage = result.usage.map(u => UsageInfo(
+                promptTokens = u.promptTokens,
+                completionTokens = u.completionTokens,
+                totalTokens = u.totalTokens
+              ))
+            )
+          }
+          .left.map(e => new RuntimeException(e.message))
+      )
+    }
+
+  /**
+   * Ingest a document with permission controls.
+   *
+   * @param collectionPath Collection path for the document
+   * @param documentId Unique document identifier
+   * @param content Document content
+   * @param metadata Optional metadata
+   * @param readableBy Set of principal IDs who can read this document (empty = inherit from collection)
+   * @return Number of chunks created
+   */
+  def ingestWithPermissions(
+    collectionPath: String,
+    documentId: String,
+    content: String,
+    metadata: Map[String, String] = Map.empty,
+    readableBy: Set[PrincipalId] = Set.empty
+  ): IO[DocumentUploadResponse] = {
+    val path = CollectionPath.unsafe(collectionPath)
+
+    rag.flatMap { r =>
+      IO.fromEither(
+        r.ingestWithPermissions(path, documentId, content, metadata, readableBy)
+          .left.map(e => new RuntimeException(e.message))
+      ).flatMap { chunkCount =>
+        val now = Instant.now()
+        val contentHash = computeContentHash(content)
+
+        // Also register in document registry for local tracking
+        documentRegistry.put(DocumentEntry(
+          documentId = documentId,
+          contentHash = contentHash,
+          chunkCount = chunkCount,
+          metadata = metadata + ("collection" -> collectionPath),
+          collection = Some(collectionPath),
+          indexedAt = now,
+          updatedAt = now
+        )).as(DocumentUploadResponse(
+          documentId = documentId,
+          chunks = chunkCount,
+          message = s"Successfully indexed $chunkCount chunks in $collectionPath"
+        ))
+      }
+    }
+  }
+
+  /**
+   * Upsert a document with permission controls (idempotent create/update).
+   *
+   * Checks document registry first - if content hash matches, skips re-indexing.
+   *
+   * @param collectionPath Collection path for the document
+   * @param documentId Unique document identifier
+   * @param content Document content
+   * @param metadata Optional metadata
+   * @param readableBy Set of principal IDs who can read this document
+   * @param providedHash Optional pre-computed content hash
+   * @return Upsert response with action taken
+   */
+  def upsertWithPermissions(
+    collectionPath: String,
+    documentId: String,
+    content: String,
+    metadata: Map[String, String] = Map.empty,
+    readableBy: Set[PrincipalId] = Set.empty,
+    providedHash: Option[String] = None
+  ): IO[DocumentUpsertResponse] = {
+    val contentHash = providedHash.getOrElse(computeContentHash(content))
+
+    documentRegistry.get(documentId).flatMap {
+      case Some(existing) if existing.contentHash == contentHash =>
+        // Content unchanged - skip re-indexing
+        IO.pure(DocumentUpsertResponse(
+          documentId = documentId,
+          chunks = existing.chunkCount,
+          action = "unchanged",
+          message = s"Document unchanged (hash: ${contentHash.take(8)}...)"
+        ))
+
+      case Some(_) =>
+        // Content changed - delete and re-index
+        for {
+          _ <- deleteFromCollection(collectionPath, documentId).attempt
+          result <- ingestWithPermissions(collectionPath, documentId, content, metadata, readableBy)
+        } yield DocumentUpsertResponse(
+          documentId = result.documentId,
+          chunks = result.chunks,
+          action = "updated",
+          message = result.message
+        )
+
+      case None =>
+        // New document
+        ingestWithPermissions(collectionPath, documentId, content, metadata, readableBy)
+          .map(result => DocumentUpsertResponse(
+            documentId = result.documentId,
+            chunks = result.chunks,
+            action = "created",
+            message = result.message
+          ))
+    }
+  }
+
+  /**
+   * Delete a document from a specific collection.
+   */
+  def deleteFromCollection(collectionPath: String, documentId: String): IO[Long] = {
+    val path = CollectionPath.unsafe(collectionPath)
+
+    rag.flatMap { r =>
+      IO.fromEither(
+        r.deleteFromCollection(path, documentId)
+          .left.map(e => new RuntimeException(e.message))
+      )
+    } <* chunkStore.deleteByDocument(documentId) <* documentRegistry.remove(documentId)
+  }
 
   // ============================================================
   // Configuration Operations
@@ -713,10 +926,24 @@ object RAGService {
 
   /**
    * Create a new RAGService with PostgreSQL-backed document registry and chunk store.
+   * Does not enable permission-based RAG.
    */
   def create(config: AppConfig): IO[RAGService] =
     for {
       registry <- PgDocumentRegistry(config.database)
       chunks <- PgChunkStore(config.database)
-    } yield new RAGService(config, registry, chunks)
+    } yield new RAGService(config, registry, chunks, None)
+
+  /**
+   * Create a new RAGService with permission-based RAG enabled.
+   * Requires a SearchIndex to be created and initialized first.
+   *
+   * @param config Application configuration
+   * @param searchIndex Pre-configured SearchIndex for permission-aware operations
+   */
+  def createWithPermissions(config: AppConfig, searchIndex: SearchIndex): IO[RAGService] =
+    for {
+      registry <- PgDocumentRegistry(config.database)
+      chunks <- PgChunkStore(config.database)
+    } yield new RAGService(config, registry, chunks, Some(searchIndex))
 }

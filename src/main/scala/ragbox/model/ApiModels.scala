@@ -9,12 +9,21 @@ import java.util.UUID
 
 /**
  * Request to upload a document.
+ *
+ * @param content The document content
+ * @param filename The filename for the document
+ * @param metadata Optional metadata key-value pairs
+ * @param collection Optional collection path (e.g., "acme/engineering")
+ * @param readableBy Optional list of principals who can read this document.
+ *                   Format: "user:alice@example.com" or "group:managers"
+ *                   If empty, document inherits collection permissions.
  */
 final case class DocumentUploadRequest(
   content: String,
   filename: String,
   metadata: Option[Map[String, String]] = None,
-  collection: Option[String] = None
+  collection: Option[String] = None,
+  readableBy: Option[Seq[String]] = None
 )
 
 /**
@@ -61,11 +70,20 @@ final case class UrlIngestionRequest(
 /**
  * Request to upsert a document (idempotent create/update).
  * Used by SDK clients for incremental ingestion.
+ *
+ * @param content The document content
+ * @param metadata Optional metadata key-value pairs
+ * @param contentHash Optional content hash - server computes if not provided
+ * @param collection Optional collection path (e.g., "acme/engineering")
+ * @param readableBy Optional list of principals who can read this document.
+ *                   Format: "user:alice@example.com" or "group:managers"
  */
 final case class DocumentUpsertRequest(
   content: String,
   metadata: Option[Map[String, String]] = None,
-  contentHash: Option[String] = None  // Optional - server computes if not provided
+  contentHash: Option[String] = None,
+  collection: Option[String] = None,
+  readableBy: Option[Seq[String]] = None
 )
 
 /**
@@ -331,8 +349,8 @@ final case class ErrorResponse(
 )
 
 object ErrorResponse {
-  def badRequest(message: String): ErrorResponse =
-    ErrorResponse("bad_request", message)
+  def badRequest(message: String, details: Option[String] = None): ErrorResponse =
+    ErrorResponse("bad_request", message, details)
 
   def notFound(message: String): ErrorResponse =
     ErrorResponse("not_found", message)

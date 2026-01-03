@@ -17,8 +17,8 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
-      // LLM4s - RAG framework
-      "org.llm4s" %% "core" % "0.2.5",
+      // LLM4s - RAG framework (0.2.6 adds permission-based RAG)
+      "org.llm4s" %% "core" % "0.2.6",
 
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
