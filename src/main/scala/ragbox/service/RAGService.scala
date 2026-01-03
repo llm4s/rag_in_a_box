@@ -391,6 +391,31 @@ class RAGService(
     documentRegistry.listIds()
 
   /**
+   * List all document entries (full details for sync).
+   */
+  def listDocumentEntries: IO[Seq[ragbox.registry.DocumentEntry]] =
+    documentRegistry.listEntries()
+
+  /**
+   * List document entries modified since a given time (for incremental sync).
+   */
+  def listDocumentEntriesSince(since: java.time.Instant): IO[Seq[ragbox.registry.DocumentEntry]] =
+    documentRegistry.listEntriesSince(since)
+
+  /**
+   * Get multiple document entries by ID (batch lookup).
+   */
+  def getDocumentEntries(documentIds: Seq[String]): IO[Seq[ragbox.registry.DocumentEntry]] =
+    documentRegistry.getMultiple(documentIds)
+
+  /**
+   * Find orphaned documents (documents not in the keep list).
+   * Used for dry-run prune operations.
+   */
+  def findOrphanedDocuments(keepIds: Set[String]): IO[Seq[String]] =
+    documentRegistry.findOrphans(keepIds)
+
+  /**
    * List document IDs in a specific collection.
    */
   def listDocumentIdsByCollection(collection: String): IO[Seq[String]] =

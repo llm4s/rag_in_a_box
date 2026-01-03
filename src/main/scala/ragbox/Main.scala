@@ -16,7 +16,7 @@ import ragbox.config.{AppConfig, RuntimeConfigManager}
 import ragbox.ingestion.{IngestionScheduler, IngestionService}
 import ragbox.service.ChunkingService
 import ragbox.middleware.AuthMiddleware
-import ragbox.registry.PgCollectionConfigRegistry
+import ragbox.registry.{PgCollectionConfigRegistry, QueryLogRegistry}
 import ragbox.routes._
 import ragbox.service.RAGService
 
@@ -70,6 +70,9 @@ object Main extends IOApp {
       // Create Collection Config Registry
       collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(config.database))(_.close())
 
+      // Create Query Log Registry for analytics
+      queryLogRegistry <- Resource.make(QueryLogRegistry(config.database))(_.close())
+
       // Create Ingestion service and scheduler
       ingestionService = IngestionService(ragService.rag, config.ingestion)
       scheduler = IngestionScheduler(ingestionService, config.ingestion)
@@ -81,13 +84,14 @@ object Main extends IOApp {
       baseRoutes = Seq(
         "/" -> HealthRoutes.routes(ragService),
         "/" -> DocumentRoutes.routes(ragService),
-        "/" -> QueryRoutes.routes(ragService, config.security.isAdminHeaderAllowed),
+        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed),
         "/" -> ConfigRoutes.routes(ragService),
         "/" -> IngestionRoutes.routes(ingestionService),
         "/" -> VisibilityRoutes.routes(ragService),
         "/" -> ChunkingRoutes.routes(chunkingService),
         "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
         "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
+        "/" -> AnalyticsRoutes.routes(queryLogRegistry),
         "/" -> StaticRoutes.routes
       )
 
@@ -158,6 +162,11 @@ object Main extends IOApp {
         .evalTap(_ => IO(println("  GET    /api/v1/collections        - List collections")))
         .evalTap(_ => IO(println("  GET    /api/v1/collections/accessible - User-accessible collections")))
         .evalTap(_ => IO(println("  PUT    /api/v1/collections/{path}/permissions - Update queryableBy")))
+        .evalTap(_ => IO(println("\nAnalytics Endpoints:")))
+        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries         - List query logs")))
+        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries/summary - Analytics summary")))
+        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries/{id}    - Get query details")))
+        .evalTap(_ => IO(println("  POST /api/v1/feedback                  - Submit feedback")))
         .evalTap(_ => IO(println("\nAdmin UI:")))
         .evalTap(_ => IO(println("  GET  /admin                   - Admin Dashboard")))
         .evalTap(_ => runOnStartupIngestion(config, ingestionService))

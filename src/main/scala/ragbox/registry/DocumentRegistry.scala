@@ -67,6 +67,21 @@ trait DocumentRegistry {
   def listIds(): IO[Seq[String]]
 
   /**
+   * List all document entries (full details).
+   */
+  def listEntries(): IO[Seq[DocumentEntry]]
+
+  /**
+   * List document entries modified since a given time.
+   */
+  def listEntriesSince(since: Instant): IO[Seq[DocumentEntry]]
+
+  /**
+   * Get multiple document entries by ID (batch lookup).
+   */
+  def getMultiple(documentIds: Seq[String]): IO[Seq[DocumentEntry]]
+
+  /**
    * List document IDs in a specific collection.
    */
   def listIdsByCollection(collection: String): IO[Seq[String]]

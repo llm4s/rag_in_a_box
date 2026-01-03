@@ -53,6 +53,21 @@ object Codecs {
   implicit val syncPruneRequestDecoder: Decoder[SyncPruneRequest] = deriveDecoder
   implicit val syncPruneRequestEncoder: Encoder[SyncPruneRequest] = deriveEncoder
 
+  implicit val syncPruneResponseEncoder: Encoder[SyncPruneResponse] = deriveEncoder
+  implicit val syncPruneResponseDecoder: Decoder[SyncPruneResponse] = deriveDecoder
+
+  implicit val documentSyncStateEncoder: Encoder[DocumentSyncState] = deriveEncoder
+  implicit val documentSyncStateDecoder: Decoder[DocumentSyncState] = deriveDecoder
+
+  implicit val documentSyncListResponseEncoder: Encoder[DocumentSyncListResponse] = deriveEncoder
+  implicit val documentSyncListResponseDecoder: Decoder[DocumentSyncListResponse] = deriveDecoder
+
+  implicit val syncCheckRequestDecoder: Decoder[SyncCheckRequest] = deriveDecoder
+  implicit val syncCheckRequestEncoder: Encoder[SyncCheckRequest] = deriveEncoder
+
+  implicit val syncCheckResponseEncoder: Encoder[SyncCheckResponse] = deriveEncoder
+  implicit val syncCheckResponseDecoder: Decoder[SyncCheckResponse] = deriveDecoder
+
   implicit val syncStatusResponseEncoder: Encoder[SyncStatusResponse] = deriveEncoder
   implicit val syncStatusResponseDecoder: Decoder[SyncStatusResponse] = deriveDecoder
 
@@ -329,4 +344,26 @@ object Codecs {
 
   implicit val allCollectionConfigsResponseEncoder: Encoder[AllCollectionConfigsResponse] = deriveEncoder
   implicit val allCollectionConfigsResponseDecoder: Decoder[AllCollectionConfigsResponse] = deriveDecoder
+
+  // ============================================================
+  // Query Analytics Codecs
+  // ============================================================
+
+  implicit val queryLogEntryEncoder: Encoder[QueryLogEntry] = deriveEncoder
+  implicit val queryLogEntryDecoder: Decoder[QueryLogEntry] = deriveDecoder
+
+  implicit val queryFeedbackRequestEncoder: Encoder[QueryFeedbackRequest] = deriveEncoder
+  implicit val queryFeedbackRequestDecoder: Decoder[QueryFeedbackRequest] = deriveDecoder
+
+  implicit val queryFeedbackResponseEncoder: Encoder[QueryFeedbackResponse] = deriveEncoder
+  implicit val queryFeedbackResponseDecoder: Decoder[QueryFeedbackResponse] = deriveDecoder
+
+  implicit val collectionQueryStatsEncoder: Encoder[CollectionQueryStats] = deriveEncoder
+  implicit val collectionQueryStatsDecoder: Decoder[CollectionQueryStats] = deriveDecoder
+
+  implicit val queryAnalyticsSummaryEncoder: Encoder[QueryAnalyticsSummary] = deriveEncoder
+  implicit val queryAnalyticsSummaryDecoder: Decoder[QueryAnalyticsSummary] = deriveDecoder
+
+  implicit val queryLogListResponseEncoder: Encoder[QueryLogListResponse] = deriveEncoder
+  implicit val queryLogListResponseDecoder: Decoder[QueryLogListResponse] = deriveDecoder
 }

@@ -99,9 +99,57 @@ final case class DocumentUpsertResponse(
 /**
  * Request to prune documents not in the provided list.
  * Used for garbage collection after sync.
+ *
+ * @param keepDocumentIds List of document IDs to keep (all others will be deleted)
+ * @param dryRun If true, returns what would be deleted without actually deleting
  */
 final case class SyncPruneRequest(
-  keepDocumentIds: Seq[String]
+  keepDocumentIds: Seq[String],
+  dryRun: Option[Boolean] = None
+)
+
+/**
+ * Response from prune operation.
+ */
+final case class SyncPruneResponse(
+  message: String,
+  prunedCount: Int,
+  prunedIds: Option[Seq[String]] = None,  // Only included when dryRun=true
+  dryRun: Boolean = false
+)
+
+/**
+ * Document state for sync operations.
+ * Used by external ingesters to check document status.
+ */
+final case class DocumentSyncState(
+  id: String,
+  hash: Option[String] = None,
+  updatedAt: Option[Instant] = None,
+  collection: Option[String] = None
+)
+
+/**
+ * Response for listing document sync states.
+ */
+final case class DocumentSyncListResponse(
+  documents: Seq[DocumentSyncState],
+  total: Int
+)
+
+/**
+ * Request to batch check document states.
+ */
+final case class SyncCheckRequest(
+  documentIds: Seq[String]
+)
+
+/**
+ * Response from batch document state check.
+ */
+final case class SyncCheckResponse(
+  found: Seq[DocumentSyncState],
+  missing: Seq[String]
 )
 
 /**
@@ -361,3 +409,90 @@ object ErrorResponse {
   def configError(message: String): ErrorResponse =
     ErrorResponse("configuration_error", message)
 }
+
+// ============================================================
+// Query Analytics Models
+// ============================================================
+
+/**
+ * A logged query for analytics.
+ */
+final case class QueryLogEntry(
+  id: String,
+  queryText: String,
+  collectionPattern: Option[String],
+  userId: Option[String],
+
+  // Timing (in milliseconds)
+  embeddingLatencyMs: Option[Int],
+  searchLatencyMs: Option[Int],
+  llmLatencyMs: Option[Int],
+  totalLatencyMs: Int,
+
+  // Results
+  chunksRetrieved: Int,
+  chunksUsed: Int,
+  answerTokens: Option[Int],
+
+  // Feedback
+  userRating: Option[Int],
+
+  createdAt: Instant
+)
+
+/**
+ * Request to submit feedback for a query.
+ */
+final case class QueryFeedbackRequest(
+  queryId: String,
+  rating: Int,               // 1-5 scale
+  relevantChunks: Option[Seq[String]] = None,
+  comment: Option[String] = None
+)
+
+/**
+ * Response from submitting feedback.
+ */
+final case class QueryFeedbackResponse(
+  success: Boolean,
+  message: String
+)
+
+/**
+ * Query analytics summary.
+ */
+final case class QueryAnalyticsSummary(
+  totalQueries: Int,
+  averageLatencyMs: Double,
+  p50LatencyMs: Int,
+  p95LatencyMs: Int,
+  p99LatencyMs: Int,
+  averageChunksRetrieved: Double,
+  averageChunksUsed: Double,
+  averageRating: Option[Double],
+  ratedQueriesCount: Int,
+  queriesWithFeedback: Int,
+  topCollections: Seq[CollectionQueryStats],
+  periodStart: Instant,
+  periodEnd: Instant
+)
+
+/**
+ * Query stats by collection.
+ */
+final case class CollectionQueryStats(
+  collection: String,
+  queryCount: Int,
+  averageLatencyMs: Double,
+  averageRating: Option[Double]
+)
+
+/**
+ * Query log list response.
+ */
+final case class QueryLogListResponse(
+  queries: Seq[QueryLogEntry],
+  total: Int,
+  page: Int,
+  pageSize: Int
+)

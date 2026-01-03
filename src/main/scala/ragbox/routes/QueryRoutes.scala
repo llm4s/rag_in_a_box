@@ -10,6 +10,7 @@ import org.llm4s.rag.permissions._
 import ragbox.middleware.UserContextMiddleware
 import ragbox.model._
 import ragbox.model.Codecs._
+import ragbox.registry.QueryLogRegistry
 import ragbox.service.RAGService
 
 /**
@@ -30,19 +31,25 @@ import ragbox.service.RAGService
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistry, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // POST /api/v1/query - Search and generate answer
     // Supports permission-aware queries when SearchIndex is available
     case req @ POST -> Root / "api" / "v1" / "query" =>
       for {
         body <- req.as[QueryRequest]
+        startTime <- IO.realTimeInstant
+        collectionPattern = body.collection.getOrElse("*")
+
+        // Extract user ID from headers if available
+        userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
+          .map(_.head.value)
+
         result <- ((ragService.hasPermissions, ragService.principals) match {
           // Permission-aware query when SearchIndex is available
           case (true, Some(principals)) =>
             for {
               auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
-              collectionPattern = body.collection.getOrElse("*")
               response <- ragService.queryWithPermissionsAndAnswer(
                 question = body.question,
                 auth = auth,
@@ -55,6 +62,28 @@ object QueryRoutes {
           case _ =>
             ragService.queryWithAnswer(body.question, body.topK)
         }).attempt
+
+        endTime <- IO.realTimeInstant
+        totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
+
+        // Log the query (fire and forget - don't block response)
+        _ <- result match {
+          case Right(queryResponse) =>
+            queryLogRegistry.logQuery(
+              queryText = body.question,
+              collectionPattern = Some(collectionPattern),
+              userId = userId,
+              embeddingLatencyMs = None,  // Could be extracted from detailed timing
+              searchLatencyMs = None,
+              llmLatencyMs = None,
+              totalLatencyMs = totalLatencyMs,
+              chunksRetrieved = queryResponse.contexts.size,
+              chunksUsed = queryResponse.contexts.size,
+              answerTokens = queryResponse.usage.map(_.completionTokens)
+            ).attempt.void  // Don't fail query if logging fails
+          case Left(_) => IO.unit
+        }
+
         response <- result match {
           case Right(queryResponse) =>
             Ok(queryResponse.asJson)

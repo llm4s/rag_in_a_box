@@ -7,7 +7,10 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
+import org.http4s.dsl.impl.{OptionalQueryParamDecoderMatcher, OptionalValidatingQueryParamDecoderMatcher}
+import org.http4s.QueryParamDecoder
+import java.time.Instant
+import java.time.format.DateTimeParseException
 import org.llm4s.rag.permissions._
 import ragbox.model._
 import ragbox.model.Codecs._
@@ -25,6 +28,21 @@ object DocumentRoutes {
 
   // Query param matchers
   object CollectionParam extends OptionalQueryParamDecoderMatcher[String]("collection")
+
+  // Query params for enhanced sync endpoint
+  object IncludeParam extends OptionalQueryParamDecoderMatcher[String]("include")
+
+  // Custom decoder for Instant
+  implicit val instantQueryParamDecoder: QueryParamDecoder[Instant] =
+    QueryParamDecoder[String].emap { str =>
+      try Right(Instant.parse(str))
+      catch {
+        case _: DateTimeParseException =>
+          Left(ParseFailure(s"Invalid timestamp format: $str", s"Expected ISO-8601 format like 2024-01-01T00:00:00Z"))
+      }
+    }
+
+  object SinceParam extends OptionalQueryParamDecoderMatcher[Instant]("since")
 
   /**
    * Resolve external principal IDs to PrincipalIds.
@@ -209,34 +227,102 @@ object DocumentRoutes {
       } yield response
 
     // POST /api/v1/sync - Mark sync complete and optionally prune
+    // Supports dryRun to preview what would be deleted
     case req @ POST -> Root / "api" / "v1" / "sync" =>
       for {
         body <- req.attemptAs[SyncPruneRequest].value
         result <- body match {
           case Right(pruneReq) =>
-            // Prune documents not in keep list, then mark sync complete
-            for {
-              deleted <- ragService.pruneDocuments(pruneReq.keepDocumentIds.toSet)
-              _ <- ragService.markSyncComplete()
-            } yield Map(
-              "message" -> "Sync completed",
-              "prunedCount" -> deleted.toString
-            )
+            val isDryRun = pruneReq.dryRun.getOrElse(false)
+            if (isDryRun) {
+              // Dry run - just find orphans without deleting
+              ragService.findOrphanedDocuments(pruneReq.keepDocumentIds.toSet).map { orphans =>
+                SyncPruneResponse(
+                  message = s"Dry run: would delete ${orphans.size} documents",
+                  prunedCount = orphans.size,
+                  prunedIds = Some(orphans),
+                  dryRun = true
+                )
+              }
+            } else {
+              // Actual prune - delete orphans and mark sync complete
+              for {
+                deleted <- ragService.pruneDocuments(pruneReq.keepDocumentIds.toSet)
+                _ <- ragService.markSyncComplete()
+              } yield SyncPruneResponse(
+                message = "Sync completed",
+                prunedCount = deleted,
+                prunedIds = None,
+                dryRun = false
+              )
+            }
           case Left(_) =>
             // No body - just mark sync complete
-            ragService.markSyncComplete().as(Map(
-              "message" -> "Sync completed",
-              "prunedCount" -> "0"
+            ragService.markSyncComplete().as(SyncPruneResponse(
+              message = "Sync completed",
+              prunedCount = 0,
+              prunedIds = None,
+              dryRun = false
             ))
         }
         response <- Ok(result.asJson)
       } yield response
 
-    // GET /api/v1/sync/documents - List registered document IDs
-    case GET -> Root / "api" / "v1" / "sync" / "documents" =>
+    // GET /api/v1/sync/documents - List registered document states
+    // Query params:
+    //   - include=hash,updatedAt - Include additional fields
+    //   - since=2024-01-01T00:00:00Z - Only documents modified since this time
+    case GET -> Root / "api" / "v1" / "sync" / "documents" :? IncludeParam(includeOpt) +& SinceParam(sinceOpt) =>
       for {
-        docIds <- ragService.listDocumentIds
-        response <- Ok(Map("documentIds" -> docIds).asJson)
+        entries <- sinceOpt match {
+          case Some(since) => ragService.listDocumentEntriesSince(since)
+          case None => ragService.listDocumentEntries
+        }
+        includeFields = includeOpt.map(_.split(",").map(_.trim.toLowerCase).toSet).getOrElse(Set.empty)
+        documents = entries.map { entry =>
+          DocumentSyncState(
+            id = entry.documentId,
+            hash = if (includeFields.contains("hash")) Some(entry.contentHash) else None,
+            updatedAt = if (includeFields.contains("updatedat")) Some(entry.updatedAt) else None,
+            collection = entry.collection
+          )
+        }
+        response <- Ok(DocumentSyncListResponse(documents = documents, total = documents.size).asJson)
+      } yield response
+
+    // GET /api/v1/sync/documents/:id - Get single document state
+    case GET -> Root / "api" / "v1" / "sync" / "documents" / id =>
+      for {
+        entries <- ragService.getDocumentEntries(Seq(id))
+        response <- entries.headOption match {
+          case Some(entry) =>
+            Ok(DocumentSyncState(
+              id = entry.documentId,
+              hash = Some(entry.contentHash),
+              updatedAt = Some(entry.updatedAt),
+              collection = entry.collection
+            ).asJson)
+          case None =>
+            NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
+        }
+      } yield response
+
+    // POST /api/v1/sync/check - Batch check document states
+    case req @ POST -> Root / "api" / "v1" / "sync" / "check" =>
+      for {
+        body <- req.as[SyncCheckRequest]
+        entries <- ragService.getDocumentEntries(body.documentIds)
+        foundIds = entries.map(_.documentId).toSet
+        found = entries.map { entry =>
+          DocumentSyncState(
+            id = entry.documentId,
+            hash = Some(entry.contentHash),
+            updatedAt = Some(entry.updatedAt),
+            collection = entry.collection
+          )
+        }
+        missing = body.documentIds.filterNot(foundIds.contains)
+        response <- Ok(SyncCheckResponse(found = found, missing = missing).asJson)
       } yield response
 
     // DELETE /api/v1/documents - Clear all documents

@@ -157,6 +157,65 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
     }
   }
 
+  override def listEntries(): IO[Seq[DocumentEntry]] = IO {
+    val sql =
+      """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+        |FROM document_registry ORDER BY indexed_at""".stripMargin
+    val stmt = connection.createStatement()
+    try {
+      val rs = stmt.executeQuery(sql)
+      val entries = scala.collection.mutable.ArrayBuffer.empty[DocumentEntry]
+      while (rs.next()) {
+        entries += rowToEntry(rs)
+      }
+      entries.toSeq
+    } finally {
+      stmt.close()
+    }
+  }
+
+  override def listEntriesSince(since: Instant): IO[Seq[DocumentEntry]] = IO {
+    val sql =
+      """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+        |FROM document_registry WHERE updated_at > ? ORDER BY updated_at""".stripMargin
+    val stmt = connection.prepareStatement(sql)
+    try {
+      stmt.setTimestamp(1, Timestamp.from(since))
+      val rs = stmt.executeQuery()
+      val entries = scala.collection.mutable.ArrayBuffer.empty[DocumentEntry]
+      while (rs.next()) {
+        entries += rowToEntry(rs)
+      }
+      entries.toSeq
+    } finally {
+      stmt.close()
+    }
+  }
+
+  override def getMultiple(documentIds: Seq[String]): IO[Seq[DocumentEntry]] = IO {
+    if (documentIds.isEmpty) {
+      Seq.empty
+    } else {
+      // Use ANY with array for efficient batch lookup
+      val sql =
+        """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+          |FROM document_registry WHERE document_id = ANY(?)""".stripMargin
+      val stmt = connection.prepareStatement(sql)
+      try {
+        val array = connection.createArrayOf("text", documentIds.toArray)
+        stmt.setArray(1, array)
+        val rs = stmt.executeQuery()
+        val entries = scala.collection.mutable.ArrayBuffer.empty[DocumentEntry]
+        while (rs.next()) {
+          entries += rowToEntry(rs)
+        }
+        entries.toSeq
+      } finally {
+        stmt.close()
+      }
+    }
+  }
+
   override def listIdsByCollection(collection: String): IO[Seq[String]] = IO {
     val sql = "SELECT document_id FROM document_registry WHERE collection = ? ORDER BY indexed_at"
     val stmt = connection.prepareStatement(sql)
