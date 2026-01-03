@@ -76,6 +76,24 @@ const router = createRouter({
       meta: { title: 'Chat' }
     },
     {
+      path: '/users',
+      name: 'users',
+      component: () => import('@/views/Users.vue'),
+      meta: { title: 'Users' }
+    },
+    {
+      path: '/groups',
+      name: 'groups',
+      component: () => import('@/views/Groups.vue'),
+      meta: { title: 'Principals' }
+    },
+    {
+      path: '/permissions',
+      name: 'permissions',
+      component: () => import('@/views/Permissions.vue'),
+      meta: { title: 'Collection Permissions' }
+    },
+    {
       path: '/api-docs',
       name: 'api-docs',
       component: () => import('@/views/ApiDocs.vue'),

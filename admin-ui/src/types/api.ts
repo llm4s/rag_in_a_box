@@ -304,6 +304,63 @@ export interface ChatMessage {
   queryLogId?: string
 }
 
+// User management types
+export interface User {
+  id: number
+  username: string
+  role: string
+}
+
+export interface UserListResponse {
+  users: User[]
+  total: number
+}
+
+export interface CreateUserRequest {
+  username: string
+  password: string
+  role?: string
+}
+
+// Principal types
+export interface Principal {
+  id: number
+  externalId: string
+  principalType: string
+}
+
+export interface PrincipalListResponse {
+  principals: Principal[]
+  total: number
+}
+
+// Collection permission types
+export interface CollectionPermission {
+  id: number
+  path: string
+  parentPath?: string
+  queryableBy: number[]
+  isLeaf: boolean
+  isPublic: boolean
+  metadata: Record<string, string>
+}
+
+export interface CollectionListResponse {
+  collections: CollectionPermission[]
+}
+
+export interface CreateCollectionRequest {
+  path: string
+  description?: string
+  queryableBy?: string[]
+  isLeaf?: boolean
+  metadata?: Record<string, string>
+}
+
+export interface UpdatePermissionsRequest {
+  queryableBy: string[]
+}
+
 // API response wrapper
 export interface ApiResponse<T> {
   data?: T
