@@ -40,8 +40,9 @@ admin-ui/dist/
 # TypeScript build info
 *.tsbuildinfo
 
-# Vite generated JS
+# Vite generated files
 admin-ui/vite.config.js
+admin-ui/vite.config.d.ts
 
 # Playwright test reports
 admin-ui/playwright-report/
