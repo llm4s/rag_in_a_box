@@ -71,6 +71,21 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Map OAuth claims to principals
 - [ ] Support: Google, Azure AD, Okta, Keycloak
 
+#### 1.6 Tests
+- [ ] Unit tests for AuthService (password hashing, validation)
+- [ ] Unit tests for JwtService (token generation, expiry, validation)
+- [ ] Integration tests for auth endpoints (login, logout, me)
+- [ ] Integration tests for user management endpoints
+- [ ] Integration tests for access token endpoints
+- [ ] E2E tests for login flow in admin UI
+- [ ] E2E tests for protected route access
+
+#### 1.7 Documentation
+- [ ] Auth configuration guide (open/basic/oauth modes)
+- [ ] User management API reference
+- [ ] Access token guide for external ingesters
+- [ ] Security best practices guide
+
 ---
 
 ### Phase 2: External Ingester API (P0)
@@ -95,6 +110,16 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Document full sync pattern with curl examples
 - [ ] Document incremental sync pattern
 - [ ] Document event-driven sync pattern
+
+#### 2.4 Tests
+- [ ] Unit tests for enhanced sync query parsing
+- [ ] Integration tests for `GET /sync/documents?include=hash,updatedAt`
+- [ ] Integration tests for `GET /sync/documents?since=timestamp`
+- [ ] Integration tests for `POST /sync/check` batch endpoint
+- [ ] Integration tests for dry-run prune
+- [ ] Integration tests for batch delete
+- [ ] E2E test: full sync workflow (list → upsert → prune)
+- [ ] E2E test: incremental sync workflow
 
 ---
 
@@ -125,6 +150,19 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Confluence connector
 - [ ] SharePoint connector
 - [ ] Google Drive connector
+
+#### 3.5 Tests
+- [ ] Unit tests for file watcher debouncing logic
+- [ ] Integration tests for directory ingestion with file watching
+- [ ] Integration tests for S3 ingestion (using LocalStack)
+- [ ] Integration tests for web crawler (using mock server)
+- [ ] E2E test: mount directory, add/modify/delete files, verify index updates
+
+#### 3.6 Documentation
+- [ ] Directory ingestion configuration guide
+- [ ] S3/cloud storage setup guide
+- [ ] Web crawler configuration and best practices
+- [ ] Ingestion scheduling reference
 
 ---
 
@@ -163,6 +201,20 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Route queries to different configs
 - [ ] Compare metrics across configurations
 
+#### 4.6 Tests
+- [ ] Unit tests for metrics aggregation (p50/p95/p99 calculations)
+- [ ] Unit tests for optimization suggestion engine
+- [ ] Integration tests for query logging
+- [ ] Integration tests for feedback submission
+- [ ] Integration tests for analytics endpoints
+- [ ] E2E test: submit queries, provide feedback, verify analytics
+
+#### 4.7 Documentation
+- [ ] Query metrics reference (what's tracked, how to interpret)
+- [ ] Feedback system guide
+- [ ] Analytics dashboard walkthrough
+- [ ] Optimization tuning guide
+
 ---
 
 ### Phase 5: User Experience (P1)
@@ -189,6 +241,20 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Source status indicators (healthy/error)
 - [ ] Ingestion history with drill-down
 - [ ] Manual trigger buttons per source
+
+#### 5.4 Tests
+- [ ] E2E tests for chat interface (query, response, citations)
+- [ ] E2E tests for streaming responses
+- [ ] E2E tests for feedback buttons
+- [ ] E2E tests for permission management UI
+- [ ] E2E tests for ingestion dashboard
+- [ ] Component tests for ChatMessage.vue
+- [ ] Component tests for SourceCitation.vue
+
+#### 5.5 Documentation
+- [ ] Chat interface user guide
+- [ ] Permission management walkthrough
+- [ ] Ingestion dashboard guide
 
 ---
 
@@ -220,6 +286,88 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Cache layer (Redis for sessions, embeddings)
 - [ ] Load balancer configuration guide
 
+#### 6.5 Tests
+- [ ] Load tests for concurrent queries
+- [ ] Load tests for concurrent ingestion
+- [ ] Integration tests for rate limiting
+- [ ] Integration tests for multi-instance scenarios
+- [ ] Health check endpoint tests (deep checks)
+- [ ] Graceful shutdown tests
+
+#### 6.6 Documentation
+- [ ] Production deployment guide
+- [ ] Kubernetes deployment guide
+- [ ] Security hardening checklist
+- [ ] Monitoring and alerting setup
+- [ ] Troubleshooting guide
+
+---
+
+### Phase 7: Documentation Site (P0 - Ongoing)
+
+#### 7.1 Site Setup (Jekyll + GitHub Pages)
+- [ ] Create `docs/` directory structure (based on llm4s pattern)
+- [ ] Add Jekyll configuration (`_config.yml` with just-the-docs theme)
+- [ ] Add Gemfile for Jekyll dependencies
+- [ ] Configure GitHub Actions for automatic deployment
+- [ ] Set up custom domain (optional: docs.raginabox.dev or similar)
+- [ ] Add site logo and branding
+
+#### 7.2 Getting Started
+- [ ] Quick start guide (5-minute setup)
+- [ ] Docker installation guide
+- [ ] Docker Compose full stack guide
+- [ ] First document ingestion tutorial
+- [ ] First query tutorial
+
+#### 7.3 User Guide
+- [ ] Configuration reference (all options documented)
+- [ ] Authentication setup (open/basic/oauth)
+- [ ] Permission system guide (principals, collections, documents)
+- [ ] Chunking strategies guide
+- [ ] Search and query guide
+- [ ] Admin UI walkthrough
+
+#### 7.4 API Reference
+- [ ] REST API overview
+- [ ] Document endpoints reference
+- [ ] Sync endpoints reference
+- [ ] Query endpoints reference
+- [ ] Collection endpoints reference
+- [ ] Principal endpoints reference
+- [ ] Analytics endpoints reference
+- [ ] OpenAPI spec integration
+
+#### 7.5 Ingestion Guides
+- [ ] Built-in directory ingester guide
+- [ ] Built-in URL ingester guide
+- [ ] S3/cloud storage ingester guide
+- [ ] Web crawler guide
+- [ ] External ingester patterns (full sync, incremental)
+- [ ] Writing custom ingesters
+
+#### 7.6 Advanced Topics
+- [ ] Performance tuning guide
+- [ ] Scaling and high availability
+- [ ] RAGA evaluation and optimization
+- [ ] Monitoring with Prometheus/Grafana
+- [ ] Backup and recovery
+- [ ] Migration guide (version upgrades)
+
+#### 7.7 Examples
+- [ ] Example: Local documentation search
+- [ ] Example: Knowledge base with permissions
+- [ ] Example: Multi-tenant SaaS setup
+- [ ] Example: CI/CD integration for docs sync
+- [ ] Example: Custom ingester (Confluence, Notion)
+
+#### 7.8 Site Maintenance
+- [ ] Version dropdown for multiple releases
+- [ ] Search functionality
+- [ ] "Edit on GitHub" links
+- [ ] Changelog page
+- [ ] Contributing guide
+
 ---
 
 ## Quick Wins (Start Now)
@@ -230,6 +378,22 @@ These can be implemented quickly with high impact:
 - [ ] Add `POST /sync/check` for batch document state checks
 - [ ] Add `dryRun` option to prune endpoint
 - [ ] Create query_logs table and start collecting metrics
+- [ ] Set up docs/ folder with Jekyll for GitHub Pages
+- [ ] Write quick start guide
+
+---
+
+## Roadmap Summary
+
+| Phase | Priority | Key Deliverables |
+|-------|----------|------------------|
+| **1. Auth** | P0 | Basic auth (open/basic), access tokens, tests, docs |
+| **2. Ingester API** | P0 | Enhanced sync API, deleted doc detection, tests, docs |
+| **3. Built-in Ingesters** | P1 | S3, web crawler, file watch, tests, docs |
+| **4. RAGA Eval** | P1 | Query metrics, feedback, analytics, tests, docs |
+| **5. UX** | P1 | Chat interface, permission UI, tests, docs |
+| **6. Production** | P2 | Security, observability, K8s, tests, docs |
+| **7. Documentation Site** | P0 | GitHub Pages, getting started, API reference, guides |
 
 ---
 
@@ -241,6 +405,28 @@ These can be implemented quickly with high impact:
 | Multi-tenancy | Collection-based isolation | Leverages existing permission system |
 | SDK approach | REST API docs only | Users can use any HTTP client |
 | Licensing | Fully open source | Community-first approach, no enterprise paywall |
+| Documentation | Jekyll + GitHub Pages | Same stack as llm4s, easy to maintain |
+| Testing | Unit + Integration + E2E | Comprehensive coverage for all features |
+
+---
+
+## Testing Strategy
+
+Each phase includes comprehensive testing:
+
+| Test Type | Scope | Tools |
+|-----------|-------|-------|
+| **Unit Tests** | Individual functions, services | ScalaTest, ScalaMock |
+| **Integration Tests** | API endpoints, database operations | ScalaTest, Testcontainers (PostgreSQL) |
+| **E2E Tests** | Full user workflows | Playwright (Admin UI), HTTP client (API) |
+| **Component Tests** | Vue components in isolation | Vitest, Vue Test Utils |
+| **Load Tests** | Performance under load | Gatling or k6 |
+
+**Test Requirements:**
+- All new features must have corresponding tests before merge
+- Integration tests run against real PostgreSQL (via Testcontainers)
+- E2E tests run in CI on every PR
+- Coverage reports generated and tracked
 
 ---
 
