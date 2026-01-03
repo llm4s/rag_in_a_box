@@ -264,6 +264,46 @@ export interface QueryFeedbackResponse {
   message: string
 }
 
+// Query types
+export interface QueryRequest {
+  question: string
+  collection?: string
+  topK?: number
+  includeMetadata?: boolean
+}
+
+export interface ContextItem {
+  content: string
+  score: number
+  metadata: Record<string, string>
+  documentId?: string
+  chunkIndex?: number
+}
+
+export interface UsageInfo {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export interface QueryResponse {
+  answer: string
+  contexts: ContextItem[]
+  usage?: UsageInfo
+}
+
+// Chat types (frontend-only)
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  contexts?: ContextItem[]
+  usage?: UsageInfo
+  timestamp: Date
+  rating?: number
+  queryLogId?: string
+}
+
 // API response wrapper
 export interface ApiResponse<T> {
   data?: T

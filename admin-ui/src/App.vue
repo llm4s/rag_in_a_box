@@ -47,6 +47,8 @@ onUnmounted(() => {
 
 const navItems = [
   { title: 'Dashboard', icon: 'mdi-view-dashboard', to: '/' },
+  { title: 'Chat', icon: 'mdi-chat', to: '/chat' },
+  { divider: true },
   { title: 'Documents', icon: 'mdi-file-document-multiple', to: '/documents' },
   { title: 'Upload', icon: 'mdi-upload', to: '/documents/upload' },
   { divider: true },

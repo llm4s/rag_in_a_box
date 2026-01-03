@@ -70,6 +70,12 @@ const router = createRouter({
       meta: { title: 'Query Analytics' }
     },
     {
+      path: '/chat',
+      name: 'chat',
+      component: () => import('@/views/Chat.vue'),
+      meta: { title: 'Chat' }
+    },
+    {
       path: '/api-docs',
       name: 'api-docs',
       component: () => import('@/views/ApiDocs.vue'),
