@@ -6,7 +6,7 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import ragbox.ingestion.{IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig}
+import ragbox.ingestion.{IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig}
 import ragbox.model._
 import ragbox.model.Codecs._
 
@@ -156,6 +156,17 @@ object IngestionRoutes {
         config = Map(
           "url" -> db.url.replaceAll(":[^:@]+@", ":****@"), // Mask password in URL
           "query" -> (db.query.take(50) + (if (db.query.length > 50) "..." else ""))
+        )
+      )
+    case web: WebCrawlerSourceConfig =>
+      SourceInfo(
+        name = web.name,
+        sourceType = "web",
+        enabled = web.enabled,
+        config = Map(
+          "seed-urls" -> web.seedUrls.mkString(","),
+          "max-depth" -> web.maxDepth.toString,
+          "max-pages" -> web.maxPages.toString
         )
       )
   }

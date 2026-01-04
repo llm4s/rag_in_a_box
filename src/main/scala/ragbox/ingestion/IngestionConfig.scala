@@ -73,6 +73,37 @@ final case class DatabaseSourceConfig(
 ) extends SourceConfig
 
 /**
+ * Web crawler source configuration for crawling websites.
+ *
+ * @param name Source name
+ * @param seedUrls Starting URLs to crawl from
+ * @param maxDepth Maximum link depth to follow (0 = seed URLs only)
+ * @param maxPages Maximum total pages to crawl
+ * @param followPatterns URL patterns to follow (glob syntax with * wildcards)
+ * @param excludePatterns URL patterns to exclude
+ * @param respectRobotsTxt Whether to respect robots.txt directives
+ * @param delayMs Delay between requests in milliseconds (rate limiting)
+ * @param timeoutMs HTTP request timeout in milliseconds
+ * @param sameDomainOnly Whether to restrict crawling to seed domains
+ * @param metadata Additional metadata to attach to all documents
+ * @param enabled Whether this source is enabled
+ */
+final case class WebCrawlerSourceConfig(
+  name: String,
+  seedUrls: Seq[String],
+  maxDepth: Int = 3,
+  maxPages: Int = 500,
+  followPatterns: Seq[String] = Seq("*"),
+  excludePatterns: Seq[String] = Seq.empty,
+  respectRobotsTxt: Boolean = true,
+  delayMs: Int = 500,
+  timeoutMs: Int = 30000,
+  sameDomainOnly: Boolean = true,
+  metadata: Map[String, String] = Map.empty,
+  enabled: Boolean = true
+) extends SourceConfig
+
+/**
  * Overall ingestion configuration.
  */
 final case class IngestionConfig(
@@ -208,6 +239,40 @@ object IngestionConfig {
             idColumn = idColumn,
             contentColumn = contentColumn,
             updatedAtColumn = updatedAtColumn,
+            metadata = metadata,
+            enabled = enabled
+          ))
+        } else {
+          None
+        }
+
+      case "web" | "crawler" | "web-crawler" =>
+        val seedUrls = Try(config.getStringList("seed-urls").asScala.toSeq)
+          .orElse(Try(config.getStringList("urls").asScala.toSeq))
+          .getOrElse(Seq.empty)
+        val maxDepth = Try(config.getInt("max-depth")).getOrElse(3)
+        val maxPages = Try(config.getInt("max-pages")).getOrElse(500)
+        val followPatterns = Try(config.getStringList("follow-patterns").asScala.toSeq)
+          .getOrElse(Seq("*"))
+        val excludePatterns = Try(config.getStringList("exclude-patterns").asScala.toSeq)
+          .getOrElse(Seq.empty)
+        val respectRobotsTxt = Try(config.getBoolean("respect-robots-txt")).getOrElse(true)
+        val delayMs = Try(config.getInt("delay-ms")).getOrElse(500)
+        val timeoutMs = Try(config.getInt("timeout-ms")).getOrElse(30000)
+        val sameDomainOnly = Try(config.getBoolean("same-domain-only")).getOrElse(true)
+
+        if (seedUrls.nonEmpty) {
+          Some(WebCrawlerSourceConfig(
+            name = name,
+            seedUrls = seedUrls,
+            maxDepth = maxDepth,
+            maxPages = maxPages,
+            followPatterns = followPatterns,
+            excludePatterns = excludePatterns,
+            respectRobotsTxt = respectRobotsTxt,
+            delayMs = delayMs,
+            timeoutMs = timeoutMs,
+            sameDomainOnly = sameDomainOnly,
             metadata = metadata,
             enabled = enabled
           ))

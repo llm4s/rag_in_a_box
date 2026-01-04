@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import org.llm4s.rag.RAG
-import org.llm4s.rag.loader.{DirectoryLoader, UrlLoader, DocumentLoader, LoadStats, SyncStats}
+import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadStats, SyncStats}
 import ragbox.model._
 
 import java.io.File
@@ -105,6 +105,8 @@ class IngestionService(
         runUrlIngestion(url, startTime)
       case db: DatabaseSourceConfig =>
         runDatabaseIngestion(db, startTime)
+      case web: WebCrawlerSourceConfig =>
+        runWebCrawlerIngestion(web, startTime)
     }
   }
 
@@ -279,6 +281,67 @@ class IngestionService(
         endTime = Instant.now(),
         error = Some(e.getMessage)
       )
+    }
+  }
+
+  /**
+   * Run web crawler ingestion.
+   *
+   * Crawls websites starting from seed URLs and ingests discovered pages.
+   * Uses sync for incremental updates based on URL and content hash.
+   */
+  private def runWebCrawlerIngestion(
+    config: WebCrawlerSourceConfig,
+    startTime: Instant
+  ): IO[IngestionResult] = {
+    rag.flatMap { r =>
+      // Build CrawlerConfig from source config
+      val crawlerConfig = CrawlerConfig(
+        maxDepth = config.maxDepth,
+        maxPages = config.maxPages,
+        followPatterns = config.followPatterns,
+        excludePatterns = config.excludePatterns,
+        respectRobotsTxt = config.respectRobotsTxt,
+        delayMs = config.delayMs,
+        timeoutMs = config.timeoutMs,
+        sameDomainOnly = config.sameDomainOnly
+      )
+
+      // Create WebCrawlerLoader with seed URLs and config
+      val loader = WebCrawlerLoader(
+        seedUrls = config.seedUrls,
+        config = crawlerConfig,
+        metadata = config.metadata + ("source" -> config.name)
+      )
+
+      IO.fromEither(
+        r.sync(loader).map { stats =>
+          IngestionResult(
+            sourceName = config.name,
+            sourceType = "web",
+            documentsAdded = stats.added,
+            documentsUpdated = stats.updated,
+            documentsDeleted = stats.deleted,
+            documentsUnchanged = stats.unchanged,
+            documentsFailed = 0,
+            startTime = startTime,
+            endTime = Instant.now()
+          )
+        }.left.map(e => new RuntimeException(e.message))
+      ).handleError { e =>
+        IngestionResult(
+          sourceName = config.name,
+          sourceType = "web",
+          documentsAdded = 0,
+          documentsUpdated = 0,
+          documentsDeleted = 0,
+          documentsUnchanged = 0,
+          documentsFailed = 0,
+          startTime = startTime,
+          endTime = Instant.now(),
+          error = Some(e.getMessage)
+        )
+      }
     }
   }
 

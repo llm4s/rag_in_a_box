@@ -41,6 +41,7 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
       case _: DirectorySourceConfig => "directory"
       case _: UrlSourceConfig => "url"
       case _: DatabaseSourceConfig => "database"
+      case _: WebCrawlerSourceConfig => "web"
     }
   }
 
@@ -149,6 +150,82 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
         db.idColumn `shouldBe` "doc_id"
         db.contentColumn `shouldBe` "body"
       case _ => fail("Expected DatabaseSourceConfig")
+    }
+  }
+
+  it should "load web crawler sources" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "web"
+        |      name = "company-docs"
+        |      seed-urls = ["https://docs.example.com", "https://help.example.com"]
+        |      max-depth = 3
+        |      max-pages = 100
+        |      follow-patterns = ["docs.example.com/*", "help.example.com/*"]
+        |      exclude-patterns = ["*/api/*", "*/changelog/*"]
+        |      respect-robots-txt = true
+        |      delay-ms = 1000
+        |      timeout-ms = 60000
+        |      same-domain-only = true
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case web: WebCrawlerSourceConfig =>
+        web.name `shouldBe` "company-docs"
+        web.seedUrls.size `shouldBe` 2
+        web.maxDepth `shouldBe` 3
+        web.maxPages `shouldBe` 100
+        web.followPatterns.size `shouldBe` 2
+        web.excludePatterns.size `shouldBe` 2
+        web.respectRobotsTxt `shouldBe` true
+        web.delayMs `shouldBe` 1000
+        web.timeoutMs `shouldBe` 60000
+        web.sameDomainOnly `shouldBe` true
+      case _ => fail("Expected WebCrawlerSourceConfig")
+    }
+  }
+
+  it should "load web crawler with default values" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "web"
+        |      name = "simple-crawler"
+        |      seed-urls = ["https://example.com"]
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case web: WebCrawlerSourceConfig =>
+        web.name `shouldBe` "simple-crawler"
+        web.seedUrls.size `shouldBe` 1
+        web.maxDepth `shouldBe` 3  // default
+        web.maxPages `shouldBe` 500  // default
+        web.followPatterns `shouldBe` Seq("*")  // default
+        web.excludePatterns `shouldBe` Seq.empty  // default
+        web.respectRobotsTxt `shouldBe` true  // default
+        web.delayMs `shouldBe` 500  // default
+        web.timeoutMs `shouldBe` 30000  // default
+        web.sameDomainOnly `shouldBe` true  // default
+      case _ => fail("Expected WebCrawlerSourceConfig")
     }
   }
 
