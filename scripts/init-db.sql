@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS document_registry (
     content_hash TEXT NOT NULL,
     chunk_count INTEGER NOT NULL DEFAULT 0,
     metadata JSONB DEFAULT '{}',
+    collection TEXT,
     indexed_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -24,6 +25,10 @@ CREATE TABLE IF NOT EXISTS document_registry (
 -- Index for finding stale documents
 CREATE INDEX IF NOT EXISTS idx_document_registry_indexed_at
     ON document_registry(indexed_at);
+
+-- Index for collection-based queries
+CREATE INDEX IF NOT EXISTS idx_document_registry_collection
+    ON document_registry(collection);
 
 -- Sync tracking table for last sync time
 CREATE TABLE IF NOT EXISTS sync_status (

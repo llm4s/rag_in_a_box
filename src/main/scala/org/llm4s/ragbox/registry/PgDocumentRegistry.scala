@@ -51,10 +51,6 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
         """CREATE INDEX IF NOT EXISTS idx_document_registry_indexed_at
           |    ON document_registry(indexed_at)""".stripMargin
       )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_document_registry_collection
-          |    ON document_registry(collection)""".stripMargin
-      )
       // Add collection column if not exists (for existing installations)
       stmt.execute(
         """DO $$ BEGIN
@@ -62,6 +58,11 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
           |EXCEPTION
           |    WHEN duplicate_column THEN NULL;
           |END $$""".stripMargin
+      )
+      // Create collection index after ensuring column exists
+      stmt.execute(
+        """CREATE INDEX IF NOT EXISTS idx_document_registry_collection
+          |    ON document_registry(collection)""".stripMargin
       )
       stmt.execute(
         """CREATE TABLE IF NOT EXISTS sync_status (
