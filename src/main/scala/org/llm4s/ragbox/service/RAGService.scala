@@ -186,15 +186,19 @@ class RAGService(
 
   /**
    * Get RAG statistics.
+   * Uses document/chunk registries for persistent counts.
    */
   def getStats: IO[StatsResponse] =
     for {
       r <- rag
       stats <- IO.fromEither(r.stats.left.map(e => new RuntimeException(e.message)))
+      // Use registries for accurate persistent counts
+      docCount <- documentRegistry.count()
+      chunkCount <- chunkStore.count()
       collectionStats <- getCollectionStats
     } yield StatsResponse(
-      documentCount = stats.documentCount,
-      chunkCount = stats.chunkCount,
+      documentCount = docCount.toInt,
+      chunkCount = chunkCount,
       vectorCount = stats.vectorCount,
       collections = collectionStats
     )
