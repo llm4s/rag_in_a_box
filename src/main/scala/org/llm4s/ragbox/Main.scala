@@ -19,6 +19,7 @@ import org.llm4s.ragbox.middleware.{AuthMiddleware, RateLimitMiddleware, Request
 import org.llm4s.ragbox.registry.{PgCollectionConfigRegistry, QueryLogRegistry}
 import org.llm4s.ragbox.routes._
 import org.llm4s.ragbox.service.RAGService
+import org.llm4s.ragbox.auth.{AuthService, UserRegistry, AccessTokenRegistry}
 
 import scala.concurrent.duration._
 
@@ -77,6 +78,11 @@ object Main extends IOApp {
       // Create Query Log Registry for analytics
       queryLogRegistry <- Resource.make(QueryLogRegistry(config.database))(_.close())
 
+      // Create Auth services
+      userRegistry <- Resource.make(UserRegistry(config.database))(_.close())
+      tokenRegistry <- Resource.make(AccessTokenRegistry(config.database))(_.close())
+      authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
+
       // Create Ingestion service and scheduler
       ingestionService = IngestionService(ragService.rag, config.ingestion)
       scheduler = IngestionScheduler(ingestionService, config.ingestion)
@@ -96,6 +102,8 @@ object Main extends IOApp {
         "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
         "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
         "/" -> AnalyticsRoutes.routes(queryLogRegistry),
+        "/" -> AuthRoutes.routes(authService, userRegistry, config.security.auth.jwtExpiration),
+        "/" -> TokenRoutes.routes(tokenRegistry, authService),
         "/" -> StaticRoutes.routes
       )
 
