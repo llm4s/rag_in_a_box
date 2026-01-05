@@ -54,6 +54,10 @@ lazy val root = (project in file("."))
     assembly / assemblyJarName := "ragbox-assembly.jar",
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
+      // Discard signature files from signed JARs (BouncyCastle, etc.)
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".SF")) => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".DSA")) => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".RSA")) => MergeStrategy.discard
       case PathList("META-INF", xs @ _*) => MergeStrategy.first
       case PathList("reference.conf") => MergeStrategy.concat
       case PathList("module-info.class") => MergeStrategy.discard
