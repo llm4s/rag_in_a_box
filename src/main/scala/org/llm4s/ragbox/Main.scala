@@ -58,7 +58,7 @@ object Main extends IOApp {
 
       // Try to create SearchIndex for permission-based RAG
       // Falls back to legacy mode if SearchIndex creation fails
-      // TODO: PgSearchIndex in llm4s is not persisting vectors - disabled until fixed
+      // TODO: Re-enable when llm4s 0.2.8 is published - PgSearchIndex persistence bug
       searchIndexOpt <- Resource.eval(IO.pure(None: Option[SearchIndex]))
 
       // Create RAG service with PostgreSQL-backed document registry

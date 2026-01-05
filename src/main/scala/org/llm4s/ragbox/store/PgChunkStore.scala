@@ -286,10 +286,15 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
   }
 
   override def countByCollection(collection: String): IO[Int] = IO {
-    val sql = "SELECT COUNT(*) FROM chunk_registry WHERE collection = ?"
+    // Handle "default" as the pseudo-collection for chunks without explicit collection
+    val (sql, useParam) = if (collection == "default") {
+      ("SELECT COUNT(*) FROM chunk_registry WHERE collection IS NULL", false)
+    } else {
+      ("SELECT COUNT(*) FROM chunk_registry WHERE collection = ?", true)
+    }
     val stmt = connection.prepareStatement(sql)
     try {
-      stmt.setString(1, collection)
+      if (useParam) stmt.setString(1, collection)
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getInt(1) else 0
     } finally {
@@ -308,10 +313,15 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
   }
 
   override def avgChunkSizeByCollection(collection: String): IO[Double] = IO {
-    val sql = "SELECT AVG(content_length) FROM chunk_registry WHERE collection = ?"
+    // Handle "default" as the pseudo-collection for chunks without explicit collection
+    val (sql, useParam) = if (collection == "default") {
+      ("SELECT AVG(content_length) FROM chunk_registry WHERE collection IS NULL", false)
+    } else {
+      ("SELECT AVG(content_length) FROM chunk_registry WHERE collection = ?", true)
+    }
     val stmt = connection.prepareStatement(sql)
     try {
-      stmt.setString(1, collection)
+      if (useParam) stmt.setString(1, collection)
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getDouble(1) else 0.0
     } finally {

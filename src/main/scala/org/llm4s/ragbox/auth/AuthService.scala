@@ -65,25 +65,31 @@ class AuthService(
 
   /**
    * Initialize the auth service.
-   * Creates the default admin user if it doesn't exist (for basic auth mode).
+   * Creates the default admin user if no users exist.
+   * For basic auth mode, uses ADMIN_PASSWORD env var.
+   * For open mode, uses "admin" as default password for convenience.
    */
   def initialize(): IO[Unit] = {
-    authConfig.mode match {
-      case AuthMode.Basic =>
-        authConfig.basic.adminPassword match {
-          case Some(password) =>
-            userRegistry.exists(authConfig.basic.adminUsername).flatMap {
-              case true => IO.unit  // Admin already exists
-              case false =>
-                val hash = hashPassword(password)
-                userRegistry.create(authConfig.basic.adminUsername, hash, UserRole.Admin).void
+    userRegistry.count().flatMap { userCount =>
+      if (userCount > 0) {
+        IO.unit  // Users already exist, skip bootstrap
+      } else {
+        // No users exist - create default admin
+        val adminUsername = authConfig.basic.adminUsername
+        val adminPassword = authConfig.mode match {
+          case AuthMode.Basic =>
+            authConfig.basic.adminPassword.getOrElse {
+              throw new RuntimeException("ADMIN_PASSWORD must be set when auth.mode=basic")
             }
-          case None =>
-            IO.raiseError(new RuntimeException(
-              "ADMIN_PASSWORD must be set when auth.mode=basic"
-            ))
+          case _ =>
+            // For open mode, use provided password or default to "admin"
+            authConfig.basic.adminPassword.getOrElse("admin")
         }
-      case _ => IO.unit
+        val hash = hashPassword(adminPassword)
+        userRegistry.create(adminUsername, hash, UserRole.Admin).flatMap { user =>
+          IO(println(s"  Created default admin user: ${user.username}"))
+        }
+      }
     }
   }
 

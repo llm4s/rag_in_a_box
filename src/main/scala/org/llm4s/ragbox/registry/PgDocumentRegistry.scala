@@ -218,10 +218,15 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
   }
 
   override def listIdsByCollection(collection: String): IO[Seq[String]] = IO {
-    val sql = "SELECT document_id FROM document_registry WHERE collection = ? ORDER BY indexed_at"
+    // Handle "default" as the pseudo-collection for documents without explicit collection
+    val (sql, useParam) = if (collection == "default") {
+      ("SELECT document_id FROM document_registry WHERE collection IS NULL ORDER BY indexed_at", false)
+    } else {
+      ("SELECT document_id FROM document_registry WHERE collection = ? ORDER BY indexed_at", true)
+    }
     val stmt = connection.prepareStatement(sql)
     try {
-      stmt.setString(1, collection)
+      if (useParam) stmt.setString(1, collection)
       val rs = stmt.executeQuery()
       val ids = scala.collection.mutable.ArrayBuffer.empty[String]
       while (rs.next()) {
@@ -234,6 +239,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
   }
 
   override def listCollections(): IO[Seq[String]] = IO {
+    // First get all distinct non-null collections
     val sql = "SELECT DISTINCT collection FROM document_registry WHERE collection IS NOT NULL ORDER BY collection"
     val stmt = connection.createStatement()
     try {
@@ -242,7 +248,21 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       while (rs.next()) {
         collections += rs.getString("collection")
       }
-      collections.toSeq
+      // Also check if there are documents with no collection (legacy/default)
+      val defaultCheckSql = "SELECT EXISTS(SELECT 1 FROM document_registry WHERE collection IS NULL)"
+      val defaultCheck = connection.createStatement()
+      try {
+        val defaultRs = defaultCheck.executeQuery(defaultCheckSql)
+        val hasDefault = defaultRs.next() && defaultRs.getBoolean(1)
+        if (hasDefault) {
+          // Prepend "default" for documents without explicit collection
+          ("default" +: collections.toSeq)
+        } else {
+          collections.toSeq
+        }
+      } finally {
+        defaultCheck.close()
+      }
     } finally {
       stmt.close()
     }
@@ -260,10 +280,15 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
   }
 
   override def countByCollection(collection: String): IO[Int] = IO {
-    val sql = "SELECT COUNT(*) FROM document_registry WHERE collection = ?"
+    // Handle "default" as the pseudo-collection for documents without explicit collection
+    val (sql, useParam) = if (collection == "default") {
+      ("SELECT COUNT(*) FROM document_registry WHERE collection IS NULL", false)
+    } else {
+      ("SELECT COUNT(*) FROM document_registry WHERE collection = ?", true)
+    }
     val stmt = connection.prepareStatement(sql)
     try {
-      stmt.setString(1, collection)
+      if (useParam) stmt.setString(1, collection)
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getInt(1) else 0
     } finally {

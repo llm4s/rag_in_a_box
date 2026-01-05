@@ -154,7 +154,8 @@ object DocumentRoutes {
     case req @ PUT -> Root / "api" / "v1" / "documents" / id =>
       for {
         body <- req.as[DocumentUpsertRequest]
-        metadata = body.metadata.getOrElse(Map.empty)
+        metadata = body.metadata.getOrElse(Map.empty) ++
+          body.collection.map("collection" -> _).toMap
         result <- ((ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
           // Permission-aware upsert when SearchIndex is available and collection specified
           case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
