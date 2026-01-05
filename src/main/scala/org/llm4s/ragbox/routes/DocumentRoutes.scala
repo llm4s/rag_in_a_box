@@ -125,14 +125,21 @@ object DocumentRoutes {
     // GET /api/v1/documents - List documents
     case GET -> Root / "api" / "v1" / "documents" =>
       for {
-        stats <- ragService.getStats.attempt
-        response <- stats match {
-          case Right(s) =>
-            // Note: llm4s RAG doesn't expose document listing directly
-            // Return stats-based info for now
+        entries <- ragService.listDocumentEntries.attempt
+        response <- entries match {
+          case Right(docs) =>
+            val documentInfos = docs.map { entry =>
+              DocumentInfo(
+                id = entry.documentId,
+                filename = entry.metadata.getOrElse("filename", entry.documentId),
+                chunkCount = entry.chunkCount,
+                metadata = entry.metadata,
+                createdAt = Some(entry.indexedAt)
+              )
+            }
             Ok(DocumentListResponse(
-              documents = Seq.empty, // Would need document registry
-              total = s.documentCount
+              documents = documentInfos,
+              total = documentInfos.size
             ).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
