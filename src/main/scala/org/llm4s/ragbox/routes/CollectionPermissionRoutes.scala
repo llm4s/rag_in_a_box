@@ -177,17 +177,14 @@ object CollectionPermissionRoutes {
 
     // GET /api/v1/collections/:path - Get collection by path
     // Note: path can contain slashes, so we match the remainder
-    case GET -> Root / "api" / "v1" / "collections" / path if !path.contains("/") =>
+    // Exclude "configs" which is handled by CollectionConfigRoutes
+    case GET -> Root / "api" / "v1" / "collections" / path if !path.contains("/") && path != "configs" =>
       getCollection(collectionStore, path)
 
-    case GET -> "api" /: "v1" /: "collections" /: rest =>
+    case GET -> "api" /: "v1" /: "collections" /: rest
+        if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" =>
       val path = rest.segments.mkString("/")
-      if (path == "accessible") {
-        // Skip - handled by explicit route above
-        NotFound(ErrorResponse.notFound("Collection not found").asJson)
-      } else {
-        getCollection(collectionStore, path)
-      }
+      getCollection(collectionStore, path)
 
     // PUT /api/v1/collections/:path/permissions - Update collection permissions
     case req @ PUT -> Root / "api" / "v1" / "collections" / path / "permissions" =>

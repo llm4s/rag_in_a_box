@@ -71,5 +71,38 @@ object RuntimeConfigRoutes {
         result <- configManager.getHistory(page.getOrElse(1), pageSize.getOrElse(50))
         response <- Ok(result.asJson)
       } yield response
+
+    // GET /api/v1/config/runtime/meta - Get metadata about configurable settings
+    case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" =>
+      for {
+        current <- configManager.get
+        meta: Seq[ConfigMetaItem] = Seq(
+          ConfigMetaItem("topK", current.config.topK.toString, "hot", "Number of chunks to retrieve for context", requiresRestart = false),
+          ConfigMetaItem("fusionStrategy", current.config.fusionStrategy, "hot", "Strategy for combining search results (rrf, simple)", requiresRestart = false),
+          ConfigMetaItem("rrfK", current.config.rrfK.toString, "hot", "RRF constant for ranking fusion", requiresRestart = false),
+          ConfigMetaItem("systemPrompt", current.config.systemPrompt, "hot", "Custom system prompt for LLM", requiresRestart = false),
+          ConfigMetaItem("llmTemperature", current.config.llmTemperature.toString, "hot", "LLM temperature (0.0-1.0)", requiresRestart = false),
+          ConfigMetaItem("chunkingStrategy", current.config.chunkingStrategy, "warm", "Strategy for splitting documents (sentence, paragraph, fixed)", requiresRestart = false),
+          ConfigMetaItem("chunkSize", current.config.chunkSize.toString, "warm", "Target chunk size in characters", requiresRestart = false),
+          ConfigMetaItem("chunkOverlap", current.config.chunkOverlap.toString, "warm", "Overlap between chunks in characters", requiresRestart = false)
+        )
+        response <- Ok(meta.asJson)
+      } yield response
   }
+}
+
+/**
+ * Metadata about a configuration item.
+ */
+final case class ConfigMetaItem(
+  key: String,
+  value: String,
+  `type`: String,  // "hot", "warm", or "cold"
+  description: String,
+  requiresRestart: Boolean
+)
+
+object ConfigMetaItem {
+  import io.circe.generic.semiauto._
+  implicit val encoder: io.circe.Encoder[ConfigMetaItem] = deriveEncoder
 }
