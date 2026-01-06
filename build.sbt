@@ -1,5 +1,12 @@
 import sbt._
 
+// Code coverage settings (ThisBuild scope for scoverage)
+ThisBuild / coverageEnabled := false
+ThisBuild / coverageMinimumStmtTotal := 60
+ThisBuild / coverageFailOnMinimum := false
+ThisBuild / coverageHighlighting := true
+ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
+
 lazy val root = (project in file("."))
   .settings(
     name := "rag-in-a-box",
@@ -81,10 +88,4 @@ lazy val root = (project in file("."))
       }
     }.taskValue,
 
-    // Code coverage settings
-    coverageEnabled := false,
-    coverageMinimumStmtTotal := 60,
-    coverageFailOnMinimum := false,
-    coverageHighlighting := true,
-    coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
   )

@@ -75,7 +75,15 @@ jobs:
         run: sbt compile
 
       - name: Run tests with coverage
-        run: sbt coverage test coverageReport
+        run: sbt clean coverage test coverageReport
+
+      - name: Debug - List coverage files
+        if: always()
+        run: |
+          echo "Looking for scoverage reports..."
+          find target -name "scoverage.xml" 2>/dev/null || echo "No scoverage.xml found"
+          find target -name "*.xml" -path "*scoverage*" 2>/dev/null || echo "No scoverage XML files found"
+          ls -la target/scala-3.7.1/ 2>/dev/null || echo "No scala-3.7.1 directory"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
