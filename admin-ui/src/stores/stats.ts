@@ -14,11 +14,12 @@ export const useStatsStore = defineStore('stats', () => {
     error.value = null
     try {
       visibilityStats.value = await visibilityApi.getVisibilityStats()
+      // Use collections from visibility stats directly (it includes them)
       stats.value = {
         documentCount: visibilityStats.value.documentCount,
         chunkCount: visibilityStats.value.chunkCount,
         collectionCount: visibilityStats.value.collectionCount,
-        collections: []
+        collections: visibilityStats.value.collections ?? []
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch stats'
@@ -28,6 +29,7 @@ export const useStatsStore = defineStore('stats', () => {
   }
 
   async function fetchCollections() {
+    // Collections are now fetched with stats, but keep this for explicit refresh
     try {
       const collections = await visibilityApi.getCollections()
       if (stats.value) {

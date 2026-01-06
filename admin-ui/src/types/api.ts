@@ -48,6 +48,7 @@ export interface VisibilityStats {
   avgChunksPerDocument: number
   totalContentSize: number
   chunkSizeDistribution: ChunkSizeDistribution
+  collections?: CollectionStats[]
 }
 
 export interface ChunkSizeDistribution {

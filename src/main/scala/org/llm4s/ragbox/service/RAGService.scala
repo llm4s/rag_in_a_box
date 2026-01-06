@@ -814,21 +814,27 @@ class RAGService(
       chunkDist <- chunkStore.getChunkSizeDistribution()
       collections <- getDetailedCollectionStats
       chunkCount <- chunkStore.count()
-    } yield DetailedStatsResponse(
-      documentCount = basicStats.documentCount,
-      chunkCount = chunkCount,
-      vectorCount = basicStats.vectorCount,
-      collections = collections,
-      chunkSizeDistribution = chunkDist,
-      indexedSince = firstIngestionTime,
-      lastIngestion = lastIngestionTime,
-      currentConfig = ChunkConfigSnapshot(
-        strategy = config.rag.chunking.strategy,
-        targetSize = config.rag.chunking.size,
-        maxSize = (config.rag.chunking.size * 1.5).toInt,
-        overlap = config.rag.chunking.overlap
+    } yield {
+      val docCount = basicStats.documentCount
+      val avgChunks = if (docCount > 0) chunkCount.toDouble / docCount else 0.0
+      DetailedStatsResponse(
+        documentCount = docCount,
+        chunkCount = chunkCount,
+        vectorCount = basicStats.vectorCount,
+        collectionCount = collections.size,
+        avgChunksPerDocument = avgChunks,
+        collections = collections,
+        chunkSizeDistribution = chunkDist,
+        indexedSince = firstIngestionTime,
+        lastIngestion = lastIngestionTime,
+        currentConfig = ChunkConfigSnapshot(
+          strategy = config.rag.chunking.strategy,
+          targetSize = config.rag.chunking.size,
+          maxSize = (config.rag.chunking.size * 1.5).toInt,
+          overlap = config.rag.chunking.overlap
+        )
       )
-    )
+    }
 
   /**
    * Get detailed collection statistics.

@@ -224,6 +224,8 @@ final case class DetailedStatsResponse(
   documentCount: Int,
   chunkCount: Int,
   vectorCount: Long,
+  collectionCount: Int,
+  avgChunksPerDocument: Double,
   collections: Seq[DetailedCollectionStats],
   chunkSizeDistribution: ChunkSizeDistribution,
   indexedSince: Option[Instant],
