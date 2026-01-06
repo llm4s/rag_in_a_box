@@ -17,9 +17,8 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
-      // LLM4s - RAG framework (0.2.7 adds WebCrawlerLoader)
-      // TODO: Update to 0.2.8 when available for PgSearchIndex persistence fix
-      "org.llm4s" %% "core" % "0.2.7",
+      // LLM4s - RAG framework (0.2.8 fixes PgSearchIndex persistence)
+      "org.llm4s" %% "core" % "0.2.8",
 
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
