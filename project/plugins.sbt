@@ -6,3 +6,6 @@ addSbtPlugin("io.spray" % "sbt-revolver" % "0.10.0")
 
 // Native packager for Docker builds
 addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.10.4")
+
+// Code coverage with scoverage
+addSbtPlugin("org.scoverage" % "sbt-scoverage" % "2.0.12")

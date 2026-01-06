@@ -14,7 +14,7 @@ import scala.compiletime.uninitialized
  *
  * Tracks all queries for analytics and RAGA evaluation.
  */
-class QueryLogRegistry(dbConfig: DatabaseConfig) {
+class QueryLogRegistry(dbConfig: DatabaseConfig) extends QueryLogRegistryBase {
 
   private var connection: Connection = uninitialized
 

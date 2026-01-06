@@ -10,7 +10,7 @@ import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.http4s.QueryParamDecoder
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.registry.QueryLogRegistry
+import org.llm4s.ragbox.registry.QueryLogRegistryBase
 
 import java.time.Instant
 import java.time.format.DateTimeParseException
@@ -39,7 +39,7 @@ object AnalyticsRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(queryLogRegistry: QueryLogRegistry): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(queryLogRegistry: QueryLogRegistryBase): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // GET /api/v1/analytics/queries - List query logs with pagination
     // Query params: from, to, collection, page, pageSize

@@ -79,5 +79,12 @@ lazy val root = (project in file("."))
         println(s"[warn] Admin UI dist not found at $adminUiDist - skipping copy")
         Seq.empty[File]
       }
-    }.taskValue
+    }.taskValue,
+
+    // Code coverage settings
+    coverageEnabled := false,
+    coverageMinimumStmtTotal := 60,
+    coverageFailOnMinimum := false,
+    coverageHighlighting := true,
+    coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
   )

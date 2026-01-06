@@ -10,7 +10,7 @@ import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.registry.QueryLogRegistry
+import org.llm4s.ragbox.registry.QueryLogRegistryBase
 import org.llm4s.ragbox.service.RAGService
 
 /**
@@ -31,7 +31,7 @@ import org.llm4s.ragbox.service.RAGService
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistry, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // POST /api/v1/query - Search and generate answer
     // Supports permission-aware queries when SearchIndex is available
