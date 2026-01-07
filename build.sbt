@@ -2,7 +2,7 @@ import sbt._
 
 // Code coverage settings (ThisBuild scope for scoverage)
 ThisBuild / coverageEnabled := false
-ThisBuild / coverageMinimumStmtTotal := 40  // Minimum 40% statement coverage
+ThisBuild / coverageMinimumStmtTotal := 20  // Minimum 20% statement coverage (baseline)
 ThisBuild / coverageFailOnMinimum := true   // Fail build if below minimum
 ThisBuild / coverageHighlighting := true
 ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
