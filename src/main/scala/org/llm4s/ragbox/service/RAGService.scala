@@ -919,9 +919,15 @@ class RAGService(
   }
 
   /**
-   * Readiness check (verifies database connectivity).
+   * Readiness check (verifies database connectivity with real-time query).
    */
   def readinessCheck: IO[ReadinessResponse] = {
+    // Perform an actual database query to verify connectivity
+    val dbCheckIO: IO[CheckStatus] = documentRegistry.count().attempt.map {
+      case Right(_) => CheckStatus("ok")
+      case Left(e) => CheckStatus("error", Some(s"Database unreachable: ${e.getMessage}"))
+    }
+
     val ragCheck = ragInstance match {
       case Right(_) => CheckStatus("ok")
       case Left(e) => CheckStatus("error", Some(e.message))
@@ -933,13 +939,18 @@ class RAGService(
       CheckStatus("warning", Some("No API keys configured"))
     }
 
-    IO.pure(ReadinessResponse(
-      ready = ragInstance.isRight,
+    for {
+      dbCheck <- dbCheckIO
+      // Service is ready if both RAG initialized and DB is reachable
+      isReady = ragInstance.isRight && dbCheck.status == "ok"
+    } yield ReadinessResponse(
+      ready = isReady,
       checks = Map(
-        "database" -> ragCheck,
+        "database" -> dbCheck,
+        "rag_instance" -> ragCheck,
         "api_keys" -> apiKeyCheck
       )
-    ))
+    )
   }
 
   // ============================================================

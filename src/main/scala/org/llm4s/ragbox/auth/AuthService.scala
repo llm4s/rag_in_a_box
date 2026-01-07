@@ -59,6 +59,9 @@ class AuthService(
   authConfig: AuthConfig
 ) {
 
+  // PBKDF2 iterations - 100,000 for strong password hashing (OWASP recommendation)
+  private val PBKDF2_ITERATIONS = 100000
+
   private val jwtHeader = """{"alg":"HS256","typ":"JWT"}"""
   private val base64Encoder = Base64.getUrlEncoder.withoutPadding()
   private val base64Decoder = Base64.getUrlDecoder
@@ -215,7 +218,7 @@ class AuthService(
   def hashPassword(password: String): String = {
     val salt = new Array[Byte](16)
     new SecureRandom().nextBytes(salt)
-    val hash = pbkdf2(password, salt, 10000)
+    val hash = pbkdf2(password, salt, PBKDF2_ITERATIONS)
     val saltB64 = Base64.getEncoder.encodeToString(salt)
     val hashB64 = Base64.getEncoder.encodeToString(hash)
     s"$saltB64:$hashB64"
@@ -231,7 +234,7 @@ class AuthService(
     try {
       val salt = Base64.getDecoder.decode(parts(0))
       val expectedHash = Base64.getDecoder.decode(parts(1))
-      val actualHash = pbkdf2(password, salt, 10000)
+      val actualHash = pbkdf2(password, salt, PBKDF2_ITERATIONS)
       MessageDigest.isEqual(expectedHash, actualHash)
     } catch {
       case _: Exception => false

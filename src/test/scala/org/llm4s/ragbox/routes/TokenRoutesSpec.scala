@@ -20,7 +20,8 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
   private val testConfig = AuthConfig(
     mode = AuthMode.Basic,
     basic = BasicAuthConfig("admin", Some("adminpass")),
-    jwtSecret = "test-secret-key-for-testing",
+    jwtSecret = "test-secret-key-for-testing-32chars",
+    jwtSecretExplicitlySet = true,
     jwtExpiration = 3600L
   )
 

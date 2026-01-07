@@ -7,6 +7,41 @@ on:
     branches: [main]
 
 jobs:
+  # Security scanning for Scala dependencies
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Run dependency check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'rag-in-a-box'
+          path: '.'
+          format: 'SARIF'
+          out: 'reports'
+          args: >
+            --suppression suppression.xml
+            --failOnCVSS 9
+            --enableExperimental
+
+      - name: Upload SARIF report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/dependency-check-report.sarif
+
   # Build and test the Admin UI
   admin-ui:
     name: Admin UI
@@ -75,7 +110,12 @@ jobs:
         run: sbt compile
 
       - name: Run tests with coverage
-        run: sbt clean coverage test coverageReport
+        run: sbt clean coverage test coverageReport coverageAggregate
+
+      - name: Check coverage minimum
+        run: |
+          echo "Checking coverage meets minimum threshold..."
+          sbt coverageCheck || (echo "Coverage below 40% minimum!" && exit 1)
 
       - name: Debug - List coverage files
         if: always()
@@ -141,3 +181,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Run container security scan
+        uses: anchore/scan-action@v4
+        with:
+          image: ghcr.io/${{ github.repository }}:latest
+          fail-build: false
+          severity-cutoff: critical
+
+      - name: Upload scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif

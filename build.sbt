@@ -2,8 +2,8 @@ import sbt._
 
 // Code coverage settings (ThisBuild scope for scoverage)
 ThisBuild / coverageEnabled := false
-ThisBuild / coverageMinimumStmtTotal := 60
-ThisBuild / coverageFailOnMinimum := false
+ThisBuild / coverageMinimumStmtTotal := 40  // Minimum 40% statement coverage
+ThisBuild / coverageFailOnMinimum := true   // Fail build if below minimum
 ThisBuild / coverageHighlighting := true
 ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
 
@@ -51,6 +51,9 @@ lazy val root = (project in file("."))
       "com.fasterxml.jackson.core" % "jackson-databind" % "2.17.0",
       // Conditional processing in logback.xml
       "org.codehaus.janino" % "janino" % "3.1.12",
+
+      // Database connection pooling
+      "com.zaxxer" % "HikariCP" % "5.1.0",
 
       // Testing
       "org.scalatest" %% "scalatest" % "3.2.18" % Test,

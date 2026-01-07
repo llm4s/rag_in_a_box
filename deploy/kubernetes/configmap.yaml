@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ragbox-config
+  namespace: ragbox
+  labels:
+    app.kubernetes.io/name: ragbox
+    app.kubernetes.io/component: config
+data:
+  # Server settings
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8080"
+
+  # Database settings (host/port only - credentials in secret)
+  PG_HOST: "ragbox-postgres"
+  PG_PORT: "5432"
+  PG_DATABASE: "ragdb"
+  PG_TABLE_NAME: "rag_embeddings"
+
+  # LLM settings
+  LLM_MODEL: "openai/gpt-4o"
+  LLM_TEMPERATURE: "0.1"
+
+  # Embedding settings
+  EMBEDDING_PROVIDER: "openai"
+  EMBEDDING_MODEL: "text-embedding-3-small"
+
+  # RAG settings
+  RAG_CHUNKING_STRATEGY: "sentence"
+  RAG_CHUNK_SIZE: "800"
+  RAG_CHUNK_OVERLAP: "150"
+  RAG_TOP_K: "5"
+  RAG_FUSION_STRATEGY: "rrf"
+
+  # Security
+  AUTH_MODE: "basic"
+
+  # Production hardening
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  REQUEST_SIZE_ENABLED: "true"
+  MAX_BODY_SIZE_MB: "10"
+  SHUTDOWN_TIMEOUT_SECONDS: "30"
+  SHUTDOWN_DRAIN_SECONDS: "5"
+
+  # Observability
+  METRICS_ENABLED: "true"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"

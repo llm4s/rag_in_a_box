@@ -1,0 +1,78 @@
+# Ingress for external access
+# Uncomment and configure based on your ingress controller
+
+# --- NGINX Ingress ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: ragbox-ingress
+#   namespace: ragbox
+#   labels:
+#     app.kubernetes.io/name: ragbox
+#     app.kubernetes.io/component: ingress
+#   annotations:
+#     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+#     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+#     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+#     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+# spec:
+#   ingressClassName: nginx
+#   tls:
+#     - hosts:
+#         - ragbox.example.com
+#       secretName: ragbox-tls
+#   rules:
+#     - host: ragbox.example.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: ragbox-api
+#                 port:
+#                   number: 80
+
+# --- Traefik IngressRoute ---
+# apiVersion: traefik.containo.us/v1alpha1
+# kind: IngressRoute
+# metadata:
+#   name: ragbox-ingress
+#   namespace: ragbox
+# spec:
+#   entryPoints:
+#     - websecure
+#   routes:
+#     - match: Host(`ragbox.example.com`)
+#       kind: Rule
+#       services:
+#         - name: ragbox-api
+#           port: 80
+#   tls:
+#     certResolver: letsencrypt
+
+# --- AWS ALB Ingress ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: ragbox-ingress
+#   namespace: ragbox
+#   annotations:
+#     kubernetes.io/ingress.class: alb
+#     alb.ingress.kubernetes.io/scheme: internet-facing
+#     alb.ingress.kubernetes.io/target-type: ip
+#     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:...
+#     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+#     alb.ingress.kubernetes.io/healthcheck-path: /health/ready
+# spec:
+#   rules:
+#     - host: ragbox.example.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: ragbox-api
+#                 port:
+#                   number: 80
