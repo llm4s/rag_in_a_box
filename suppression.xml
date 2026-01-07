@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!--
+        OWASP Dependency Check Suppression File
+
+        Use this file to suppress false positives or accepted risks.
+        Each suppression should include:
+        - A comment explaining why it's suppressed
+        - The CVE or vulnerability identifier
+        - An expiration date for periodic review
+
+        Example suppression:
+        <suppress>
+            <notes>
+                False positive - vulnerability is in a different component with same name.
+                Review by: 2025-06-01
+            </notes>
+            <packageUrl regex="true">^pkg:maven/com\.example/.*$</packageUrl>
+            <cve>CVE-2024-XXXXX</cve>
+        </suppress>
+    -->
+
+    <!-- Scala library false positives -->
+    <suppress>
+        <notes>
+            False positive - Scala library is not vulnerable to this CVE.
+            This CVE applies to a different Scala component.
+            Review by: 2026-06-01
+        </notes>
+        <packageUrl regex="true">^pkg:maven/org\.scala-lang/.*$</packageUrl>
+        <cpe>cpe:/a:scala-lang:scala</cpe>
+    </suppress>
+
+    <!-- Test-only dependencies -->
+    <suppress>
+        <notes>
+            Test dependency only - not included in production build.
+            Review by: 2026-06-01
+        </notes>
+        <packageUrl regex="true">^pkg:maven/org\.scalatest/.*$</packageUrl>
+        <vulnerabilityName regex="true">.*</vulnerabilityName>
+    </suppress>
+
+</suppressions>

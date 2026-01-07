@@ -25,7 +25,48 @@ final case class AppConfig(
   security: SecurityConfig,
   metrics: MetricsConfig,
   production: ProductionConfig
-)
+) {
+  /**
+   * Validate the configuration.
+   * Returns a list of validation errors, or empty if valid.
+   */
+  def validate(): List[String] = {
+    val errors = scala.collection.mutable.ListBuffer.empty[String]
+
+    // JWT secret is required when auth mode is Basic
+    if (security.auth.mode == AuthMode.Basic) {
+      if (!security.auth.jwtSecretExplicitlySet) {
+        errors += "JWT_SECRET must be explicitly set when auth mode is 'basic' (for multi-instance deployments)"
+      } else if (security.auth.jwtSecret.length < 32) {
+        errors += "JWT_SECRET must be at least 32 characters for security"
+      }
+      if (security.auth.basic.adminPassword.isEmpty) {
+        errors += "ADMIN_PASSWORD must be set when auth mode is 'basic'"
+      }
+    }
+
+    // Database connection required
+    if (database.connectionString.isEmpty) {
+      errors += "Database connection not configured (set DATABASE_URL or database host/port/database)"
+    }
+
+    // Embedding provider requires API key
+    embedding.provider.toLowerCase match {
+      case "openai" if apiKeys.openai.isEmpty =>
+        errors += "OPENAI_API_KEY required when using OpenAI embedding provider"
+      case "voyage" if apiKeys.voyage.isEmpty =>
+        errors += "VOYAGE_API_KEY required when using Voyage embedding provider"
+      case _ => // OK
+    }
+
+    errors.toList
+  }
+
+  /**
+   * Check if configuration is valid.
+   */
+  def isValid: Boolean = validate().isEmpty
+}
 
 final case class ServerConfig(
   host: String,
@@ -174,6 +215,7 @@ final case class AuthConfig(
   mode: AuthMode,
   basic: BasicAuthConfig,
   jwtSecret: String,
+  jwtSecretExplicitlySet: Boolean,  // True if JWT_SECRET was explicitly configured
   jwtExpiration: Long  // Expiration in seconds (default: 24 hours)
 )
 
@@ -229,8 +271,23 @@ final case class MetricsConfig(
 final case class ProductionConfig(
   rateLimit: RateLimitConfig,
   requestSize: RequestSizeConfig,
-  shutdown: ShutdownConfig
+  shutdown: ShutdownConfig,
+  cors: CorsConfig
 )
+
+/**
+ * CORS configuration.
+ */
+final case class CorsConfig(
+  allowedOrigins: Seq[String],
+  allowAllOrigins: Boolean
+) {
+  /**
+   * Check if CORS should allow all origins.
+   * True if explicitly enabled or if no specific origins configured.
+   */
+  def isAllowAll: Boolean = allowAllOrigins || allowedOrigins.isEmpty
+}
 
 /**
  * Rate limiting configuration.
@@ -333,10 +390,15 @@ object AppConfig {
             adminUsername = Try(config.getString("security.auth.basic.admin-username")).getOrElse("admin"),
             adminPassword = getOptionalString(config, "security.auth.basic.admin-password")
           ),
-          jwtSecret = Try(config.getString("security.auth.jwt-secret")).getOrElse {
-            // Generate a random secret if not configured (not recommended for production)
-            java.util.UUID.randomUUID().toString
+          jwtSecret = {
+            val explicitSecret = Try(config.getString("security.auth.jwt-secret")).toOption.filter(_.nonEmpty)
+            explicitSecret.getOrElse {
+              // Generate a random secret if not configured
+              // For basic mode, validation will fail because jwtSecretExplicitlySet = false
+              java.util.UUID.randomUUID().toString
+            }
           },
+          jwtSecretExplicitlySet = Try(config.getString("security.auth.jwt-secret")).toOption.exists(_.nonEmpty),
           jwtExpiration = Try(config.getLong("security.auth.jwt-expiration")).getOrElse(86400L)  // 24 hours
         )
       ),
@@ -356,6 +418,13 @@ object AppConfig {
         shutdown = ShutdownConfig(
           timeoutSeconds = Try(config.getInt("production.shutdown.timeout-seconds")).getOrElse(30),
           drainConnectionsSeconds = Try(config.getInt("production.shutdown.drain-connections-seconds")).getOrElse(5)
+        ),
+        cors = CorsConfig(
+          allowedOrigins = Try {
+            import scala.jdk.CollectionConverters._
+            config.getStringList("production.cors.allowed-origins").asScala.toSeq
+          }.getOrElse(Seq.empty),
+          allowAllOrigins = Try(config.getBoolean("production.cors.allow-all-origins")).getOrElse(true)
         )
       )
     )

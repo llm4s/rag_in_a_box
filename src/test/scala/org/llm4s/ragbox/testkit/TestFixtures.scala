@@ -68,7 +68,8 @@ object TestFixtures {
   val testAuthConfig: AuthConfig = AuthConfig(
     mode = AuthMode.Open,
     basic = BasicAuthConfig("admin", None),
-    jwtSecret = "test-jwt-secret",
+    jwtSecret = "test-jwt-secret-at-least-32-chars",
+    jwtSecretExplicitlySet = true,
     jwtExpiration = 3600L
   )
 
@@ -92,7 +93,8 @@ object TestFixtures {
   val testProductionConfig: ProductionConfig = ProductionConfig(
     rateLimit = RateLimitConfig(enabled = false, maxRequests = 100, windowSeconds = 60),
     requestSize = RequestSizeConfig(enabled = false, maxBodySizeMb = 10),
-    shutdown = ShutdownConfig(timeoutSeconds = 30, drainConnectionsSeconds = 5)
+    shutdown = ShutdownConfig(timeoutSeconds = 30, drainConnectionsSeconds = 5),
+    cors = CorsConfig(allowedOrigins = Seq.empty, allowAllOrigins = true)
   )
 
   val testAppConfig: AppConfig = AppConfig(

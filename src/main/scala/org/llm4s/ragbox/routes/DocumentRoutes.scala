@@ -15,6 +15,7 @@ import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.service.RAGService
+import org.llm4s.ragbox.validation.InputValidation
 
 import java.util.UUID
 
@@ -82,43 +83,52 @@ object DocumentRoutes {
     case req @ POST -> Root / "api" / "v1" / "documents" =>
       for {
         body <- req.as[DocumentUploadRequest]
-        documentId = UUID.randomUUID().toString
-        metadata = body.metadata.getOrElse(Map.empty) +
-          ("filename" -> body.filename) ++
-          body.collection.map("collection" -> _).toMap
-        result <- ((ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
-          // Permission-aware ingestion when SearchIndex is available
-          case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
-            for {
-              readableBy <- readableByOpt match {
-                case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
-                case _ => IO.pure(Set.empty[PrincipalId])
-              }
-              response <- ragService.ingestWithPermissions(
-                collectionPath = collectionPath,
-                documentId = documentId,
-                content = body.content,
-                metadata = metadata,
-                readableBy = readableBy
-              )
-            } yield response
-
-          // Fall back to legacy ingestion (no permissions)
-          case _ =>
-            ragService.ingestDocument(
-              content = body.content,
-              documentId = documentId,
-              metadata = metadata
-            )
-        }).attempt
-        response <- result match {
-          case Right(uploadResponse) =>
-            Created(uploadResponse.asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to ingest document",
-              Some(e.getMessage)
-            ).asJson)
+        // Validate inputs
+        validation = InputValidation.all(
+          InputValidation.validateDocumentContent(body.content),
+          InputValidation.validateFilename(body.filename),
+          body.metadata.map(InputValidation.validateMetadata(_)).getOrElse(InputValidation.Valid)
+        )
+        response <- InputValidation.toResponse(validation) match {
+          case Some(errorResponse) => errorResponse
+          case None =>
+            val documentId = UUID.randomUUID().toString
+            val metadata = body.metadata.getOrElse(Map.empty) +
+              ("filename" -> body.filename) ++
+              body.collection.map("collection" -> _).toMap
+            val ingestIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
+              // Permission-aware ingestion when SearchIndex is available
+              case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
+                for {
+                  readableBy <- readableByOpt match {
+                    case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
+                    case _ => IO.pure(Set.empty[PrincipalId])
+                  }
+                  response <- ragService.ingestWithPermissions(
+                    collectionPath = collectionPath,
+                    documentId = documentId,
+                    content = body.content,
+                    metadata = metadata,
+                    readableBy = readableBy
+                  )
+                } yield response
+              // Fall back to legacy ingestion (no permissions)
+              case _ =>
+                ragService.ingestDocument(
+                  content = body.content,
+                  documentId = documentId,
+                  metadata = metadata
+                )
+            }
+            ingestIO.attempt.flatMap {
+              case Right(uploadResponse) =>
+                Created(uploadResponse.asJson)
+              case Left(e) =>
+                InternalServerError(ErrorResponse.internalError(
+                  "Failed to ingest document",
+                  Some(e.getMessage)
+                ).asJson)
+            }
         }
       } yield response
 
@@ -154,48 +164,57 @@ object DocumentRoutes {
     case req @ PUT -> Root / "api" / "v1" / "documents" / id =>
       for {
         body <- req.as[DocumentUpsertRequest]
-        metadata = body.metadata.getOrElse(Map.empty) ++
-          body.collection.map("collection" -> _).toMap
-        result <- ((ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
-          // Permission-aware upsert when SearchIndex is available and collection specified
-          case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
-            for {
-              readableBy <- readableByOpt match {
-                case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
-                case _ => IO.pure(Set.empty[PrincipalId])
-              }
-              response <- ragService.upsertWithPermissions(
-                collectionPath = collectionPath,
-                documentId = id,
-                content = body.content,
-                metadata = metadata,
-                readableBy = readableBy,
-                providedHash = body.contentHash
-              )
-            } yield response
-
-          // Fall back to legacy upsert (no permissions)
-          case _ =>
-            ragService.upsertDocument(
-              documentId = id,
-              content = body.content,
-              metadata = metadata,
-              providedHash = body.contentHash
-            )
-        }).attempt
-        response <- result match {
-          case Right(upsertResponse) =>
-            upsertResponse.action match {
-              case "created" => Created(upsertResponse.asJson)
-              case "updated" => Ok(upsertResponse.asJson)
-              case "unchanged" => Ok(upsertResponse.asJson)
-              case _ => Ok(upsertResponse.asJson)
+        // Validate inputs
+        validation = InputValidation.all(
+          InputValidation.validateDocumentId(id),
+          InputValidation.validateDocumentContent(body.content),
+          body.metadata.map(InputValidation.validateMetadata(_)).getOrElse(InputValidation.Valid)
+        )
+        response <- InputValidation.toResponse(validation) match {
+          case Some(errorResponse) => errorResponse
+          case None =>
+            val metadata = body.metadata.getOrElse(Map.empty) ++
+              body.collection.map("collection" -> _).toMap
+            val upsertIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
+              // Permission-aware upsert when SearchIndex is available and collection specified
+              case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
+                for {
+                  readableBy <- readableByOpt match {
+                    case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
+                    case _ => IO.pure(Set.empty[PrincipalId])
+                  }
+                  response <- ragService.upsertWithPermissions(
+                    collectionPath = collectionPath,
+                    documentId = id,
+                    content = body.content,
+                    metadata = metadata,
+                    readableBy = readableBy,
+                    providedHash = body.contentHash
+                  )
+                } yield response
+              // Fall back to legacy upsert (no permissions)
+              case _ =>
+                ragService.upsertDocument(
+                  documentId = id,
+                  content = body.content,
+                  metadata = metadata,
+                  providedHash = body.contentHash
+                )
             }
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              s"Failed to upsert document $id",
-              Some(e.getMessage)
-            ).asJson)
+            upsertIO.attempt.flatMap {
+              case Right(upsertResponse) =>
+                upsertResponse.action match {
+                  case "created" => Created(upsertResponse.asJson)
+                  case "updated" => Ok(upsertResponse.asJson)
+                  case "unchanged" => Ok(upsertResponse.asJson)
+                  case _ => Ok(upsertResponse.asJson)
+                }
+              case Left(e) =>
+                InternalServerError(ErrorResponse.internalError(
+                  s"Failed to upsert document $id",
+                  Some(e.getMessage)
+                ).asJson)
+            }
         }
       } yield response
 

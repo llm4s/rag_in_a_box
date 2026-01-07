@@ -6,9 +6,10 @@ import com.comcast.ip4s._
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.implicits._
 import org.http4s.server.Router
-import org.http4s.server.middleware.{CORS, Logger}
+import org.http4s.server.middleware.{CORS, Logger => HttpLogger}
 import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.slf4j.Slf4jFactory
+import org.typelevel.log4cats.Logger
 import cats.effect.std.Supervisor
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
@@ -31,22 +32,31 @@ import scala.concurrent.duration._
 object Main extends IOApp {
 
   implicit val loggerFactory: LoggerFactory[IO] = Slf4jFactory.create[IO]
+  private val logger: Logger[IO] = loggerFactory.getLogger
 
   override def run(args: List[String]): IO[ExitCode] = {
     for {
-      _ <- IO(println(banner))
-      _ <- IO(println("Starting RAG in a Box..."))
+      _ <- logger.info(banner)
+      _ <- logger.info("Starting RAG in a Box...")
       config <- AppConfig.load
-      _ <- IO(println(s"Server will listen on ${config.server.host}:${config.server.port}"))
-      _ <- IO(println(s"Embedding provider: ${config.embedding.provider}/${config.embedding.model}"))
-      _ <- IO(println(s"LLM model: ${config.llm.model}"))
-      _ <- IO(println(s"Database: ${config.database.host}:${config.database.port}/${config.database.database}"))
-      _ <- IO(println("Document registry: PostgreSQL (persistent)"))
-      _ <- IO(println(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}"))
-      _ <- IO(println(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}"))
-      _ <- IO(println(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}"))
-      _ <- IO(println(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}"))
-      _ <- IO(println("Permission-based RAG: enabled (LLM4S v0.2.6+)"))
+      // Validate configuration at startup
+      _ <- config.validate() match {
+        case Nil => IO.unit
+        case errors =>
+          errors.traverse_(e => logger.error(s"Configuration error: $e")) *>
+          IO.raiseError(new IllegalStateException(s"Configuration validation failed: ${errors.mkString(", ")}"))
+      }
+      _ <- logger.info(s"Server will listen on ${config.server.host}:${config.server.port}")
+      _ <- logger.info(s"Embedding provider: ${config.embedding.provider}/${config.embedding.model}")
+      _ <- logger.info(s"LLM model: ${config.llm.model}")
+      _ <- logger.info(s"Database: ${config.database.host}:${config.database.port}/${config.database.database}")
+      _ <- logger.info("Document registry: PostgreSQL (persistent)")
+      _ <- logger.info(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}")
+      _ <- logger.info(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}")
+      _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}")
+      _ <- logger.info(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}")
+      _ <- logger.info(s"CORS: ${if (config.production.cors.isAllowAll) "allow all origins" else s"restricted to ${config.production.cors.allowedOrigins.mkString(", ")}"}")
+      _ <- logger.info("Permission-based RAG: enabled (LLM4S v0.2.6+)")
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
   }
@@ -144,18 +154,33 @@ object Main extends IOApp {
       // Apply authentication middleware
       authedRoutes = AuthMiddleware(config.security)(productionRoutes).orNotFound
 
+      // Configure CORS policy based on settings
+      corsPolicy = if (config.production.cors.isAllowAll) {
+        CORS.policy.withAllowOriginAll
+      } else {
+        // Create CORS policy with specific allowed origins
+        val allowedOrigins = config.production.cors.allowedOrigins.map(_.toLowerCase).toSet
+        CORS.policy.withAllowOriginHostCi { origin =>
+          val originStr = origin.toString.toLowerCase
+          allowedOrigins.exists(allowed =>
+            originStr == allowed || originStr.endsWith(s"://$allowed")
+          )
+        }
+      }
+
       // Add CORS and logging middleware
-      httpApp = Logger.httpApp(
+      httpApp = HttpLogger.httpApp(
         logHeaders = false,
         logBody = false
-      )(CORS.policy.withAllowOriginAll(authedRoutes))
+      )(corsPolicy(authedRoutes))
 
       // Parse host and port
       host = Host.fromString(config.server.host).getOrElse(host"0.0.0.0")
       port = Port.fromInt(config.server.port).getOrElse(port"8080")
 
-      // Graceful shutdown timeout
+      // Graceful shutdown configuration
       shutdownTimeout = config.production.shutdown.timeoutSeconds.seconds
+      drainConnectionsTime = config.production.shutdown.drainConnectionsSeconds.seconds
 
       // Start server with graceful shutdown
       _ <- EmberServerBuilder.default[IO]
@@ -164,52 +189,57 @@ object Main extends IOApp {
         .withHttpApp(httpApp)
         .withShutdownTimeout(shutdownTimeout)
         .build
-        .evalTap(_ => IO(println(s"\n✓ Server started on http://${config.server.host}:${config.server.port}")))
-        .evalTap(_ => IO(println("\nDocument Endpoints:")))
-        .evalTap(_ => IO(println("  POST   /api/v1/documents      - Upload document")))
-        .evalTap(_ => IO(println("  PUT    /api/v1/documents/{id} - Upsert document (idempotent)")))
-        .evalTap(_ => IO(println("  GET    /api/v1/documents      - List documents")))
-        .evalTap(_ => IO(println("  DELETE /api/v1/documents/{id} - Delete document")))
-        .evalTap(_ => IO(println("  DELETE /api/v1/documents      - Clear all documents")))
-        .evalTap(_ => IO(println("  GET    /api/v1/collections    - List collections")))
-        .evalTap(_ => IO(println("\nSync Endpoints:")))
-        .evalTap(_ => IO(println("  GET  /api/v1/sync/status      - Get sync status")))
-        .evalTap(_ => IO(println("  GET  /api/v1/sync/documents   - List synced document IDs")))
-        .evalTap(_ => IO(println("  POST /api/v1/sync             - Mark sync complete (prune)")))
-        .evalTap(_ => IO(println("\nQuery Endpoints:")))
-        .evalTap(_ => IO(println("  POST /api/v1/query            - Query with answer")))
-        .evalTap(_ => IO(println("  POST /api/v1/search           - Search only")))
-        .evalTap(_ => IO(println("\nIngestion Endpoints:")))
-        .evalTap(_ => IO(println("  POST /api/v1/ingest/directory - Ingest from directory")))
-        .evalTap(_ => IO(println("  POST /api/v1/ingest/url       - Ingest from URLs")))
-        .evalTap(_ => IO(println("  POST /api/v1/ingest/run       - Run all configured sources")))
-        .evalTap(_ => IO(println("  GET  /api/v1/ingest/status    - Get ingestion status")))
-        .evalTap(_ => IO(println("  GET  /api/v1/ingest/sources   - List configured sources")))
-        .evalTap(_ => IO(println("\nConfig & Health:")))
-        .evalTap(_ => IO(println("  GET  /api/v1/config           - Get configuration")))
-        .evalTap(_ => IO(println("  GET  /api/v1/stats            - Get statistics")))
-        .evalTap(_ => IO(println("  GET  /health                  - Health check")))
-        .evalTap(_ => IO(println("  GET  /health/ready            - Readiness check")))
-        .evalTap(_ => IO(println("\nPermission Endpoints (when SearchIndex enabled):")))
-        .evalTap(_ => IO(println("  POST   /api/v1/principals/users   - Create/get user principal")))
-        .evalTap(_ => IO(println("  POST   /api/v1/principals/groups  - Create/get group principal")))
-        .evalTap(_ => IO(println("  GET    /api/v1/principals/users   - List users")))
-        .evalTap(_ => IO(println("  GET    /api/v1/principals/groups  - List groups")))
-        .evalTap(_ => IO(println("  POST   /api/v1/collections        - Create collection")))
-        .evalTap(_ => IO(println("  GET    /api/v1/collections        - List collections")))
-        .evalTap(_ => IO(println("  GET    /api/v1/collections/accessible - User-accessible collections")))
-        .evalTap(_ => IO(println("  PUT    /api/v1/collections/{path}/permissions - Update queryableBy")))
-        .evalTap(_ => IO(println("\nAnalytics Endpoints:")))
-        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries         - List query logs")))
-        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries/summary - Analytics summary")))
-        .evalTap(_ => IO(println("  GET  /api/v1/analytics/queries/{id}    - Get query details")))
-        .evalTap(_ => IO(println("  POST /api/v1/feedback                  - Submit feedback")))
-        .evalTap(_ => IO(println("\nAdmin UI:")))
-        .evalTap(_ => IO(println("  GET  /admin                   - Admin Dashboard")))
+        .evalTap(_ => logger.info(s"Server started on http://${config.server.host}:${config.server.port}"))
+        .evalTap(_ => logEndpoints())
         .evalTap(_ => runOnStartupIngestion(config, ingestionService))
         .evalTap(_ => startScheduler(scheduler, config, supervisor))
-        .evalTap(_ => IO(println("\nPress Ctrl+C to stop")))
+        .evalTap(_ => startRateLimitCleanup(rateLimitState, rateLimitConfig, supervisor))
+        .evalTap(_ => logger.info("Server ready. Press Ctrl+C to stop"))
+        .onFinalize(
+          logger.info("Initiating graceful shutdown...") *>
+          logger.info(s"Draining connections for ${drainConnectionsTime.toSeconds}s...") *>
+          IO.sleep(drainConnectionsTime) *>
+          logger.info("Connection drain complete. Shutting down server...") *>
+          logger.info("Shutdown complete.")
+        )
     } yield ()
+  }
+
+  /**
+   * Log all available endpoints at startup.
+   */
+  private def logEndpoints(): IO[Unit] = {
+    val endpoints = Seq(
+      "Document Endpoints:",
+      "  POST   /api/v1/documents      - Upload document",
+      "  PUT    /api/v1/documents/{id} - Upsert document (idempotent)",
+      "  GET    /api/v1/documents      - List documents",
+      "  DELETE /api/v1/documents/{id} - Delete document",
+      "  GET    /api/v1/collections    - List collections",
+      "",
+      "Sync Endpoints:",
+      "  GET  /api/v1/sync/status      - Get sync status",
+      "  GET  /api/v1/sync/documents   - List synced document IDs",
+      "  POST /api/v1/sync             - Mark sync complete (prune)",
+      "",
+      "Query Endpoints:",
+      "  POST /api/v1/query            - Query with answer",
+      "  POST /api/v1/search           - Search only",
+      "",
+      "Ingestion Endpoints:",
+      "  POST /api/v1/ingest/directory - Ingest from directory",
+      "  POST /api/v1/ingest/url       - Ingest from URLs",
+      "  POST /api/v1/ingest/run       - Run all configured sources",
+      "",
+      "Config & Health:",
+      "  GET  /api/v1/config           - Get configuration",
+      "  GET  /health                  - Health check",
+      "  GET  /health/ready            - Readiness check",
+      "",
+      "Admin UI:",
+      "  GET  /admin                   - Admin Dashboard"
+    )
+    logger.debug(endpoints.mkString("\n"))
   }
 
   /**
@@ -228,17 +258,18 @@ object Main extends IOApp {
         // Initialize schema (adds permission columns if missing)
         si.initializeSchema() match {
           case Right(_) =>
-            println("  SearchIndex initialized with permission schema")
             Some(si)
           case Left(err) =>
-            println(s"  Warning: SearchIndex schema init failed: ${err.message}")
             None
         }
       }
-    }.handleError { e =>
-      println(s"  Warning: Failed to create SearchIndex: ${e.getMessage}")
-      println("  Falling back to legacy RAG mode (no permissions)")
-      None
+    }.flatTap {
+      case Some(_) => logger.info("SearchIndex initialized with permission schema")
+      case None => IO.unit
+    }.handleErrorWith { e =>
+      logger.warn(s"Failed to create SearchIndex: ${e.getMessage}") *>
+      logger.warn("Falling back to legacy RAG mode (no permissions)") *>
+      IO.pure(None)
     }
   }
 
@@ -247,10 +278,36 @@ object Main extends IOApp {
    */
   private def startScheduler(scheduler: IngestionScheduler, config: AppConfig, supervisor: Supervisor[IO]): IO[Unit] = {
     if (config.ingestion.enabled && config.ingestion.schedule.isDefined) {
-      IO(println(s"\nStarting ingestion scheduler (schedule: ${config.ingestion.schedule.get})...")) *>
+      logger.info(s"Starting ingestion scheduler (schedule: ${config.ingestion.schedule.get})...") *>
         scheduler.start(supervisor)
     } else {
       IO.unit
+    }
+  }
+
+  /**
+   * Start periodic cleanup of rate limiter state to prevent memory leaks.
+   * Runs every 5 minutes, cleaning up entries older than 2x the rate limit window.
+   */
+  private def startRateLimitCleanup(
+    state: Ref[IO, RateLimitMiddleware.RateLimitState],
+    config: RateLimitMiddleware.Config,
+    supervisor: Supervisor[IO]
+  ): IO[Unit] = {
+    if (!config.enabled) {
+      IO.unit
+    } else {
+      val cleanupInterval = 5.minutes
+      val maxAge = config.window * 2  // Keep entries for 2x the window duration
+
+      val cleanupLoop: IO[Unit] = (
+        IO.sleep(cleanupInterval) *>
+        RateLimitMiddleware.cleanup(state, maxAge) *>
+        logger.debug("Rate limiter cleanup completed")
+      ).foreverM
+
+      supervisor.supervise(cleanupLoop).void *>
+        logger.info(s"Rate limiter cleanup started (interval: $cleanupInterval, maxAge: $maxAge)")
     }
   }
 
@@ -259,15 +316,15 @@ object Main extends IOApp {
    */
   private def runOnStartupIngestion(config: AppConfig, ingestionService: IngestionService): IO[Unit] = {
     if (config.ingestion.enabled && config.ingestion.runOnStartup) {
-      IO(println("\nRunning startup ingestion...")) *>
+      logger.info("Running startup ingestion...") *>
         ingestionService.runAll().flatMap { results =>
-          results.foreach { result =>
+          results.traverse_ { result =>
             val status = if (result.isSuccess) "OK" else s"ERROR: ${result.error.getOrElse("unknown")}"
-            println(s"  [${result.sourceType}] ${result.sourceName}: " +
+            val msg = s"[${result.sourceType}] ${result.sourceName}: " +
               s"added=${result.documentsAdded}, updated=${result.documentsUpdated}, " +
-              s"unchanged=${result.documentsUnchanged} ($status)")
+              s"unchanged=${result.documentsUnchanged} ($status)"
+            if (result.isSuccess) logger.info(msg) else logger.error(msg)
           }
-          IO.unit
         }
     } else {
       IO.unit
