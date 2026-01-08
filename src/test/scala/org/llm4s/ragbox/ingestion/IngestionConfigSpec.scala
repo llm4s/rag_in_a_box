@@ -42,6 +42,7 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
       case _: UrlSourceConfig => "url"
       case _: DatabaseSourceConfig => "database"
       case _: WebCrawlerSourceConfig => "web"
+      case _: S3SourceConfig => "s3"
     }
   }
 
@@ -261,5 +262,169 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
 
     ingestionConfig.sources.head.metadata should contain ("source" -> "internal")
     ingestionConfig.sources.head.metadata should contain ("team" -> "engineering")
+  }
+
+  "S3SourceConfig" should "convert patterns to extensions" in {
+    val config = S3SourceConfig(
+      name = "test",
+      bucket = "my-bucket",
+      patterns = Set("*.md", "*.txt", "*.pdf")
+    )
+
+    config.extensions should contain allOf ("md", "txt", "pdf")
+  }
+
+  it should "have sensible defaults" in {
+    val config = S3SourceConfig(
+      name = "test",
+      bucket = "my-bucket"
+    )
+
+    config.prefix shouldBe ""
+    config.region shouldBe "us-east-1"
+    config.accessKeyId shouldBe None
+    config.secretAccessKey shouldBe None
+    config.roleArn shouldBe None
+    config.patterns should contain allOf ("*.md", "*.txt", "*.pdf")
+    config.maxKeys shouldBe 1000
+    config.enabled shouldBe true
+  }
+
+  it should "load S3 sources from config" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "s3"
+        |      name = "s3-docs"
+        |      bucket = "my-document-bucket"
+        |      prefix = "documents/"
+        |      region = "eu-west-1"
+        |      patterns = ["*.md", "*.txt"]
+        |      max-keys = 500
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case s3: S3SourceConfig =>
+        s3.name shouldBe "s3-docs"
+        s3.bucket shouldBe "my-document-bucket"
+        s3.prefix shouldBe "documents/"
+        s3.region shouldBe "eu-west-1"
+        s3.patterns should contain allOf ("*.md", "*.txt")
+        s3.maxKeys shouldBe 500
+      case _ => fail("Expected S3SourceConfig")
+    }
+  }
+
+  it should "load S3 sources with credentials" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "s3"
+        |      name = "s3-secure"
+        |      bucket = "secure-bucket"
+        |      access-key-id = "AKIAIOSFODNN7EXAMPLE"
+        |      secret-access-key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case s3: S3SourceConfig =>
+        s3.accessKeyId shouldBe Some("AKIAIOSFODNN7EXAMPLE")
+        s3.secretAccessKey shouldBe Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+      case _ => fail("Expected S3SourceConfig")
+    }
+  }
+
+  it should "load S3 sources with role ARN for cross-account access" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "s3"
+        |      name = "s3-cross-account"
+        |      bucket = "other-account-bucket"
+        |      role-arn = "arn:aws:iam::123456789012:role/s3-reader-role"
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case s3: S3SourceConfig =>
+        s3.roleArn shouldBe Some("arn:aws:iam::123456789012:role/s3-reader-role")
+      case _ => fail("Expected S3SourceConfig")
+    }
+  }
+
+  it should "skip S3 sources with empty bucket" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "s3"
+        |      name = "invalid-s3"
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources shouldBe empty
+  }
+
+  it should "load S3 sources with metadata" in {
+    val configString =
+      """
+        |ingestion {
+        |  enabled = true
+        |  sources = [
+        |    {
+        |      type = "s3"
+        |      name = "s3-with-metadata"
+        |      bucket = "docs-bucket"
+        |      metadata {
+        |        department = "engineering"
+        |        classification = "internal"
+        |      }
+        |    }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val config = ConfigFactory.parseString(configString)
+    val ingestionConfig = IngestionConfig.fromConfig(config)
+
+    ingestionConfig.sources.head match {
+      case s3: S3SourceConfig =>
+        s3.metadata should contain ("department" -> "engineering")
+        s3.metadata should contain ("classification" -> "internal")
+      case _ => fail("Expected S3SourceConfig")
+    }
   }
 }

@@ -6,7 +6,7 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.llm4s.ragbox.ingestion.{IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig}
+import org.llm4s.ragbox.ingestion.{IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 
@@ -167,6 +167,18 @@ object IngestionRoutes {
           "seed-urls" -> web.seedUrls.mkString(","),
           "max-depth" -> web.maxDepth.toString,
           "max-pages" -> web.maxPages.toString
+        )
+      )
+    case s3: S3SourceConfig =>
+      SourceInfo(
+        name = s3.name,
+        sourceType = "s3",
+        enabled = s3.enabled,
+        config = Map(
+          "bucket" -> s3.bucket,
+          "prefix" -> s3.prefix,
+          "region" -> s3.region,
+          "patterns" -> s3.patterns.mkString(",")
         )
       )
   }

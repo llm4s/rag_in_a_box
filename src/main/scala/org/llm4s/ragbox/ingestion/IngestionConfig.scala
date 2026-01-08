@@ -73,6 +73,43 @@ final case class DatabaseSourceConfig(
 ) extends SourceConfig
 
 /**
+ * S3 source configuration for ingesting documents from AWS S3.
+ *
+ * @param name Source name
+ * @param bucket S3 bucket name
+ * @param prefix Key prefix to filter objects (e.g., "documents/")
+ * @param region AWS region (e.g., "us-east-1")
+ * @param accessKeyId AWS access key ID (optional, uses default credentials if not set)
+ * @param secretAccessKey AWS secret access key (optional, uses default credentials if not set)
+ * @param roleArn IAM role ARN to assume (optional, for cross-account access)
+ * @param patterns File patterns to include (glob syntax, e.g., "*.pdf", "*.md")
+ * @param maxKeys Maximum number of objects to fetch per request
+ * @param metadata Additional metadata to attach to all documents
+ * @param enabled Whether this source is enabled
+ */
+final case class S3SourceConfig(
+  name: String,
+  bucket: String,
+  prefix: String = "",
+  region: String = "us-east-1",
+  accessKeyId: Option[String] = None,
+  secretAccessKey: Option[String] = None,
+  roleArn: Option[String] = None,
+  patterns: Set[String] = Set("*.md", "*.txt", "*.pdf"),
+  maxKeys: Int = 1000,
+  metadata: Map[String, String] = Map.empty,
+  enabled: Boolean = true
+) extends SourceConfig {
+
+  /**
+   * Convert glob patterns to extensions.
+   * "*.md" -> "md", "*.txt" -> "txt"
+   */
+  def extensions: Set[String] =
+    patterns.map(_.stripPrefix("*.").stripPrefix("."))
+}
+
+/**
  * Web crawler source configuration for crawling websites.
  *
  * @param name Source name
@@ -239,6 +276,35 @@ object IngestionConfig {
             idColumn = idColumn,
             contentColumn = contentColumn,
             updatedAtColumn = updatedAtColumn,
+            metadata = metadata,
+            enabled = enabled
+          ))
+        } else {
+          None
+        }
+
+      case "s3" =>
+        val bucket = Try(config.getString("bucket")).getOrElse("")
+        val prefix = Try(config.getString("prefix")).getOrElse("")
+        val region = Try(config.getString("region")).getOrElse("us-east-1")
+        val accessKeyId = Try(config.getString("access-key-id")).toOption
+        val secretAccessKey = Try(config.getString("secret-access-key")).toOption
+        val roleArn = Try(config.getString("role-arn")).toOption
+        val patterns = Try(config.getStringList("patterns").asScala.toSet)
+          .getOrElse(Set("*.md", "*.txt", "*.pdf"))
+        val maxKeys = Try(config.getInt("max-keys")).getOrElse(1000)
+
+        if (bucket.nonEmpty) {
+          Some(S3SourceConfig(
+            name = name,
+            bucket = bucket,
+            prefix = prefix,
+            region = region,
+            accessKeyId = accessKeyId,
+            secretAccessKey = secretAccessKey,
+            roleArn = roleArn,
+            patterns = patterns,
+            maxKeys = maxKeys,
             metadata = metadata,
             enabled = enabled
           ))

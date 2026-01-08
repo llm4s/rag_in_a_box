@@ -59,6 +59,10 @@ lazy val root = (project in file("."))
       "com.auth0" % "java-jwt" % "4.4.0",
       "com.auth0" % "jwks-rsa" % "0.22.1",
 
+      // AWS SDK v2 for S3 ingestion
+      "software.amazon.awssdk" % "s3" % "2.29.51",
+      "software.amazon.awssdk" % "sts" % "2.29.51",  // For assumed role credentials
+
       // Testing
       "org.scalatest" %% "scalatest" % "3.2.18" % Test,
       "org.typelevel" %% "cats-effect-testing-scalatest" % "1.5.0" % Test,

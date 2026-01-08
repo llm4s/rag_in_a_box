@@ -6,12 +6,21 @@ import cats.syntax.all._
 import org.llm4s.rag.RAG
 import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadStats, SyncStats}
 import org.llm4s.ragbox.model._
+import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider, DefaultCredentialsProvider}
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.{GetObjectRequest, ListObjectsV2Request, S3Object}
+import software.amazon.awssdk.services.sts.StsClient
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest
 
-import java.io.File
+import java.io.{BufferedReader, File, InputStreamReader}
+import java.nio.charset.StandardCharsets
 import java.sql.{Connection, DriverManager, ResultSet}
 import java.time.Instant
 import java.util.{Properties, UUID}
 import java.util.concurrent.atomic.AtomicReference
+import scala.jdk.CollectionConverters._
 import scala.util.Using
 
 /**
@@ -107,6 +116,8 @@ class IngestionService(
         runDatabaseIngestion(db, startTime)
       case web: WebCrawlerSourceConfig =>
         runWebCrawlerIngestion(web, startTime)
+      case s3: S3SourceConfig =>
+        runS3Ingestion(s3, startTime)
     }
   }
 
@@ -342,6 +353,188 @@ class IngestionService(
           error = Some(e.getMessage)
         )
       }
+    }
+  }
+
+  /**
+   * Run S3 ingestion.
+   *
+   * Lists objects in an S3 bucket (with optional prefix filtering) and ingests
+   * text content from files matching the configured patterns.
+   *
+   * Supports:
+   * - Explicit credentials (access key + secret)
+   * - Role assumption for cross-account access
+   * - Default credential provider chain (IAM roles, environment, config files)
+   */
+  private def runS3Ingestion(
+    config: S3SourceConfig,
+    startTime: Instant
+  ): IO[IngestionResult] = {
+    IO.blocking {
+      val s3Client = buildS3Client(config)
+
+      try {
+        val ragInstance = rag.unsafeRunSync()
+        var added = 0
+        var failed = 0
+        var continuationToken: Option[String] = None
+        var hasMore = true
+
+        while (hasMore) {
+          val requestBuilder = ListObjectsV2Request.builder()
+            .bucket(config.bucket)
+            .maxKeys(config.maxKeys)
+
+          if (config.prefix.nonEmpty) {
+            requestBuilder.prefix(config.prefix)
+          }
+
+          continuationToken.foreach(token => requestBuilder.continuationToken(token))
+
+          val response = s3Client.listObjectsV2(requestBuilder.build())
+          val objects = response.contents().asScala
+
+          for (obj <- objects) {
+            val key = obj.key()
+
+            // Check if file matches patterns
+            if (matchesPatterns(key, config.extensions)) {
+              try {
+                val content = downloadObjectAsText(s3Client, config.bucket, key)
+
+                if (content.nonEmpty) {
+                  val metadata = config.metadata +
+                    ("source" -> config.name) +
+                    ("source_type" -> "s3") +
+                    ("s3_bucket" -> config.bucket) +
+                    ("s3_key" -> key) +
+                    ("s3_size" -> obj.size().toString) +
+                    ("s3_last_modified" -> obj.lastModified().toString)
+
+                  ragInstance.ingestText(content, s"s3://${config.bucket}/$key", metadata) match {
+                    case Right(_) => added += 1
+                    case Left(_) => failed += 1
+                  }
+                }
+              } catch {
+                case _: Exception => failed += 1
+              }
+            }
+          }
+
+          if (response.isTruncated) {
+            continuationToken = Some(response.nextContinuationToken())
+          } else {
+            hasMore = false
+          }
+        }
+
+        IngestionResult(
+          sourceName = config.name,
+          sourceType = "s3",
+          documentsAdded = added,
+          documentsUpdated = 0,
+          documentsDeleted = 0,
+          documentsUnchanged = 0,
+          documentsFailed = failed,
+          startTime = startTime,
+          endTime = Instant.now()
+        )
+      } finally {
+        s3Client.close()
+      }
+    }.handleError { e =>
+      IngestionResult(
+        sourceName = config.name,
+        sourceType = "s3",
+        documentsAdded = 0,
+        documentsUpdated = 0,
+        documentsDeleted = 0,
+        documentsUnchanged = 0,
+        documentsFailed = 0,
+        startTime = startTime,
+        endTime = Instant.now(),
+        error = Some(e.getMessage)
+      )
+    }
+  }
+
+  /**
+   * Build an S3 client with appropriate credentials.
+   */
+  private def buildS3Client(config: S3SourceConfig): S3Client = {
+    val region = Region.of(config.region)
+
+    val baseCredentialsProvider = (config.accessKeyId, config.secretAccessKey) match {
+      case (Some(accessKey), Some(secretKey)) =>
+        StaticCredentialsProvider.create(
+          AwsBasicCredentials.create(accessKey, secretKey)
+        )
+      case _ =>
+        DefaultCredentialsProvider.create()
+    }
+
+    // If role ARN is specified, use role assumption
+    val credentialsProvider = config.roleArn match {
+      case Some(roleArn) =>
+        val stsClient = StsClient.builder()
+          .region(region)
+          .credentialsProvider(baseCredentialsProvider)
+          .build()
+
+        StsAssumeRoleCredentialsProvider.builder()
+          .stsClient(stsClient)
+          .refreshRequest(
+            AssumeRoleRequest.builder()
+              .roleArn(roleArn)
+              .roleSessionName(s"ragbox-s3-ingestion-${System.currentTimeMillis()}")
+              .build()
+          )
+          .build()
+
+      case None =>
+        baseCredentialsProvider
+    }
+
+    S3Client.builder()
+      .region(region)
+      .credentialsProvider(credentialsProvider)
+      .build()
+  }
+
+  /**
+   * Check if a key matches the configured file patterns.
+   */
+  private def matchesPatterns(key: String, extensions: Set[String]): Boolean = {
+    val fileName = key.split("/").lastOption.getOrElse(key)
+    val extension = fileName.split("\\.").lastOption.getOrElse("")
+    extensions.contains(extension.toLowerCase)
+  }
+
+  /**
+   * Download an S3 object and return its content as a string.
+   */
+  private def downloadObjectAsText(s3Client: S3Client, bucket: String, key: String): String = {
+    val request = GetObjectRequest.builder()
+      .bucket(bucket)
+      .key(key)
+      .build()
+
+    val response = s3Client.getObject(request)
+
+    try {
+      val reader = new BufferedReader(new InputStreamReader(response, StandardCharsets.UTF_8))
+      val content = new StringBuilder()
+      var line: String = null
+
+      while ({line = reader.readLine(); line != null}) {
+        content.append(line).append("\n")
+      }
+
+      content.toString().trim
+    } finally {
+      response.close()
     }
   }
 
