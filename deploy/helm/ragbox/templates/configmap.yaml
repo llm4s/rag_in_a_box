@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ragbox.configmapName" . }}
+  labels:
+    {{- include "ragbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config
+data:
+  # Server settings
+  SERVER_HOST: {{ .Values.config.server.host | quote }}
+  SERVER_PORT: {{ .Values.config.server.port | quote }}
+
+  # Database settings
+  PG_HOST: {{ include "ragbox.postgresql.host" . | quote }}
+  PG_PORT: {{ include "ragbox.postgresql.port" . | quote }}
+  PG_DATABASE: {{ include "ragbox.postgresql.database" . | quote }}
+  {{- if not .Values.postgresql.enabled }}
+  PG_TABLE_NAME: {{ .Values.externalDatabase.tableName | quote }}
+  {{- else }}
+  PG_TABLE_NAME: "rag_embeddings"
+  {{- end }}
+
+  # LLM settings
+  LLM_MODEL: {{ .Values.config.llm.model | quote }}
+  LLM_TEMPERATURE: {{ .Values.config.llm.temperature | quote }}
+
+  # Embedding settings
+  EMBEDDING_PROVIDER: {{ .Values.config.embedding.provider | quote }}
+  EMBEDDING_MODEL: {{ .Values.config.embedding.model | quote }}
+
+  # RAG settings
+  RAG_CHUNKING_STRATEGY: {{ .Values.config.rag.chunkingStrategy | quote }}
+  RAG_CHUNK_SIZE: {{ .Values.config.rag.chunkSize | quote }}
+  RAG_CHUNK_OVERLAP: {{ .Values.config.rag.chunkOverlap | quote }}
+  RAG_TOP_K: {{ .Values.config.rag.topK | quote }}
+  RAG_FUSION_STRATEGY: {{ .Values.config.rag.fusionStrategy | quote }}
+
+  # Authentication
+  AUTH_MODE: {{ .Values.config.auth.mode | quote }}
+
+  # Rate limiting
+  RATE_LIMIT_ENABLED: {{ .Values.config.rateLimit.enabled | quote }}
+  RATE_LIMIT_MAX_REQUESTS: {{ .Values.config.rateLimit.maxRequests | quote }}
+  RATE_LIMIT_WINDOW_SECONDS: {{ .Values.config.rateLimit.windowSeconds | quote }}
+
+  # Request size
+  REQUEST_SIZE_ENABLED: {{ .Values.config.requestSize.enabled | quote }}
+  MAX_BODY_SIZE_MB: {{ .Values.config.requestSize.maxBodySizeMb | quote }}
+
+  # Shutdown
+  SHUTDOWN_TIMEOUT_SECONDS: {{ .Values.config.shutdown.timeoutSeconds | quote }}
+  SHUTDOWN_DRAIN_SECONDS: {{ .Values.config.shutdown.drainSeconds | quote }}
+
+  # Observability
+  METRICS_ENABLED: {{ .Values.config.metrics.enabled | quote }}
+  LOG_LEVEL: {{ .Values.config.logging.level | quote }}
+  LOG_FORMAT: {{ .Values.config.logging.format | quote }}
