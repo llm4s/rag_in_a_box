@@ -68,6 +68,7 @@ object TestFixtures {
   val testAuthConfig: AuthConfig = AuthConfig(
     mode = AuthMode.Open,
     basic = BasicAuthConfig("admin", None),
+    oauth = None,
     jwtSecret = "test-jwt-secret-at-least-32-chars",
     jwtSecretExplicitlySet = true,
     jwtExpiration = 3600L

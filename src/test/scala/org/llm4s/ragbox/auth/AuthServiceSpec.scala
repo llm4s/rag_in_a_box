@@ -10,6 +10,7 @@ class AuthServiceSpec extends AnyFlatSpec with Matchers {
   private val testConfig = AuthConfig(
     mode = AuthMode.Basic,
     basic = BasicAuthConfig("admin", Some("password")),
+    oauth = None,
     jwtSecret = "test-secret-key-for-testing-only-32chars",
     jwtSecretExplicitlySet = true,
     jwtExpiration = 3600L  // 1 hour

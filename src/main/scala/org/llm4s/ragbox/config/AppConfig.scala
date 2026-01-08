@@ -5,6 +5,7 @@ import com.typesafe.config.{Config, ConfigFactory}
 import org.llm4s.chunking.ChunkerFactory
 import org.llm4s.rag.EmbeddingProvider
 import org.llm4s.vectorstore.FusionStrategy
+import org.llm4s.ragbox.auth.{ClaimMappingConfig, OAuthConfig, OAuthSessionConfig, OidcProviderConfig, OidcProviders}
 import org.llm4s.ragbox.ingestion.IngestionConfig
 
 import scala.util.Try
@@ -42,6 +43,24 @@ final case class AppConfig(
       }
       if (security.auth.basic.adminPassword.isEmpty) {
         errors += "ADMIN_PASSWORD must be set when auth mode is 'basic'"
+      }
+    }
+
+    // OAuth config validation when mode is OAuth
+    if (security.auth.mode == AuthMode.OAuth) {
+      security.auth.oauth match {
+        case None =>
+          errors += "OAuth configuration required when auth mode is 'oauth'"
+        case Some(oauth) =>
+          if (oauth.provider.clientId.isEmpty) {
+            errors += "OAUTH_CLIENT_ID required when auth mode is 'oauth'"
+          }
+          if (oauth.provider.clientSecret.isEmpty) {
+            errors += "OAUTH_CLIENT_SECRET required when auth mode is 'oauth'"
+          }
+          if (oauth.provider.redirectUri.isEmpty) {
+            errors += "OAUTH_REDIRECT_URI required when auth mode is 'oauth'"
+          }
       }
     }
 
@@ -214,6 +233,7 @@ object AuthMode {
 final case class AuthConfig(
   mode: AuthMode,
   basic: BasicAuthConfig,
+  oauth: Option[OAuthConfig],  // OAuth config when mode = oauth
   jwtSecret: String,
   jwtSecretExplicitlySet: Boolean,  // True if JWT_SECRET was explicitly configured
   jwtExpiration: Long  // Expiration in seconds (default: 24 hours)
@@ -390,6 +410,7 @@ object AppConfig {
             adminUsername = Try(config.getString("security.auth.basic.admin-username")).getOrElse("admin"),
             adminPassword = getOptionalString(config, "security.auth.basic.admin-password")
           ),
+          oauth = parseOAuthConfig(config),
           jwtSecret = {
             val explicitSecret = Try(config.getString("security.auth.jwt-secret")).toOption.filter(_.nonEmpty)
             explicitSecret.getOrElse {
@@ -435,4 +456,85 @@ object AppConfig {
 
   private def getOptionalInt(config: Config, path: String): Option[Int] =
     Try(config.getInt(path)).toOption
+
+  /**
+   * Parse OAuth configuration from config.
+   * Returns None if OAuth is not configured.
+   */
+  private def parseOAuthConfig(config: Config): Option[OAuthConfig] = {
+    val provider = Try(config.getString("security.auth.oauth.provider")).getOrElse("google")
+    val clientId = getOptionalString(config, "security.auth.oauth.client-id").getOrElse("")
+    val clientSecret = getOptionalString(config, "security.auth.oauth.client-secret").getOrElse("")
+    val redirectUri = getOptionalString(config, "security.auth.oauth.redirect-uri").getOrElse("")
+
+    // Only create OAuth config if at least client-id is configured
+    if (clientId.isEmpty) {
+      None
+    } else {
+      val providerConfig = provider.toLowerCase match {
+        case "google" =>
+          OidcProviders.google(clientId, clientSecret, redirectUri)
+
+        case "azure" =>
+          val tenantId = getOptionalString(config, "security.auth.oauth.azure-tenant-id")
+            .getOrElse(throw new IllegalArgumentException("OAUTH_AZURE_TENANT_ID required for Azure AD provider"))
+          OidcProviders.azureAd(tenantId, clientId, clientSecret, redirectUri)
+
+        case "okta" =>
+          val domain = getOptionalString(config, "security.auth.oauth.okta-domain")
+            .getOrElse(throw new IllegalArgumentException("OAUTH_OKTA_DOMAIN required for Okta provider"))
+          OidcProviders.okta(domain, clientId, clientSecret, redirectUri)
+
+        case "keycloak" =>
+          val baseUrl = getOptionalString(config, "security.auth.oauth.keycloak-base-url")
+            .getOrElse(throw new IllegalArgumentException("OAUTH_KEYCLOAK_BASE_URL required for Keycloak provider"))
+          val realm = getOptionalString(config, "security.auth.oauth.keycloak-realm")
+            .getOrElse(throw new IllegalArgumentException("OAUTH_KEYCLOAK_REALM required for Keycloak provider"))
+          OidcProviders.keycloak(baseUrl, realm, clientId, clientSecret, redirectUri)
+
+        case "custom" =>
+          OidcProviders.custom(
+            clientId = clientId,
+            clientSecret = clientSecret,
+            redirectUri = redirectUri,
+            authorizationEndpoint = getOptionalString(config, "security.auth.oauth.authorization-endpoint")
+              .getOrElse(throw new IllegalArgumentException("OAUTH_AUTHORIZATION_ENDPOINT required for custom provider")),
+            tokenEndpoint = getOptionalString(config, "security.auth.oauth.token-endpoint")
+              .getOrElse(throw new IllegalArgumentException("OAUTH_TOKEN_ENDPOINT required for custom provider")),
+            userinfoEndpoint = getOptionalString(config, "security.auth.oauth.userinfo-endpoint")
+              .getOrElse(throw new IllegalArgumentException("OAUTH_USERINFO_ENDPOINT required for custom provider")),
+            jwksUri = getOptionalString(config, "security.auth.oauth.jwks-uri")
+              .getOrElse(throw new IllegalArgumentException("OAUTH_JWKS_URI required for custom provider")),
+            issuer = getOptionalString(config, "security.auth.oauth.issuer")
+              .getOrElse(throw new IllegalArgumentException("OAUTH_ISSUER required for custom provider"))
+          )
+
+        case other =>
+          throw new IllegalArgumentException(s"Unknown OAuth provider: $other. Use: google, azure, okta, keycloak, or custom")
+      }
+
+      // Parse claim mapping
+      val claimMapping = ClaimMappingConfig(
+        userId = Try(config.getString("security.auth.oauth.claim-mapping.user-id")).getOrElse("sub"),
+        email = Try(config.getString("security.auth.oauth.claim-mapping.email")).getOrElse("email"),
+        groups = Try(config.getString("security.auth.oauth.claim-mapping.groups")).getOrElse("groups"),
+        name = Try(config.getString("security.auth.oauth.claim-mapping.name")).getOrElse("name")
+      )
+
+      // Parse session config
+      val sessionConfig = OAuthSessionConfig(
+        cookieName = Try(config.getString("security.auth.oauth.session.cookie-name")).getOrElse("ragbox_session"),
+        cookieSecure = Try(config.getBoolean("security.auth.oauth.session.cookie-secure")).getOrElse(true),
+        cookieMaxAge = Try(config.getInt("security.auth.oauth.session.cookie-max-age")).getOrElse(86400)
+      )
+
+      Some(OAuthConfig(
+        provider = providerConfig,
+        claimMapping = claimMapping,
+        session = sessionConfig,
+        pkceEnabled = Try(config.getBoolean("security.auth.oauth.pkce-enabled")).getOrElse(true),
+        stateTtl = Try(config.getInt("security.auth.oauth.state-ttl")).getOrElse(300)
+      ))
+    }
+  }
 }

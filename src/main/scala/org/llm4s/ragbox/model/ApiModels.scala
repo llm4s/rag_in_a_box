@@ -442,6 +442,9 @@ object ErrorResponse {
 
   def configError(message: String): ErrorResponse =
     ErrorResponse("configuration_error", message)
+
+  def unauthorized(message: String): ErrorResponse =
+    ErrorResponse("unauthorized", message)
 }
 
 // ============================================================
