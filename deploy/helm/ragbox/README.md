@@ -22,9 +22,13 @@ helm repo update
 ```bash
 # Create a values file with your configuration
 cat > my-values.yaml <<EOF
-secrets:
-  database:
+# Database password (used by bundled PostgreSQL)
+postgresql:
+  auth:
     password: "your-secure-db-password"
+
+# Security and API keys
+secrets:
   security:
     jwtSecret: "your-32-character-jwt-secret-key"
     adminPassword: "your-admin-password"
@@ -40,7 +44,7 @@ helm install ragbox ragbox/ragbox -f my-values.yaml
 
 ```bash
 helm install ragbox ragbox/ragbox \
-  --set secrets.database.password=devpassword \
+  --set postgresql.auth.password=devpassword \
   --set secrets.security.jwtSecret=dev-jwt-secret-32-characters!! \
   --set secrets.security.adminPassword=admin123 \
   --set secrets.apiKeys.openai=sk-your-key
@@ -66,6 +70,20 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 ### Using External PostgreSQL
 
 To use an external PostgreSQL instance:
+
+```yaml
+postgresql:
+  enabled: false
+
+externalDatabase:
+  host: "your-postgres-host"
+  port: 5432
+  username: "rag"
+  password: "your-password"
+  database: "ragdb"
+```
+
+Or with an existing secret:
 
 ```yaml
 postgresql:

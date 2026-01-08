@@ -111,20 +111,57 @@ PostgreSQL database
 {{- end }}
 
 {{/*
-PostgreSQL secret name
+PostgreSQL secret name - returns the appropriate secret for DB credentials
+When using bundled PostgreSQL: use Bitnami-generated secret
+When using external database: use ragbox secret or existingSecret
 */}}
 {{- define "ragbox.postgresql.secretName" -}}
 {{- if .Values.postgresql.enabled }}
 {{- if .Values.postgresql.auth.existingSecret }}
 {{- .Values.postgresql.auth.existingSecret }}
 {{- else }}
-{{- include "ragbox.secretName" . }}
+{{- /* Bitnami PostgreSQL generates secret named <release>-postgresql */}}
+{{- include "ragbox.fullname" . }}-postgresql
 {{- end }}
 {{- else }}
+{{- /* External database - use ragbox secret or existingSecret */}}
 {{- if .Values.externalDatabase.existingSecret }}
 {{- .Values.externalDatabase.existingSecret }}
 {{- else }}
 {{- include "ragbox.secretName" . }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+PostgreSQL password key - returns the correct secret key for the password
+Bitnami uses 'password' for custom user, ragbox secret uses 'pg-password'
+*/}}
+{{- define "ragbox.postgresql.passwordKey" -}}
+{{- if .Values.postgresql.enabled -}}
+password
+{{- else -}}
+{{- .Values.externalDatabase.passwordKey | default "pg-password" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+PostgreSQL user key - returns the correct secret key for the username
+*/}}
+{{- define "ragbox.postgresql.userKey" -}}
+{{- if .Values.postgresql.enabled -}}
+{{- else -}}
+{{- .Values.externalDatabase.userKey | default "pg-user" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+PostgreSQL username - returns the database username
+*/}}
+{{- define "ragbox.postgresql.username" -}}
+{{- if .Values.postgresql.enabled }}
+{{- .Values.postgresql.auth.username }}
+{{- else }}
+{{- .Values.externalDatabase.username | default "rag" }}
 {{- end }}
 {{- end }}

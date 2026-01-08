@@ -53,16 +53,28 @@ spec:
                 name: {{ include "ragbox.configmapName" . }}
           env:
             # Database credentials
+            {{- if .Values.postgresql.enabled }}
+            # Bundled PostgreSQL - username from values, password from Bitnami secret
             - name: PG_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ragbox.postgresql.secretName" . }}
-                  key: pg-user
+              value: {{ include "ragbox.postgresql.username" . | quote }}
             - name: PG_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ragbox.postgresql.secretName" . }}
-                  key: pg-password
+                  key: {{ include "ragbox.postgresql.passwordKey" . }}
+            {{- else }}
+            # External database - credentials from secret
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ragbox.postgresql.secretName" . }}
+                  key: {{ include "ragbox.postgresql.userKey" . }}
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ragbox.postgresql.secretName" . }}
+                  key: {{ include "ragbox.postgresql.passwordKey" . }}
+            {{- end }}
 
             # Security secrets
             - name: JWT_SECRET

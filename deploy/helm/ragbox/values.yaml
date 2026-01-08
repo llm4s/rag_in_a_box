@@ -193,13 +193,6 @@ secrets:
   # -- Create secrets (set to false if using external secrets)
   create: true
 
-  # Database credentials
-  database:
-    # -- PostgreSQL username
-    user: "rag"
-    # -- PostgreSQL password (CHANGE THIS!)
-    password: ""
-
   # Security secrets
   security:
     # -- JWT secret for token signing (32+ chars, CHANGE THIS!)
@@ -224,7 +217,8 @@ secrets:
 # =============================================================================
 
 postgresql:
-  # -- Deploy bundled PostgreSQL
+  # -- Deploy bundled PostgreSQL (Bitnami subchart)
+  # When enabled, the app automatically uses credentials from the Bitnami-generated secret
   enabled: true
 
   # -- PostgreSQL image (with pgvector)
@@ -233,11 +227,12 @@ postgresql:
     tag: pg15
 
   auth:
-    # -- Use credentials from secrets
+    # -- Use existing secret for credentials (must have 'password' key)
     existingSecret: ""
-    # -- Username (used if existingSecret not set)
+    # -- Database username
     username: "rag"
-    # -- Password (used if existingSecret not set)
+    # -- Database password (REQUIRED - set this for bundled PostgreSQL!)
+    # This password is used by both PostgreSQL and the app automatically
     password: ""
     # -- Database name
     database: "ragdb"
@@ -259,21 +254,28 @@ postgresql:
         cpu: 500m
         memory: 1Gi
 
-# External database configuration (when postgresql.enabled=false)
+# =============================================================================
+# External Database Configuration (when postgresql.enabled=false)
+# =============================================================================
+
 externalDatabase:
   # -- PostgreSQL host
   host: ""
   # -- PostgreSQL port
   port: 5432
+  # -- Database username
+  username: "rag"
+  # -- Database password (REQUIRED for external database)
+  password: ""
   # -- Database name
   database: "ragdb"
   # -- Table name for embeddings
   tableName: "rag_embeddings"
-  # -- Use existing secret for credentials
+  # -- Use existing secret for credentials (overrides username/password above)
   existingSecret: ""
-  # -- Secret key for username
+  # -- Secret key for username (when using existingSecret)
   userKey: "pg-user"
-  # -- Secret key for password
+  # -- Secret key for password (when using existingSecret)
   passwordKey: "pg-password"
 
 # =============================================================================
