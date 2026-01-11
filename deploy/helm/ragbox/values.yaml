@@ -1,0 +1,309 @@
+# RAG in a Box Helm Chart Values
+# See https://github.com/llm4s/rag-in-a-box for documentation
+
+# -- Number of API replicas
+replicaCount: 2
+
+image:
+  # -- Container image repository
+  repository: ghcr.io/llm4s/rag-in-a-box
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default: Chart appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the release name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations for the service account
+  annotations: {}
+  # -- Service account name (auto-generated if not set)
+  name: ""
+
+# -- Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# -- Pod security context
+podSecurityContext: {}
+
+# -- Container security context
+securityContext: {}
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 80
+
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: "nginx"
+  # -- Ingress annotations
+  annotations: {}
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  # -- Ingress hosts configuration
+  hosts:
+    - host: ragbox.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- Ingress TLS configuration
+  tls: []
+  #  - secretName: ragbox-tls
+  #    hosts:
+  #      - ragbox.example.com
+
+resources:
+  # -- Resource limits
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  # -- Resource requests
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  # -- Enable horizontal pod autoscaling
+  enabled: false
+  # -- Minimum replicas
+  minReplicas: 2
+  # -- Maximum replicas
+  maxReplicas: 10
+  # -- Target CPU utilization percentage
+  targetCPUUtilizationPercentage: 80
+  # -- Target memory utilization percentage
+  targetMemoryUtilizationPercentage: 80
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  # -- Enable PDB
+  enabled: true
+  # -- Minimum available pods
+  minAvailable: 1
+
+# -- Termination grace period in seconds
+terminationGracePeriodSeconds: 35
+
+# =============================================================================
+# Application Configuration
+# =============================================================================
+
+config:
+  # Server settings
+  server:
+    # -- Server host (0.0.0.0 for containers)
+    host: "0.0.0.0"
+    # -- Server port
+    port: 8080
+
+  # LLM settings
+  llm:
+    # -- LLM model (e.g., openai/gpt-4o, anthropic/claude-3-opus)
+    model: "openai/gpt-4o"
+    # -- Temperature for answer generation
+    temperature: "0.1"
+
+  # Embedding settings
+  embedding:
+    # -- Embedding provider (openai, voyage, ollama)
+    provider: "openai"
+    # -- Embedding model name
+    model: "text-embedding-3-small"
+
+  # RAG settings
+  rag:
+    # -- Chunking strategy (simple, sentence, markdown, semantic)
+    chunkingStrategy: "sentence"
+    # -- Target chunk size in characters
+    chunkSize: "800"
+    # -- Overlap between chunks
+    chunkOverlap: "150"
+    # -- Number of chunks to retrieve
+    topK: "5"
+    # -- Fusion strategy (rrf, weighted, vector_only, keyword_only)
+    fusionStrategy: "rrf"
+
+  # Authentication
+  auth:
+    # -- Auth mode (open, basic, oauth)
+    mode: "basic"
+
+  # Production hardening
+  rateLimit:
+    # -- Enable rate limiting
+    enabled: true
+    # -- Max requests per window
+    maxRequests: 100
+    # -- Window size in seconds
+    windowSeconds: 60
+
+  requestSize:
+    # -- Enable request size limiting
+    enabled: true
+    # -- Maximum body size in MB
+    maxBodySizeMb: 10
+
+  shutdown:
+    # -- Shutdown timeout in seconds
+    timeoutSeconds: 30
+    # -- Connection drain time in seconds
+    drainSeconds: 5
+
+  # Observability
+  metrics:
+    # -- Enable Prometheus metrics
+    enabled: true
+
+  logging:
+    # -- Log level (DEBUG, INFO, WARN, ERROR)
+    level: "INFO"
+    # -- Log format (text, json)
+    format: "json"
+
+# =============================================================================
+# Secrets Configuration
+# =============================================================================
+
+secrets:
+  # -- Create secrets (set to false if using external secrets)
+  create: true
+
+  # Security secrets
+  security:
+    # -- JWT secret for token signing (32+ chars, CHANGE THIS!)
+    jwtSecret: ""
+    # -- Admin password for basic auth (CHANGE THIS!)
+    adminPassword: ""
+
+  # API keys (leave empty if not using)
+  apiKeys:
+    # -- OpenAI API key
+    openai: ""
+    # -- Anthropic API key
+    anthropic: ""
+    # -- Voyage AI API key
+    voyage: ""
+
+  # -- Use existing secret instead of creating one
+  existingSecret: ""
+
+# =============================================================================
+# PostgreSQL Configuration
+# =============================================================================
+
+postgresql:
+  # -- Deploy bundled PostgreSQL (Bitnami subchart)
+  # When enabled, the app automatically uses credentials from the Bitnami-generated secret
+  enabled: true
+
+  # -- PostgreSQL image (with pgvector)
+  image:
+    repository: pgvector/pgvector
+    tag: pg15
+
+  auth:
+    # -- Use existing secret for credentials (must have 'password' key)
+    existingSecret: ""
+    # -- Database username
+    username: "rag"
+    # -- Database password (REQUIRED - set this for bundled PostgreSQL!)
+    # This password is used by both PostgreSQL and the app automatically
+    password: ""
+    # -- Database name
+    database: "ragdb"
+
+  primary:
+    persistence:
+      # -- Enable persistence
+      enabled: true
+      # -- Storage size
+      size: 10Gi
+      # -- Storage class (leave empty for default)
+      storageClass: ""
+
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# =============================================================================
+# External Database Configuration (when postgresql.enabled=false)
+# =============================================================================
+
+externalDatabase:
+  # -- PostgreSQL host
+  host: ""
+  # -- PostgreSQL port
+  port: 5432
+  # -- Database username
+  username: "rag"
+  # -- Database password (REQUIRED for external database)
+  password: ""
+  # -- Database name
+  database: "ragdb"
+  # -- Table name for embeddings
+  tableName: "rag_embeddings"
+  # -- Use existing secret for credentials (overrides username/password above)
+  existingSecret: ""
+  # -- Secret key for username (when using existingSecret)
+  userKey: "pg-user"
+  # -- Secret key for password (when using existingSecret)
+  passwordKey: "pg-password"
+
+# =============================================================================
+# Probes Configuration
+# =============================================================================
+
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 30

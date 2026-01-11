@@ -1,0 +1,56 @@
+RAG in a Box has been deployed!
+
+{{- if .Values.ingress.enabled }}
+Access the application at:
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+Get the application URL by running:
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "ragbox.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "http://$NODE_IP:$NODE_PORT"
+{{- else if contains "LoadBalancer" .Values.service.type }}
+Get the application URL by running:
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "ragbox.fullname" . }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+Access the application by running:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "ragbox.fullname" . }} 8080:{{ .Values.service.port }}
+
+Then visit: http://localhost:8080
+{{- end }}
+
+Admin UI: http://localhost:8080/admin
+API Docs: http://localhost:8080/docs
+
+{{- if eq .Values.config.auth.mode "basic" }}
+
+Authentication Mode: Basic Auth
+Default admin username: admin
+Admin password: (from secret {{ include "ragbox.secretName" . }})
+
+To get the admin password:
+  kubectl get secret --namespace {{ .Release.Namespace }} {{ include "ragbox.secretName" . }} -o jsonpath="{.data.admin-password}" | base64 -d
+{{- else if eq .Values.config.auth.mode "oauth" }}
+
+Authentication Mode: OAuth
+Configure your OAuth provider settings in the values file.
+{{- else }}
+
+Authentication Mode: Open (no authentication required)
+WARNING: This is not recommended for production use!
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+
+PostgreSQL is deployed as part of this release.
+{{- else }}
+
+Using external PostgreSQL at: {{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}
+{{- end }}
+
+For more information, visit:
+  https://github.com/llm4s/rag-in-a-box

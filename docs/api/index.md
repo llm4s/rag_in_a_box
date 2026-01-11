@@ -56,7 +56,9 @@ curl -H "Authorization: Bearer rat_abc123..." ...
 | | [POST /feedback](/api/analytics#feedback) | Submit query feedback |
 | **Health** | [GET /health](/api/health#health) | Health check |
 | | [GET /health/ready](/api/health#ready) | Readiness check |
+| | [GET /health/live](/api/health#live) | Liveness check |
 | **Config** | [GET /config](/api/config#get) | Get configuration |
+| | [GET /config/providers](/api/config#providers) | List available providers |
 | | [GET /stats](/api/config#stats) | Get statistics |
 
 ## Response Format
