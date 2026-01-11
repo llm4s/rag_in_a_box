@@ -584,6 +584,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueryResponse'
 
+  /query/stream:
+    post:
+      tags: [Query]
+      summary: Query with RAG (Streaming)
+      description: |
+        Submit a query and receive Server-Sent Events (SSE) for real-time progress.
+
+        Event types:
+        - `start`: Query processing started (includes queryId)
+        - `context`: Retrieved context chunk (streams as chunks are found)
+        - `chunk`: Incremental answer text (if streaming LLM available)
+        - `answer`: Complete answer text
+        - `usage`: Token usage information
+        - `complete`: Query finished successfully
+        - `error`: An error occurred
+
+        Example SSE response:
+        ```
+        event: start
+        data: {"event":"start","queryId":"uuid","timestamp":"2024-01-01T00:00:00Z"}
+
+        event: context
+        data: {"event":"context","context":{"content":"...","score":0.9},"index":0,"timestamp":"..."}
+
+        event: answer
+        data: {"event":"answer","answer":"The answer is...","timestamp":"..."}
+
+        event: complete
+        data: {"event":"complete","queryId":"uuid","totalContexts":5,"timestamp":"..."}
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream with query events
+
   /search:
     post:
       tags: [Query]

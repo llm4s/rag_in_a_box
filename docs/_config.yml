@@ -85,7 +85,7 @@ github_username: llm4s
 # Aux links (appear in header)
 aux_links:
   "GitHub":
-    - "https://github.com/llm4s/rag-in-a-box"
+    - "https://github.com/llm4s/rag_in_a_box"
   "LLM4S":
     - "https://llm4s.org"
 
@@ -94,14 +94,14 @@ aux_links_new_tab: true
 # Enable "Edit this page on GitHub" link
 gh_edit_link: true
 gh_edit_link_text: "Edit this page on GitHub"
-gh_edit_repository: "https://github.com/llm4s/rag-in-a-box"
+gh_edit_repository: "https://github.com/llm4s/rag_in_a_box"
 gh_edit_branch: "main"
 gh_edit_source: "docs"
 gh_edit_view_mode: "edit"
 
 # Footer content
 footer_content: >-
-  RAG in a Box is released under the <a href="https://github.com/llm4s/rag-in-a-box/blob/main/LICENSE">MIT License</a>.
+  RAG in a Box is released under the <a href="https://github.com/llm4s/rag_in_a_box/blob/main/LICENSE">MIT License</a>.
   Powered by <a href="https://llm4s.org">LLM4S</a>.
 
 # Enable last modified date on pages

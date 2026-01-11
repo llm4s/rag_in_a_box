@@ -9,7 +9,7 @@ const configStore = useConfigStore()
 const notification = useNotification()
 
 const editing = ref(false)
-const formData = ref<Record<string, any>>({})
+const formData = ref<Record<string, string | number | boolean | string[]>>({})
 const saving = ref(false)
 const saveError = ref<AppError | null>(null)
 

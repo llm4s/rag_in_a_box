@@ -308,6 +308,63 @@ export interface ChatMessage {
   timestamp: Date
   rating?: number
   queryLogId?: string
+  isStreaming?: boolean
+}
+
+// SSE Streaming types
+export type QueryStreamEventType = 'start' | 'context' | 'chunk' | 'answer' | 'usage' | 'complete' | 'error'
+
+export interface QueryStreamEvent {
+  event: QueryStreamEventType
+  timestamp: string
+}
+
+export interface QueryStartEvent extends QueryStreamEvent {
+  event: 'start'
+  queryId: string
+}
+
+export interface QueryContextEvent extends QueryStreamEvent {
+  event: 'context'
+  context: ContextItem
+  index: number
+}
+
+export interface QueryChunkEvent extends QueryStreamEvent {
+  event: 'chunk'
+  chunk: string
+}
+
+export interface QueryAnswerEvent extends QueryStreamEvent {
+  event: 'answer'
+  answer: string
+}
+
+export interface QueryUsageEvent extends QueryStreamEvent {
+  event: 'usage'
+  usage: UsageInfo
+}
+
+export interface QueryCompleteEvent extends QueryStreamEvent {
+  event: 'complete'
+  queryId: string
+  totalContexts: number
+}
+
+export interface QueryErrorEvent extends QueryStreamEvent {
+  event: 'error'
+  error: string
+  message: string
+}
+
+export interface StreamingCallbacks {
+  onStart?: (queryId: string) => void
+  onContext?: (context: ContextItem, index: number) => void
+  onChunk?: (chunk: string) => void
+  onAnswer?: (answer: string) => void
+  onUsage?: (usage: UsageInfo) => void
+  onComplete?: (queryId: string, totalContexts: number) => void
+  onError?: (error: string, message: string) => void
 }
 
 // User management types

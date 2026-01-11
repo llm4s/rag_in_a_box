@@ -43,7 +43,7 @@ export function useWebSocket() {
         connected.value = true
         error.value = null
         reconnectAttempts = 0
-        console.log('[WebSocket] Connected')
+        // WebSocket connected successfully
       }
 
       ws.onmessage = (event) => {
@@ -63,15 +63,14 @@ export function useWebSocket() {
 
       ws.onclose = () => {
         connected.value = false
-        console.log('[WebSocket] Disconnected')
 
         // Attempt reconnection
         if (reconnectAttempts < maxReconnectAttempts) {
           reconnectAttempts++
-          console.log(`[WebSocket] Reconnecting in ${reconnectDelay}ms (attempt ${reconnectAttempts})`)
           setTimeout(connect, reconnectDelay)
         } else {
           error.value = 'Failed to connect after multiple attempts'
+          console.warn('[WebSocket] Failed to connect after multiple attempts')
         }
       }
 

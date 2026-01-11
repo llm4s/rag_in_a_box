@@ -1,11 +1,13 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import fs2.Stream
 import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
+import org.http4s.headers.`Content-Type`
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
@@ -13,6 +15,8 @@ import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.ragbox.validation.InputValidation
+
+import java.util.UUID
 
 /**
  * HTTP routes for query operations.
@@ -140,5 +144,104 @@ object QueryRoutes {
             }
         }
       } yield response
+
+    // POST /api/v1/query/stream - Search and generate answer with SSE streaming
+    // Returns Server-Sent Events for real-time progress
+    case req @ POST -> Root / "api" / "v1" / "query" / "stream" =>
+      for {
+        body <- req.as[QueryRequest]
+        // Validate query input
+        validation = InputValidation.validateQuery(body.question)
+        response <- InputValidation.toResponse(validation) match {
+          case Some(errorResponse) => errorResponse
+          case None =>
+            val queryId = UUID.randomUUID().toString
+            val collectionPattern = body.collection.getOrElse("*")
+            val userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
+              .map(_.head.value)
+
+            // Create the SSE stream
+            val sseStream: Stream[IO, String] = Stream.eval(IO.realTimeInstant).flatMap { startTime =>
+              // Start event
+              val startEvent = formatSSE("start", QueryStartEvent(queryId).asJson.noSpaces)
+
+              // Execute query and stream results
+              val queryStream = Stream.eval {
+                ((ragService.hasPermissions, ragService.principals) match {
+                  case (true, Some(principals)) =>
+                    for {
+                      auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                      response <- ragService.queryWithPermissionsAndAnswer(
+                        question = body.question,
+                        auth = auth,
+                        collectionPattern = collectionPattern,
+                        topK = body.topK
+                      )
+                    } yield response
+                  case _ =>
+                    ragService.queryWithAnswer(body.question, body.topK)
+                }).attempt
+              }.flatMap {
+                case Right(queryResponse) =>
+                  // Stream contexts
+                  val contextEvents = Stream.emits(queryResponse.contexts.zipWithIndex.map { case (ctx, idx) =>
+                    formatSSE("context", QueryContextEvent(ctx, idx).asJson.noSpaces)
+                  })
+
+                  // Answer event
+                  val answerEvent = Stream.emit(formatSSE("answer", QueryAnswerEvent(queryResponse.answer).asJson.noSpaces))
+
+                  // Usage event (if available)
+                  val usageEvent = queryResponse.usage match {
+                    case Some(usage) => Stream.emit(formatSSE("usage", QueryUsageEvent(usage).asJson.noSpaces))
+                    case None => Stream.empty
+                  }
+
+                  // Complete event
+                  val completeEvent = Stream.emit(formatSSE("complete", QueryCompleteEvent(queryId, queryResponse.contexts.size).asJson.noSpaces))
+
+                  // Log the query asynchronously
+                  val logEffect = Stream.eval {
+                    IO.realTimeInstant.flatMap { endTime =>
+                      val totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
+                      queryLogRegistry.logQuery(
+                        queryText = body.question,
+                        collectionPattern = Some(collectionPattern),
+                        userId = userId,
+                        embeddingLatencyMs = None,
+                        searchLatencyMs = None,
+                        llmLatencyMs = None,
+                        totalLatencyMs = totalLatencyMs,
+                        chunksRetrieved = queryResponse.contexts.size,
+                        chunksUsed = queryResponse.contexts.size,
+                        answerTokens = queryResponse.usage.map(_.completionTokens)
+                      ).attempt.void
+                    }
+                  }.drain
+
+                  contextEvents ++ answerEvent ++ usageEvent ++ completeEvent ++ logEffect
+
+                case Left(e) =>
+                  val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
+                    "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                  } else {
+                    Option(e.getMessage).getOrElse("Unknown error")
+                  }
+                  Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces))
+              }
+
+              Stream.emit(startEvent) ++ queryStream
+            }
+
+            // Return SSE response
+            Ok(sseStream).map(_.withContentType(`Content-Type`(MediaType.`text/event-stream`)))
+        }
+      } yield response
   }
+
+  /**
+   * Format a message as a Server-Sent Event.
+   */
+  private def formatSSE(event: String, data: String): String =
+    s"event: $event\ndata: $data\n\n"
 }

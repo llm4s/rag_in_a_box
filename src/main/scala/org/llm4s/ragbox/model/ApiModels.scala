@@ -533,3 +533,88 @@ final case class QueryLogListResponse(
   page: Int,
   pageSize: Int
 )
+
+// ============================================================
+// SSE Streaming Models
+// ============================================================
+
+/**
+ * Base trait for Server-Sent Events during query streaming.
+ */
+sealed trait QueryStreamEvent {
+  def eventType: String
+  def timestamp: Instant
+}
+
+/**
+ * Event indicating query processing has started.
+ */
+final case class QueryStartEvent(
+  queryId: String,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "start"
+}
+
+/**
+ * Event containing retrieved context/chunk.
+ */
+final case class QueryContextEvent(
+  context: ContextItem,
+  index: Int,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "context"
+}
+
+/**
+ * Event containing a chunk of the answer (for streaming LLM responses).
+ */
+final case class QueryChunkEvent(
+  chunk: String,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "chunk"
+}
+
+/**
+ * Event containing the complete answer (when streaming not available).
+ */
+final case class QueryAnswerEvent(
+  answer: String,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "answer"
+}
+
+/**
+ * Event containing usage information.
+ */
+final case class QueryUsageEvent(
+  usage: UsageInfo,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "usage"
+}
+
+/**
+ * Event indicating query completed successfully.
+ */
+final case class QueryCompleteEvent(
+  queryId: String,
+  totalContexts: Int,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "complete"
+}
+
+/**
+ * Event indicating an error occurred.
+ */
+final case class QueryErrorEvent(
+  error: String,
+  message: String,
+  timestamp: Instant = Instant.now()
+) extends QueryStreamEvent {
+  val eventType: String = "error"
+}

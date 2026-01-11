@@ -375,4 +375,27 @@ object Codecs {
 
   implicit val queryLogListResponseEncoder: Encoder[QueryLogListResponse] = deriveEncoder
   implicit val queryLogListResponseDecoder: Decoder[QueryLogListResponse] = deriveDecoder
+
+  // ============================================================
+  // SSE Streaming Codecs
+  // ============================================================
+
+  implicit val queryStartEventEncoder: Encoder[QueryStartEvent] = deriveEncoder
+  implicit val queryContextEventEncoder: Encoder[QueryContextEvent] = deriveEncoder
+  implicit val queryChunkEventEncoder: Encoder[QueryChunkEvent] = deriveEncoder
+  implicit val queryAnswerEventEncoder: Encoder[QueryAnswerEvent] = deriveEncoder
+  implicit val queryUsageEventEncoder: Encoder[QueryUsageEvent] = deriveEncoder
+  implicit val queryCompleteEventEncoder: Encoder[QueryCompleteEvent] = deriveEncoder
+  implicit val queryErrorEventEncoder: Encoder[QueryErrorEvent] = deriveEncoder
+
+  // Polymorphic encoder for QueryStreamEvent
+  implicit val queryStreamEventEncoder: Encoder[QueryStreamEvent] = Encoder.instance {
+    case e: QueryStartEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("start")))
+    case e: QueryContextEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("context")))
+    case e: QueryChunkEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("chunk")))
+    case e: QueryAnswerEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("answer")))
+    case e: QueryUsageEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("usage")))
+    case e: QueryCompleteEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("complete")))
+    case e: QueryErrorEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("error")))
+  }
 }

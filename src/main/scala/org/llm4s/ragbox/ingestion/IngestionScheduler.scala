@@ -3,6 +3,7 @@ package org.llm4s.ragbox.ingestion
 import cats.effect.{IO, Ref, Temporal}
 import cats.effect.std.Supervisor
 import cats.syntax.all._
+import org.slf4j.LoggerFactory
 
 import scala.concurrent.duration._
 import java.time.Instant
@@ -18,6 +19,7 @@ class IngestionScheduler(
   ingestionService: IngestionService,
   config: IngestionConfig
 ) {
+  private val logger = LoggerFactory.getLogger(getClass)
 
   private case class SchedulerState(
     running: Boolean = false,
@@ -44,18 +46,18 @@ class IngestionScheduler(
    */
   private def runLoop(interval: FiniteDuration): IO[Unit] = {
     def loop: IO[Unit] = for {
-      _ <- IO.println(s"[Scheduler] Next ingestion run in ${formatDuration(interval)}")
+      _ <- IO(logger.info(s"Next ingestion run in ${formatDuration(interval)}"))
       _ <- Temporal[IO].sleep(interval)
-      _ <- IO.println(s"[Scheduler] Starting scheduled ingestion...")
+      _ <- IO(logger.info("Starting scheduled ingestion..."))
       results <- ingestionService.runAll().attempt
       _ <- results match {
         case Right(r) =>
           val summary = r.map { res =>
             s"${res.sourceName}: added=${res.documentsAdded}, updated=${res.documentsUpdated}, unchanged=${res.documentsUnchanged}"
           }.mkString(", ")
-          IO.println(s"[Scheduler] Ingestion complete: $summary")
+          IO(logger.info(s"Ingestion complete: $summary"))
         case Left(e) =>
-          IO.println(s"[Scheduler] Ingestion failed: ${e.getMessage}")
+          IO(logger.error(s"Ingestion failed: ${e.getMessage}", e))
       }
       _ <- loop
     } yield ()
