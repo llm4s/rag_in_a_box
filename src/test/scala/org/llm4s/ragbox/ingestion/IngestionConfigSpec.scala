@@ -285,7 +285,8 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
     config.accessKeyId shouldBe None
     config.secretAccessKey shouldBe None
     config.roleArn shouldBe None
-    config.patterns should contain allOf ("*.md", "*.txt", "*.pdf")
+    // S3 ingestion only supports text formats (no PDF - it's binary)
+    config.patterns should contain allOf ("*.md", "*.txt", "*.json", "*.xml", "*.html", "*.csv")
     config.maxKeys shouldBe 1000
     config.enabled shouldBe true
   }

@@ -362,6 +362,9 @@ class IngestionService(
    * Lists objects in an S3 bucket (with optional prefix filtering) and ingests
    * text content from files matching the configured patterns.
    *
+   * NOTE: Only text-based file formats are supported. Binary formats (PDF, DOCX,
+   * images, etc.) will be read as UTF-8 text and produce garbage content.
+   *
    * Supports:
    * - Explicit credentials (access key + secret)
    * - Role assumption for cross-account access
@@ -372,6 +375,18 @@ class IngestionService(
     startTime: Instant
   ): IO[IngestionResult] = {
     IO.blocking {
+      // Warn if binary file extensions are configured
+      val binaryExtensions = Set("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+        "png", "jpg", "jpeg", "gif", "bmp", "tiff", "zip", "tar", "gz", "rar")
+      val configuredBinaryExts = config.extensions.intersect(binaryExtensions)
+      if (configuredBinaryExts.nonEmpty) {
+        System.err.println(
+          s"[WARNING] S3 source '${config.name}' includes binary file extensions " +
+          s"(${configuredBinaryExts.mkString(", ")}). S3 ingestion only supports text formats. " +
+          s"Binary files will produce garbage content."
+        )
+      }
+
       val s3Client = buildS3Client(config)
 
       try {

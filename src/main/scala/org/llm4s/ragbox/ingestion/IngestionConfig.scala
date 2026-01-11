@@ -75,6 +75,11 @@ final case class DatabaseSourceConfig(
 /**
  * S3 source configuration for ingesting documents from AWS S3.
  *
+ * NOTE: S3 ingestion currently only supports text-based file formats.
+ * Binary formats like PDF, DOCX, images etc. are NOT supported and will
+ * produce garbage content if included. Use DirectorySourceConfig with
+ * local files for binary format support.
+ *
  * @param name Source name
  * @param bucket S3 bucket name
  * @param prefix Key prefix to filter objects (e.g., "documents/")
@@ -82,7 +87,8 @@ final case class DatabaseSourceConfig(
  * @param accessKeyId AWS access key ID (optional, uses default credentials if not set)
  * @param secretAccessKey AWS secret access key (optional, uses default credentials if not set)
  * @param roleArn IAM role ARN to assume (optional, for cross-account access)
- * @param patterns File patterns to include (glob syntax, e.g., "*.pdf", "*.md")
+ * @param patterns File patterns to include (glob syntax, e.g., "*.md", "*.txt").
+ *                 Only text formats are supported (md, txt, json, xml, html, csv, etc.)
  * @param maxKeys Maximum number of objects to fetch per request
  * @param metadata Additional metadata to attach to all documents
  * @param enabled Whether this source is enabled
@@ -95,7 +101,7 @@ final case class S3SourceConfig(
   accessKeyId: Option[String] = None,
   secretAccessKey: Option[String] = None,
   roleArn: Option[String] = None,
-  patterns: Set[String] = Set("*.md", "*.txt", "*.pdf"),
+  patterns: Set[String] = Set("*.md", "*.txt", "*.json", "*.xml", "*.html", "*.csv"),
   maxKeys: Int = 1000,
   metadata: Map[String, String] = Map.empty,
   enabled: Boolean = true
@@ -290,8 +296,9 @@ object IngestionConfig {
         val accessKeyId = Try(config.getString("access-key-id")).toOption
         val secretAccessKey = Try(config.getString("secret-access-key")).toOption
         val roleArn = Try(config.getString("role-arn")).toOption
+        // Only text formats are supported - binary formats like PDF will produce garbage
         val patterns = Try(config.getStringList("patterns").asScala.toSet)
-          .getOrElse(Set("*.md", "*.txt", "*.pdf"))
+          .getOrElse(Set("*.md", "*.txt", "*.json", "*.xml", "*.html", "*.csv"))
         val maxKeys = Try(config.getInt("max-keys")).getOrElse(1000)
 
         if (bucket.nonEmpty) {

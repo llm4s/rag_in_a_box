@@ -11,6 +11,8 @@ S3 ingestion allows you to automatically pull documents from AWS S3 buckets for 
 - **Pattern-based filtering** to select specific file types
 - **Prefix filtering** to target specific bucket paths
 
+> **Important**: S3 ingestion only supports **text-based file formats** (markdown, plain text, JSON, XML, HTML, CSV, etc.). Binary formats like PDF, DOCX, images, and archives are **not supported** and will produce garbage content if included. For binary format support, use the directory ingestion source with local files.
+
 ---
 
 ## Quick Start
@@ -56,7 +58,7 @@ export AWS_REGION=us-east-1
 | `bucket` | string | - | S3 bucket name (required) |
 | `prefix` | string | `""` | Key prefix to filter objects |
 | `region` | string | `"us-east-1"` | AWS region |
-| `patterns` | list | `["*.md", "*.txt", "*.pdf"]` | File patterns to include |
+| `patterns` | list | `["*.md", "*.txt", "*.json", "*.xml", "*.html", "*.csv"]` | File patterns to include (text formats only) |
 | `max-keys` | int | `1000` | Max objects per pagination request |
 | `access-key-id` | string | - | AWS access key (optional) |
 | `secret-access-key` | string | - | AWS secret key (optional) |
@@ -79,7 +81,7 @@ ingestion {
       bucket = "engineering-documentation"
       prefix = "docs/published/"
       region = "us-west-2"
-      patterns = ["*.md", "*.txt", "*.pdf", "*.rst"]
+      patterns = ["*.md", "*.txt", "*.rst", "*.html"]  # Text formats only
       max-keys = 500
       metadata {
         department = "engineering"
@@ -239,7 +241,7 @@ Use patterns to filter by extension:
   type = "s3"
   bucket = "docs-bucket"
   prefix = "engineering/"
-  patterns = ["*.md", "*.pdf"]  # Engineering docs, only .md and .pdf
+  patterns = ["*.md", "*.txt", "*.html"]  # Engineering docs, text files only
 }
 ```
 
@@ -378,12 +380,34 @@ export LOG_LEVEL=DEBUG
 
 ---
 
+## Limitations
+
+### Text-Only Format Support
+
+S3 ingestion reads files as UTF-8 text. This means:
+
+- **Supported formats**: `.md`, `.txt`, `.json`, `.xml`, `.html`, `.csv`, `.rst`, `.yaml`, `.yml`, `.log`
+- **Not supported**: `.pdf`, `.docx`, `.xlsx`, `.pptx`, `.png`, `.jpg`, `.zip`, and other binary formats
+
+If you need to ingest binary formats like PDFs:
+1. Download files locally first
+2. Use directory ingestion with the DirectoryLoader, which supports binary format parsing
+
+### No Incremental Sync
+
+S3 ingestion currently performs full ingestion on each run (not incremental sync). All matched files are re-processed. For large buckets, consider:
+- Using prefix filtering to limit scope
+- Running ingestion less frequently
+- Splitting into multiple sources by prefix
+
+---
+
 ## Best Practices
 
 1. **Use IAM roles** instead of explicit credentials when possible
 2. **Limit permissions** to read-only access on specific buckets
 3. **Use prefix filtering** to avoid indexing unnecessary objects
-4. **Set appropriate patterns** to filter by file type
+4. **Use text-format patterns only** - avoid binary formats like PDF, DOCX
 5. **Monitor ingestion** status to catch failures early
 6. **Use metadata** to tag documents for filtering and analytics
 
@@ -405,7 +429,7 @@ ingestion {
       bucket = "corporate-docs"
       prefix = "hr/policies/"
       region = "us-east-1"
-      patterns = ["*.pdf", "*.docx"]
+      patterns = ["*.md", "*.txt", "*.html"]  # Text formats only
       metadata {
         department = "hr"
         document_type = "policy"
