@@ -24,8 +24,8 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
-      // LLM4s - RAG framework (0.2.8 fixes PgSearchIndex persistence)
-      "org.llm4s" %% "core" % "0.2.8",
+      // LLM4s - RAG framework (0.2.9 adds S3Loader with multi-format document support)
+      "org.llm4s" %% "core" % "0.2.9",
 
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",

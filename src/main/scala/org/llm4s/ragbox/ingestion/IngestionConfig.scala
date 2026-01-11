@@ -104,6 +104,42 @@ final case class WebCrawlerSourceConfig(
 ) extends SourceConfig
 
 /**
+ * S3 source configuration for ingesting documents from AWS S3.
+ *
+ * Supports multi-format document extraction including PDF, DOCX, DOC, and text formats
+ * via the llm4s document extraction pipeline (Apache PDFBox, POI, Tika).
+ *
+ * @param name Source name
+ * @param bucket S3 bucket name
+ * @param prefix Key prefix to filter objects (e.g., "documents/")
+ * @param region AWS region (e.g., "us-east-1")
+ * @param accessKeyId AWS access key ID (optional, uses default credentials if not set)
+ * @param secretAccessKey AWS secret access key (optional, uses default credentials if not set)
+ * @param patterns File patterns to include (glob syntax, e.g., "*.md", "*.pdf", "*.docx")
+ * @param metadata Additional metadata to attach to all documents
+ * @param enabled Whether this source is enabled
+ */
+final case class S3SourceConfig(
+  name: String,
+  bucket: String,
+  prefix: String = "",
+  region: String = "us-east-1",
+  accessKeyId: Option[String] = None,
+  secretAccessKey: Option[String] = None,
+  patterns: Set[String] = Set("*.md", "*.txt", "*.pdf", "*.docx", "*.doc", "*.json", "*.xml", "*.html", "*.csv"),
+  metadata: Map[String, String] = Map.empty,
+  enabled: Boolean = true
+) extends SourceConfig {
+
+  /**
+   * Convert glob patterns to extensions for llm4s S3Loader.
+   * "*.md" -> "md", "*.txt" -> "txt"
+   */
+  def extensions: Set[String] =
+    patterns.map(_.stripPrefix("*.").stripPrefix("."))
+}
+
+/**
  * Overall ingestion configuration.
  */
 final case class IngestionConfig(
@@ -273,6 +309,31 @@ object IngestionConfig {
             delayMs = delayMs,
             timeoutMs = timeoutMs,
             sameDomainOnly = sameDomainOnly,
+            metadata = metadata,
+            enabled = enabled
+          ))
+        } else {
+          None
+        }
+
+      case "s3" =>
+        val bucket = Try(config.getString("bucket")).getOrElse("")
+        val prefix = Try(config.getString("prefix")).getOrElse("")
+        val region = Try(config.getString("region")).getOrElse("us-east-1")
+        val accessKeyId = Try(config.getString("access-key-id")).toOption
+        val secretAccessKey = Try(config.getString("secret-access-key")).toOption
+        val patterns = Try(config.getStringList("patterns").asScala.toSet)
+          .getOrElse(Set("*.md", "*.txt", "*.pdf", "*.docx", "*.doc", "*.json", "*.xml", "*.html", "*.csv"))
+
+        if (bucket.nonEmpty) {
+          Some(S3SourceConfig(
+            name = name,
+            bucket = bucket,
+            prefix = prefix,
+            region = region,
+            accessKeyId = accessKeyId,
+            secretAccessKey = secretAccessKey,
+            patterns = patterns,
             metadata = metadata,
             enabled = enabled
           ))

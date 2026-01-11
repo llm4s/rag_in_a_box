@@ -116,11 +116,13 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Add `watch: true` option for real-time file watching (NIO WatchService)
 - [ ] Add debouncing for rapid file changes
 
-#### 3.2 S3/Cloud Storage Ingester - IN PROGRESS (feature/s3-ingester branch)
-- [ ] Add S3 client dependency (AWS SDK)
-- [ ] Create S3IngestionSource.scala
-- [ ] Support bucket, prefix, region, patterns configuration
-- [ ] Implement incremental sync via S3 object metadata
+#### 3.2 S3/Cloud Storage Ingester - COMPLETE
+- [x] S3 integration via llm4s S3Loader (AWS SDK v2)
+- [x] Support bucket, prefix, region, patterns configuration
+- [x] Multi-format document extraction (PDF, DOCX, DOC via PDFBox/POI/Tika)
+- [x] Incremental sync via S3 object ETags
+- [x] IAM role and credential chain authentication
+- [x] S3 ingestion documentation - docs/guide/s3-ingestion.md
 - [ ] Add GCS and Azure Blob support (future)
 
 #### 3.3 Web Crawler - COMPLETE
@@ -181,7 +183,7 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [x] Implement query input
 - [x] Display source citations
 - [x] Add collection selector dropdown
-- [ ] Implement streaming response (SSE)
+- [x] Implement streaming response (SSE) - POST /api/v1/query/stream
 - [ ] Add conversation history (session-based)
 - [ ] Add feedback buttons (thumbs up/down)
 
@@ -298,8 +300,8 @@ These can be implemented quickly with high impact:
 - [ ] Add `?include=hash,updatedAt` to sync/documents endpoint
 - [ ] Add `POST /sync/check` for batch document state checks
 - [ ] Add `dryRun` option to prune endpoint
-- [ ] Complete S3 ingester (in progress on feature branch)
-- [ ] Add streaming responses for chat interface (SSE)
+- [x] ~~Complete S3 ingester~~ (DONE - via llm4s v0.2.9 S3Loader)
+- [x] ~~Add streaming responses for chat interface (SSE)~~ (DONE)
 
 ---
 
@@ -309,9 +311,9 @@ These can be implemented quickly with high impact:
 |-------|----------|--------|-------------------|
 | **1. Auth** | P0 | COMPLETE | - |
 | **2. Ingester API** | P0 | PARTIAL | Enhanced sync endpoints |
-| **3. Built-in Ingesters** | P1 | MOSTLY COMPLETE | S3 (in progress), file watching |
+| **3. Built-in Ingesters** | P1 | COMPLETE | GCS/Azure (future), file watching |
 | **4. RAGA Eval** | P1 | PARTIAL | Feedback system, optimization suggestions |
-| **5. UX** | P1 | PARTIAL | Streaming chat, conversation history |
+| **5. UX** | P1 | PARTIAL | Conversation history |
 | **6. Production** | P2 | MOSTLY COMPLETE | Audit logging, distributed tracing |
 | **7. Documentation Site** | P0 | MOSTLY COMPLETE | Tutorials, advanced guides |
 

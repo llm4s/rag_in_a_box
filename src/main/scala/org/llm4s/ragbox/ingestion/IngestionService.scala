@@ -5,6 +5,7 @@ import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import org.llm4s.rag.RAG
 import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadStats, SyncStats}
+import org.llm4s.rag.loader.s3.S3Loader
 import org.llm4s.ragbox.model._
 
 import java.io.File
@@ -168,6 +169,8 @@ class IngestionService(
         runDatabaseIngestion(db, startTime)
       case web: WebCrawlerSourceConfig =>
         runWebCrawlerIngestion(web, startTime)
+      case s3: S3SourceConfig =>
+        runS3Ingestion(s3, startTime)
     }
   }
 
@@ -393,6 +396,69 @@ class IngestionService(
         IngestionResult(
           sourceName = config.name,
           sourceType = "web",
+          documentsAdded = 0,
+          documentsUpdated = 0,
+          documentsDeleted = 0,
+          documentsUnchanged = 0,
+          documentsFailed = 0,
+          startTime = startTime,
+          endTime = Instant.now(),
+          error = Some(e.getMessage)
+        )
+      }
+    }
+  }
+
+  /**
+   * Run S3 ingestion.
+   *
+   * Downloads documents from an S3 bucket and ingests them using the llm4s S3Loader.
+   * Supports multi-format document extraction (PDF, DOCX, text formats, etc.)
+   * Uses sync for incremental updates based on S3 object ETags.
+   */
+  private def runS3Ingestion(
+    config: S3SourceConfig,
+    startTime: Instant
+  ): IO[IngestionResult] = {
+    rag.flatMap { r =>
+      // Build S3Loader from llm4s with credentials if provided
+      val loader = (config.accessKeyId, config.secretAccessKey) match {
+        case (Some(keyId), Some(secret)) =>
+          S3Loader.withCredentials(
+            bucket = config.bucket,
+            accessKeyId = keyId,
+            secretAccessKey = secret,
+            region = config.region,
+            prefix = config.prefix
+          )
+        case _ =>
+          S3Loader(
+            bucket = config.bucket,
+            prefix = config.prefix,
+            region = config.region,
+            extensions = config.extensions,
+            metadata = config.metadata + ("source" -> config.name)
+          )
+      }
+
+      IO.fromEither(
+        r.sync(loader).map { stats =>
+          IngestionResult(
+            sourceName = config.name,
+            sourceType = "s3",
+            documentsAdded = stats.added,
+            documentsUpdated = stats.updated,
+            documentsDeleted = stats.deleted,
+            documentsUnchanged = stats.unchanged,
+            documentsFailed = 0,
+            startTime = startTime,
+            endTime = Instant.now()
+          )
+        }.left.map(e => new RuntimeException(e.message))
+      ).handleError { e =>
+        IngestionResult(
+          sourceName = config.name,
+          sourceType = "s3",
           documentsAdded = 0,
           documentsUpdated = 0,
           documentsDeleted = 0,
