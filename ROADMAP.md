@@ -83,18 +83,18 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 
 ---
 
-### Phase 2: External Ingester API (P0) - PARTIAL
+### Phase 2: External Ingester API (P0) - COMPLETE
 
 #### 2.1 Enhanced Sync API
-- [ ] Add `?include=hash,updatedAt` parameter to `GET /sync/documents`
-- [ ] Add `?since=timestamp` parameter for incremental sync
-- [ ] Add `GET /api/v1/sync/documents/{id}` - single document state
-- [ ] Add `POST /api/v1/sync/check` - batch check document states
+- [x] Add `?include=hash,updatedAt` parameter to `GET /sync/documents`
+- [x] Add `?since=timestamp` parameter for incremental sync
+- [x] Add `GET /api/v1/sync/documents/{id}` - single document state
+- [x] Add `POST /api/v1/sync/check` - batch check document states
 
 #### 2.2 Deleted Document Detection
-- [ ] Add `dryRun` parameter to `POST /api/v1/sync`
-- [ ] Return `wouldDelete` list when dryRun=true
-- [ ] Add batch delete: `DELETE /api/v1/documents` with body
+- [x] Add `dryRun` parameter to `POST /api/v1/sync`
+- [x] Return `wouldDelete` list when dryRun=true
+- [x] Add batch delete: `DELETE /api/v1/documents` with body (supports dryRun)
 
 #### 2.3 API Documentation
 - [x] Create `docs/guide/external-ingesters.md` guide
@@ -102,7 +102,7 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 - [ ] Document incremental sync pattern
 
 #### 2.4 Tests
-- [ ] Integration tests for enhanced sync endpoints
+- [x] Integration tests for enhanced sync endpoints
 - [ ] E2E test: full sync workflow (list -> upsert -> prune)
 
 ---
@@ -297,11 +297,13 @@ A turnkey RAG solution: start a Docker container, point it at documents, and imm
 
 These can be implemented quickly with high impact:
 
-- [ ] Add `?include=hash,updatedAt` to sync/documents endpoint
-- [ ] Add `POST /sync/check` for batch document state checks
-- [ ] Add `dryRun` option to prune endpoint
+- [x] ~~Add `?include=hash,updatedAt` to sync/documents endpoint~~ (DONE)
+- [x] ~~Add `POST /sync/check` for batch document state checks~~ (DONE)
+- [x] ~~Add `dryRun` option to prune endpoint~~ (DONE)
 - [x] ~~Complete S3 ingester~~ (DONE - via llm4s v0.2.9 S3Loader)
 - [x] ~~Add streaming responses for chat interface (SSE)~~ (DONE)
+
+All Quick Wins completed!
 
 ---
 
@@ -310,7 +312,7 @@ These can be implemented quickly with high impact:
 | Phase | Priority | Status | Key Remaining Work |
 |-------|----------|--------|-------------------|
 | **1. Auth** | P0 | COMPLETE | - |
-| **2. Ingester API** | P0 | PARTIAL | Enhanced sync endpoints |
+| **2. Ingester API** | P0 | COMPLETE | Documentation examples |
 | **3. Built-in Ingesters** | P1 | COMPLETE | GCS/Azure (future), file watching |
 | **4. RAGA Eval** | P1 | PARTIAL | Feedback system, optimization suggestions |
 | **5. UX** | P1 | PARTIAL | Conversation history |

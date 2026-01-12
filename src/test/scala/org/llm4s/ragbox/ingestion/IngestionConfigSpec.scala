@@ -42,6 +42,7 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
       case _: UrlSourceConfig => "url"
       case _: DatabaseSourceConfig => "database"
       case _: WebCrawlerSourceConfig => "web"
+      case _: S3SourceConfig => "s3"
     }
   }
 
