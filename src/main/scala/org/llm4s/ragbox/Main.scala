@@ -14,6 +14,7 @@ import cats.effect.std.Supervisor
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
 import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.ingestion.{IngestionScheduler, IngestionService}
 import org.llm4s.ragbox.service.{ChunkingService, ExperimentService, SuggestionService}
 import org.llm4s.ragbox.middleware.{AuthMiddleware, RateLimitMiddleware, RequestSizeMiddleware}
@@ -103,18 +104,21 @@ object Main extends IOApp {
       // Create Suggestion service for optimization recommendations
       suggestionService = SuggestionService(queryLogRegistry, config)
 
+      // Shared connection pool for experiment and chat registries
+      dbPool <- ConnectionPool.create(config.database)
+
       // Create Experiment service for A/B testing
-      experimentRegistry <- Resource.make(ExperimentRegistry(config.database))(_.close())
-      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, config.database)
+      experimentRegistry <- Resource.eval(ExperimentRegistry(dbPool))
+      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, dbPool)
 
       // Create Chat Session Registry for persistent conversations
-      chatSessionRegistry <- Resource.make(ChatSessionRegistry(config.database))(_.close())
+      chatSessionRegistry <- Resource.eval(ChatSessionRegistry(dbPool))
 
       // Base routes
       baseRoutes = Seq(
         "/" -> HealthRoutes.routes(ragService),
         "/" -> DocumentRoutes.routes(ragService),
-        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config)),
+        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config), Some(experimentService)),
         "/" -> ConfigRoutes.routes(ragService),
         "/" -> IngestionRoutes.routes(ingestionService),
         "/" -> VisibilityRoutes.routes(ragService),

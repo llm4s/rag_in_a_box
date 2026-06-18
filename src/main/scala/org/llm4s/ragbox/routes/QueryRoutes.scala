@@ -14,7 +14,7 @@ import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
-import org.llm4s.ragbox.service.RAGService
+import org.llm4s.ragbox.service.{ExperimentService, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
 
 import java.util.UUID
@@ -37,7 +37,7 @@ import java.util.UUID
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None, experimentService: Option[ExperimentService] = None): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // POST /api/v1/query - Search and generate answer
     // Supports permission-aware queries when SearchIndex is available
@@ -56,18 +56,18 @@ object QueryRoutes {
               userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
                 .map(_.head.value)
 
-              // Calculate effective topK with override support
-              effectiveTopK = body.overrides.flatMap(_.topK).orElse(body.topK)
+              // Assign this query to a baseline/variant group if an experiment is running
+              routing <- resolveExperimentRouting(experimentService, body.experimentId, body.collection)
+              variantConfig = routing.map(_._2)
+              storedExperimentId = routing.map(_._1).orElse(body.experimentId)
+
+              // Calculate effective topK: experiment variant > request override > request topK
+              effectiveTopK = variantConfig.flatMap(_.topK)
+                .orElse(body.overrides.flatMap(_.topK))
+                .orElse(body.topK)
 
               // Build config snapshot for experiment tracking
-              configSnapshot = config.map { c =>
-                QueryConfigSnapshot(
-                  topK = effectiveTopK.getOrElse(c.rag.search.topK),
-                  fusionStrategy = body.overrides.flatMap(_.fusionStrategy).getOrElse(c.rag.search.fusionStrategy),
-                  systemPrompt = body.overrides.flatMap(_.systemPrompt).orElse(Some(c.rag.systemPrompt)),
-                  llmTemperature = body.overrides.flatMap(_.llmTemperature).orElse(Some(c.llm.temperature))
-                )
-              }
+              configSnapshot = buildConfigSnapshot(config, effectiveTopK, variantConfig, body.overrides)
 
               result <- ((ragService.hasPermissions, ragService.principals) match {
                 // Permission-aware query when SearchIndex is available
@@ -101,7 +101,7 @@ object QueryRoutes {
                     chunksRetrieved = queryResponse.contexts.size,
                     chunksUsed = queryResponse.contexts.size,
                     answerTokens = queryResponse.usage.map(_.completionTokens),
-                    experimentId = body.experimentId,
+                    experimentId = storedExperimentId,
                     configSnapshot = configSnapshot
                   ).attempt.void
                 case Left(_) => IO.unit
@@ -177,21 +177,19 @@ object QueryRoutes {
             val userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
               .map(_.head.value)
 
-            // Calculate effective topK with override support
-            val effectiveTopK = body.overrides.flatMap(_.topK).orElse(body.topK)
+            // Create the SSE stream. Experiment routing is resolved first so the
+            // query is assigned to a baseline/variant group before execution.
+            val sseStream: Stream[IO, String] =
+              Stream.eval(resolveExperimentRouting(experimentService, body.experimentId, body.collection)).flatMap { routing =>
+              val variantConfig = routing.map(_._2)
+              val storedExperimentId = routing.map(_._1).orElse(body.experimentId)
+              // Effective topK: experiment variant > request override > request topK
+              val effectiveTopK = variantConfig.flatMap(_.topK)
+                .orElse(body.overrides.flatMap(_.topK))
+                .orElse(body.topK)
+              val configSnapshot = buildConfigSnapshot(config, effectiveTopK, variantConfig, body.overrides)
 
-            // Build config snapshot for experiment tracking
-            val configSnapshot = config.map { c =>
-              QueryConfigSnapshot(
-                topK = effectiveTopK.getOrElse(c.rag.search.topK),
-                fusionStrategy = body.overrides.flatMap(_.fusionStrategy).getOrElse(c.rag.search.fusionStrategy),
-                systemPrompt = body.overrides.flatMap(_.systemPrompt).orElse(Some(c.rag.systemPrompt)),
-                llmTemperature = body.overrides.flatMap(_.llmTemperature).orElse(Some(c.llm.temperature))
-              )
-            }
-
-            // Create the SSE stream
-            val sseStream: Stream[IO, String] = Stream.eval(IO.realTimeInstant).flatMap { startTime =>
+              Stream.eval(IO.realTimeInstant).flatMap { startTime =>
               // Start event
               val startEvent = formatSSE("start", QueryStartEvent(queryId).asJson.noSpaces)
 
@@ -245,7 +243,7 @@ object QueryRoutes {
                         chunksRetrieved = queryResponse.contexts.size,
                         chunksUsed = queryResponse.contexts.size,
                         answerTokens = queryResponse.usage.map(_.completionTokens),
-                        experimentId = body.experimentId,
+                        experimentId = storedExperimentId,
                         configSnapshot = configSnapshot
                       ).attempt.void
                     }
@@ -264,12 +262,71 @@ object QueryRoutes {
 
               Stream.emit(startEvent) ++ queryStream
             }
+            }
 
             // Return SSE response
             Ok(sseStream).map(_.withContentType(`Content-Type`(MediaType.`text/event-stream`)))
         }
       } yield response
   }
+
+  /**
+   * Resolve experiment traffic routing for a query.
+   *
+   * If an experiment is running (either the one named by `requestedId`, or the
+   * single currently-running experiment) and its collection filter matches the
+   * query, the query is assigned to the baseline or variant group according to
+   * the experiment's traffic split.
+   *
+   * @return the tagged experiment id (`"<id>:baseline"` / `"<id>:variant"`) and
+   *         the chosen variant's config, or None when no experiment applies.
+   */
+  private def resolveExperimentRouting(
+    experimentService: Option[ExperimentService],
+    requestedId: Option[String],
+    collection: Option[String]
+  ): IO[Option[(String, ExperimentConfigSnapshot)]] =
+    experimentService match {
+      case None => IO.pure(None)
+      case Some(svc) =>
+        val candidate = requestedId match {
+          case Some(id) => svc.getExperiment(id)
+          case None     => svc.getRunningExperiment()
+        }
+        candidate.map {
+          case Some(exp)
+              if exp.status == ExperimentStatus.Running &&
+                exp.collection.forall(c => collection.contains(c)) =>
+            val (expId, variant, cfg) = svc.routeQuery(exp)
+            Some((s"$expId:$variant", cfg))
+          case _ => None
+        }
+    }
+
+  /**
+   * Build the effective config snapshot recorded against a query, layering
+   * experiment variant config over explicit request overrides over defaults.
+   */
+  private def buildConfigSnapshot(
+    config: Option[AppConfig],
+    effectiveTopK: Option[Int],
+    variantConfig: Option[ExperimentConfigSnapshot],
+    overrides: Option[QueryOverrides]
+  ): Option[QueryConfigSnapshot] =
+    config.map { c =>
+      QueryConfigSnapshot(
+        topK = effectiveTopK.getOrElse(c.rag.search.topK),
+        fusionStrategy = variantConfig.flatMap(_.fusionStrategy)
+          .orElse(overrides.flatMap(_.fusionStrategy))
+          .getOrElse(c.rag.search.fusionStrategy),
+        systemPrompt = variantConfig.flatMap(_.systemPrompt)
+          .orElse(overrides.flatMap(_.systemPrompt))
+          .orElse(Some(c.rag.systemPrompt)),
+        llmTemperature = variantConfig.flatMap(_.llmTemperature)
+          .orElse(overrides.flatMap(_.llmTemperature))
+          .orElse(Some(c.llm.temperature))
+      )
+    }
 
   /**
    * Format a message as a Server-Sent Event.

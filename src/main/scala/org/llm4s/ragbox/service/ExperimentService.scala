@@ -1,13 +1,12 @@
 package org.llm4s.ragbox.service
 
 import cats.effect.IO
-import org.llm4s.ragbox.config.DatabaseConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{ExperimentRegistry, QueryLogRegistryBase}
 
-import java.sql.{Connection, DriverManager}
+import java.sql.Connection
 import java.time.{Duration, Instant}
-import java.util.Properties
+import javax.sql.DataSource
 import scala.util.Random
 
 /**
@@ -22,7 +21,7 @@ import scala.util.Random
 class ExperimentService(
   experimentRegistry: ExperimentRegistry,
   queryLogRegistry: QueryLogRegistryBase,
-  dbConfig: DatabaseConfig
+  dataSource: DataSource
 ) {
 
   private val random = new Random()
@@ -174,21 +173,10 @@ class ExperimentService(
   }
 
   /**
-   * Create a database connection.
-   */
-  private def createConnection(): Connection = {
-    Class.forName("org.postgresql.Driver")
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword)
-    DriverManager.getConnection(dbConfig.connectionString, props)
-  }
-
-  /**
    * Calculate results for an experiment by aggregating query logs.
    */
   private def calculateResults(experiment: Experiment): IO[ExperimentResults] = IO {
-    val conn = createConnection()
+    val conn = dataSource.getConnection()
     try {
       // Get metrics for baseline variant
       val baselineMetrics = getVariantMetrics(conn, experiment.id, isVariant = false)
@@ -378,20 +366,20 @@ object ExperimentService {
   def apply(
     experimentRegistry: ExperimentRegistry,
     queryLogRegistry: QueryLogRegistryBase,
-    dbConfig: DatabaseConfig
+    dataSource: DataSource
   ): ExperimentService = {
-    new ExperimentService(experimentRegistry, queryLogRegistry, dbConfig)
+    new ExperimentService(experimentRegistry, queryLogRegistry, dataSource)
   }
 
   /**
    * Create and initialize an experiment service with its dependencies.
    */
   def create(
-    dbConfig: DatabaseConfig,
+    dataSource: DataSource,
     queryLogRegistry: QueryLogRegistryBase
   ): IO[ExperimentService] = {
     for {
-      registry <- ExperimentRegistry(dbConfig)
-    } yield new ExperimentService(registry, queryLogRegistry, dbConfig)
+      registry <- ExperimentRegistry(dataSource)
+    } yield new ExperimentService(registry, queryLogRegistry, dataSource)
   }
 }

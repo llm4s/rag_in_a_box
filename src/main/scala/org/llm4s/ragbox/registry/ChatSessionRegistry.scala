@@ -4,41 +4,30 @@ import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.syntax._
 import io.circe.parser._
-import org.llm4s.ragbox.config.DatabaseConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 
-import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
+import java.sql.{Connection, ResultSet, Timestamp}
 import java.time.Instant
-import java.util.{Properties, UUID}
-import scala.compiletime.uninitialized
+import java.util.UUID
+import javax.sql.DataSource
 
 /**
  * PostgreSQL-backed chat session registry.
  *
  * Stores and manages chat sessions and messages for persistent conversation history.
+ * Borrows a pooled connection per operation (HikariCP), so it is safe for
+ * concurrent use across HTTP requests.
  */
-class ChatSessionRegistry(dbConfig: DatabaseConfig) {
+class ChatSessionRegistry(dataSource: DataSource) {
 
-  private var connection: Connection = uninitialized
-
-  private def getConnection(): Connection = connection
-  private def releaseConnection(conn: Connection): Unit = {
-    // Connection is held for the lifetime of the registry
-  }
+  private def getConnection(): Connection = dataSource.getConnection()
+  private def releaseConnection(conn: Connection): Unit = conn.close()
 
   /**
    * Initialize the registry and ensure tables exist.
    */
   def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
     val conn = getConnection()
     try {
       val stmt = conn.createStatement()
@@ -432,13 +421,10 @@ class ChatSessionRegistry(dbConfig: DatabaseConfig) {
   }
 
   /**
-   * Close the registry.
+   * Close the registry. The connection pool is owned externally, so there
+   * is nothing to release here.
    */
-  def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
+  def close(): IO[Unit] = IO.unit
 
   private def rowToSession(rs: ResultSet): ChatSession = {
     ChatSession(
@@ -481,10 +467,10 @@ class ChatSessionRegistry(dbConfig: DatabaseConfig) {
 object ChatSessionRegistry {
 
   /**
-   * Create and initialize a chat session registry.
+   * Create and initialize a chat session registry backed by a connection pool.
    */
-  def apply(dbConfig: DatabaseConfig): IO[ChatSessionRegistry] = {
-    val registry = new ChatSessionRegistry(dbConfig)
+  def apply(dataSource: DataSource): IO[ChatSessionRegistry] = {
+    val registry = new ChatSessionRegistry(dataSource)
     registry.initialize().as(registry)
   }
 }
