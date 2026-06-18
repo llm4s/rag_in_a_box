@@ -81,6 +81,9 @@ object Codecs {
   // Query Codecs
   // ============================================================
 
+  implicit val queryOverridesDecoder: Decoder[QueryOverrides] = deriveDecoder
+  implicit val queryOverridesEncoder: Encoder[QueryOverrides] = deriveEncoder
+
   implicit val queryRequestDecoder: Decoder[QueryRequest] = deriveDecoder
   implicit val queryRequestEncoder: Encoder[QueryRequest] = deriveEncoder
 
@@ -358,6 +361,9 @@ object Codecs {
   // Query Analytics Codecs
   // ============================================================
 
+  implicit val queryConfigSnapshotEncoder: Encoder[QueryConfigSnapshot] = deriveEncoder
+  implicit val queryConfigSnapshotDecoder: Decoder[QueryConfigSnapshot] = deriveDecoder
+
   implicit val queryLogEntryEncoder: Encoder[QueryLogEntry] = deriveEncoder
   implicit val queryLogEntryDecoder: Decoder[QueryLogEntry] = deriveDecoder
 
@@ -398,4 +404,97 @@ object Codecs {
     case e: QueryCompleteEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("complete")))
     case e: QueryErrorEvent => e.asJson.deepMerge(Json.obj("event" -> Json.fromString("error")))
   }
+
+  // ============================================================
+  // Optimization Suggestion Codecs
+  // ============================================================
+
+  implicit val suggestionEvidenceEncoder: Encoder[SuggestionEvidence] = deriveEncoder
+  implicit val suggestionEvidenceDecoder: Decoder[SuggestionEvidence] = deriveDecoder
+
+  implicit val optimizationSuggestionEncoder: Encoder[OptimizationSuggestion] = deriveEncoder
+  implicit val optimizationSuggestionDecoder: Decoder[OptimizationSuggestion] = deriveDecoder
+
+  implicit val suggestionsResponseEncoder: Encoder[SuggestionsResponse] = deriveEncoder
+  implicit val suggestionsResponseDecoder: Decoder[SuggestionsResponse] = deriveDecoder
+
+  implicit val suggestionsSummaryEncoder: Encoder[SuggestionsSummary] = deriveEncoder
+  implicit val suggestionsSummaryDecoder: Decoder[SuggestionsSummary] = deriveDecoder
+
+  implicit val collectionMetricsEncoder: Encoder[CollectionMetrics] = deriveEncoder
+  implicit val collectionMetricsDecoder: Decoder[CollectionMetrics] = deriveDecoder
+
+  implicit val globalMetricsEncoder: Encoder[GlobalMetrics] = deriveEncoder
+  implicit val globalMetricsDecoder: Decoder[GlobalMetrics] = deriveDecoder
+
+  implicit val configSnapshotEncoder: Encoder[ConfigSnapshot] = deriveEncoder
+  implicit val configSnapshotDecoder: Decoder[ConfigSnapshot] = deriveDecoder
+
+  // ============================================================
+  // Experiment Codecs
+  // ============================================================
+
+  implicit val experimentConfigSnapshotEncoder: Encoder[ExperimentConfigSnapshot] = deriveEncoder
+  implicit val experimentConfigSnapshotDecoder: Decoder[ExperimentConfigSnapshot] = deriveDecoder
+
+  implicit val experimentEncoder: Encoder[Experiment] = deriveEncoder
+  implicit val experimentDecoder: Decoder[Experiment] = deriveDecoder
+
+  implicit val createExperimentRequestEncoder: Encoder[CreateExperimentRequest] = deriveEncoder
+  implicit val createExperimentRequestDecoder: Decoder[CreateExperimentRequest] = deriveDecoder
+
+  implicit val updateExperimentRequestEncoder: Encoder[UpdateExperimentRequest] = deriveEncoder
+  implicit val updateExperimentRequestDecoder: Decoder[UpdateExperimentRequest] = deriveDecoder
+
+  implicit val experimentVariantMetricsEncoder: Encoder[ExperimentVariantMetrics] = deriveEncoder
+  implicit val experimentVariantMetricsDecoder: Decoder[ExperimentVariantMetrics] = deriveDecoder
+
+  implicit val experimentAnalysisEncoder: Encoder[ExperimentAnalysis] = deriveEncoder
+  implicit val experimentAnalysisDecoder: Decoder[ExperimentAnalysis] = deriveDecoder
+
+  implicit val experimentResultsEncoder: Encoder[ExperimentResults] = deriveEncoder
+  implicit val experimentResultsDecoder: Decoder[ExperimentResults] = deriveDecoder
+
+  implicit val experimentListResponseEncoder: Encoder[ExperimentListResponse] = deriveEncoder
+  implicit val experimentListResponseDecoder: Decoder[ExperimentListResponse] = deriveDecoder
+
+  implicit val createExperimentResponseEncoder: Encoder[CreateExperimentResponse] = deriveEncoder
+  implicit val createExperimentResponseDecoder: Decoder[CreateExperimentResponse] = deriveDecoder
+
+  implicit val experimentOperationResponseEncoder: Encoder[ExperimentOperationResponse] = deriveEncoder
+  implicit val experimentOperationResponseDecoder: Decoder[ExperimentOperationResponse] = deriveDecoder
+
+  // ============================================================
+  // Chat Session Codecs
+  // ============================================================
+
+  implicit val chatSessionEncoder: Encoder[ChatSession] = deriveEncoder
+  implicit val chatSessionDecoder: Decoder[ChatSession] = deriveDecoder
+
+  implicit val chatMessageRecordEncoder: Encoder[ChatMessageRecord] = deriveEncoder
+  implicit val chatMessageRecordDecoder: Decoder[ChatMessageRecord] = deriveDecoder
+
+  implicit val createChatSessionRequestEncoder: Encoder[CreateChatSessionRequest] = deriveEncoder
+  implicit val createChatSessionRequestDecoder: Decoder[CreateChatSessionRequest] = deriveDecoder
+
+  implicit val createChatSessionResponseEncoder: Encoder[CreateChatSessionResponse] = deriveEncoder
+  implicit val createChatSessionResponseDecoder: Decoder[CreateChatSessionResponse] = deriveDecoder
+
+  implicit val updateChatSessionRequestEncoder: Encoder[UpdateChatSessionRequest] = deriveEncoder
+  implicit val updateChatSessionRequestDecoder: Decoder[UpdateChatSessionRequest] = deriveDecoder
+
+  implicit val chatSessionListResponseEncoder: Encoder[ChatSessionListResponse] = deriveEncoder
+  implicit val chatSessionListResponseDecoder: Decoder[ChatSessionListResponse] = deriveDecoder
+
+  implicit val chatSessionDetailResponseEncoder: Encoder[ChatSessionDetailResponse] = deriveEncoder
+  implicit val chatSessionDetailResponseDecoder: Decoder[ChatSessionDetailResponse] = deriveDecoder
+
+  implicit val sendChatMessageRequestEncoder: Encoder[SendChatMessageRequest] = deriveEncoder
+  implicit val sendChatMessageRequestDecoder: Decoder[SendChatMessageRequest] = deriveDecoder
+
+  implicit val rateChatMessageRequestEncoder: Encoder[RateChatMessageRequest] = deriveEncoder
+  implicit val rateChatMessageRequestDecoder: Decoder[RateChatMessageRequest] = deriveDecoder
+
+  implicit val chatOperationResponseEncoder: Encoder[ChatOperationResponse] = deriveEncoder
+  implicit val chatOperationResponseDecoder: Decoder[ChatOperationResponse] = deriveDecoder
 }

@@ -189,13 +189,34 @@ final case class SyncStatusResponse(
 // ============================================================
 
 /**
+ * Override parameters for query experimentation.
+ * Allows testing different configurations without changing system defaults.
+ */
+final case class QueryOverrides(
+  topK: Option[Int] = None,
+  fusionStrategy: Option[String] = None,
+  systemPrompt: Option[String] = None,
+  llmTemperature: Option[Double] = None,
+  similarityThreshold: Option[Double] = None
+)
+
+/**
  * Request to query the RAG system with answer generation.
+ *
+ * @param question The query question
+ * @param collection Optional collection filter
+ * @param topK Optional number of chunks to retrieve
+ * @param includeMetadata Whether to include metadata in response
+ * @param experimentId Optional experiment ID to track this query
+ * @param overrides Optional parameter overrides for experimentation
  */
 final case class QueryRequest(
   question: String,
   collection: Option[String] = None,
   topK: Option[Int] = None,
-  includeMetadata: Option[Boolean] = Some(true)
+  includeMetadata: Option[Boolean] = Some(true),
+  experimentId: Option[String] = None,
+  overrides: Option[QueryOverrides] = None
 )
 
 /**
@@ -452,6 +473,17 @@ object ErrorResponse {
 // ============================================================
 
 /**
+ * Configuration snapshot for experiment tracking.
+ * Records the effective configuration used for a query.
+ */
+final case class QueryConfigSnapshot(
+  topK: Int,
+  fusionStrategy: String,
+  systemPrompt: Option[String] = None,
+  llmTemperature: Option[Double] = None
+)
+
+/**
  * A logged query for analytics.
  */
 final case class QueryLogEntry(
@@ -473,6 +505,10 @@ final case class QueryLogEntry(
 
   // Feedback
   userRating: Option[Int],
+
+  // Experiment tracking
+  experimentId: Option[String] = None,
+  configSnapshot: Option[QueryConfigSnapshot] = None,
 
   createdAt: Instant
 )

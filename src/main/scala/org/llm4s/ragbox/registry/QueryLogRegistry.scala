@@ -2,9 +2,12 @@ package org.llm4s.ragbox.registry
 
 import cats.effect.IO
 import com.zaxxer.hikari.HikariDataSource
+import io.circe.syntax._
+import io.circe.parser._
 import org.llm4s.ragbox.config.DatabaseConfig
 import org.llm4s.ragbox.db.ConnectionPool
-import org.llm4s.ragbox.model.{CollectionQueryStats, QueryAnalyticsSummary, QueryLogEntry}
+import org.llm4s.ragbox.model.{CollectionQueryStats, QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
+import org.llm4s.ragbox.model.Codecs._
 
 import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
 import java.time.Instant
@@ -73,6 +76,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
             |    relevant_chunks TEXT[],
             |    feedback_comment TEXT,
             |
+            |    experiment_id VARCHAR(64),
+            |    config_snapshot JSONB,
+            |
             |    created_at TIMESTAMPTZ DEFAULT NOW()
             |)""".stripMargin
         )
@@ -87,6 +93,22 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         stmt.execute(
           """CREATE INDEX IF NOT EXISTS idx_query_logs_user
             |    ON query_logs(user_id)""".stripMargin
+        )
+        stmt.execute(
+          """CREATE INDEX IF NOT EXISTS idx_query_logs_experiment
+            |    ON query_logs(experiment_id)""".stripMargin
+        )
+        // Add columns if table existed before (migration)
+        stmt.execute(
+          """DO $$
+            |BEGIN
+            |    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='query_logs' AND column_name='experiment_id') THEN
+            |        ALTER TABLE query_logs ADD COLUMN experiment_id VARCHAR(64);
+            |    END IF;
+            |    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='query_logs' AND column_name='config_snapshot') THEN
+            |        ALTER TABLE query_logs ADD COLUMN config_snapshot JSONB;
+            |    END IF;
+            |END $$;""".stripMargin
         )
       } finally {
         stmt.close()
@@ -122,7 +144,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     totalLatencyMs: Int,
     chunksRetrieved: Int,
     chunksUsed: Int,
-    answerTokens: Option[Int]
+    answerTokens: Option[Int],
+    experimentId: Option[String] = None,
+    configSnapshot: Option[QueryConfigSnapshot] = None
   ): IO[String] = IO {
     val conn = getConnection()
     try {
@@ -131,8 +155,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         """INSERT INTO query_logs
           |    (id, query_text, collection_pattern, user_id,
           |     embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
-          |     chunks_retrieved, chunks_used, answer_tokens)
-          |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+          |     chunks_retrieved, chunks_used, answer_tokens, experiment_id, config_snapshot)
+          |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)""".stripMargin
       val stmt = conn.prepareStatement(sql)
       try {
         stmt.setQueryTimeout(30)
@@ -151,6 +175,11 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         stmt.setInt(10, chunksUsed)
         answerTokens.foreach(stmt.setInt(11, _))
         if (answerTokens.isEmpty) stmt.setNull(11, java.sql.Types.INTEGER)
+        stmt.setString(12, experimentId.orNull)
+        configSnapshot match {
+          case Some(snapshot) => stmt.setString(13, snapshot.asJson.noSpaces)
+          case None => stmt.setNull(13, java.sql.Types.VARCHAR)
+        }
         stmt.executeUpdate()
         id
       } finally {
@@ -209,7 +238,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       val sql =
         """SELECT id, query_text, collection_pattern, user_id,
           |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
-          |       chunks_retrieved, chunks_used, answer_tokens, user_rating, created_at
+          |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
+          |       experiment_id, config_snapshot, created_at
           |FROM query_logs WHERE id = ?::uuid""".stripMargin
       val stmt = conn.prepareStatement(sql)
       try {
@@ -271,7 +301,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         val sql =
           s"""SELECT id, query_text, collection_pattern, user_id,
              |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
-             |       chunks_retrieved, chunks_used, answer_tokens, user_rating, created_at
+             |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
+             |       experiment_id, config_snapshot, created_at
              |FROM query_logs $whereClause
              |ORDER BY created_at DESC
              |LIMIT ? OFFSET ?""".stripMargin
@@ -436,6 +467,11 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
   }
 
   private def rowToEntry(rs: ResultSet): QueryLogEntry = {
+    val configSnapshotJson = Option(rs.getString("config_snapshot"))
+    val configSnapshot = configSnapshotJson.flatMap { json =>
+      decode[QueryConfigSnapshot](json).toOption
+    }
+
     QueryLogEntry(
       id = rs.getString("id"),
       queryText = rs.getString("query_text"),
@@ -449,6 +485,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       chunksUsed = rs.getInt("chunks_used"),
       answerTokens = Option(rs.getInt("answer_tokens")).filterNot(_ => rs.wasNull()),
       userRating = Option(rs.getInt("user_rating")).filterNot(_ => rs.wasNull()),
+      experimentId = Option(rs.getString("experiment_id")),
+      configSnapshot = configSnapshot,
       createdAt = rs.getTimestamp("created_at").toInstant
     )
   }

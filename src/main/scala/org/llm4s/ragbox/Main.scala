@@ -15,9 +15,9 @@ import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
 import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
 import org.llm4s.ragbox.ingestion.{IngestionScheduler, IngestionService}
-import org.llm4s.ragbox.service.ChunkingService
+import org.llm4s.ragbox.service.{ChunkingService, ExperimentService, SuggestionService}
 import org.llm4s.ragbox.middleware.{AuthMiddleware, RateLimitMiddleware, RequestSizeMiddleware}
-import org.llm4s.ragbox.registry.{PgCollectionConfigRegistry, QueryLogRegistry}
+import org.llm4s.ragbox.registry.{ChatSessionRegistry, ExperimentRegistry, PgCollectionConfigRegistry, QueryLogRegistry}
 import org.llm4s.ragbox.routes._
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.ragbox.auth.{AuthService, UserRegistry, AccessTokenRegistry}
@@ -100,11 +100,21 @@ object Main extends IOApp {
       // Create Chunking service
       chunkingService = ChunkingService(config)
 
+      // Create Suggestion service for optimization recommendations
+      suggestionService = SuggestionService(queryLogRegistry, config)
+
+      // Create Experiment service for A/B testing
+      experimentRegistry <- Resource.make(ExperimentRegistry(config.database))(_.close())
+      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, config.database)
+
+      // Create Chat Session Registry for persistent conversations
+      chatSessionRegistry <- Resource.make(ChatSessionRegistry(config.database))(_.close())
+
       // Base routes
       baseRoutes = Seq(
         "/" -> HealthRoutes.routes(ragService),
         "/" -> DocumentRoutes.routes(ragService),
-        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed),
+        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config)),
         "/" -> ConfigRoutes.routes(ragService),
         "/" -> IngestionRoutes.routes(ingestionService),
         "/" -> VisibilityRoutes.routes(ragService),
@@ -112,6 +122,9 @@ object Main extends IOApp {
         "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
         "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
         "/" -> AnalyticsRoutes.routes(queryLogRegistry),
+        "/" -> SuggestionRoutes.routes(suggestionService),
+        "/" -> ExperimentRoutes.routes(experimentService),
+        "/" -> ChatRoutes.routes(chatSessionRegistry, ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config)),
         "/" -> AuthRoutes.routes(authService, userRegistry, config.security.auth.jwtExpiration),
         "/" -> TokenRoutes.routes(tokenRegistry, authService),
         "/" -> StaticRoutes.routes

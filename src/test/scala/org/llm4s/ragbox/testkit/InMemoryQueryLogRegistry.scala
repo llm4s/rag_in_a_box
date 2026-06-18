@@ -1,7 +1,7 @@
 package org.llm4s.ragbox.testkit
 
 import cats.effect.IO
-import org.llm4s.ragbox.model.{CollectionQueryStats, QueryAnalyticsSummary, QueryLogEntry}
+import org.llm4s.ragbox.model.{CollectionQueryStats, QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
 import java.time.Instant
 import java.util.UUID
@@ -36,7 +36,9 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
     totalLatencyMs: Int,
     chunksRetrieved: Int,
     chunksUsed: Int,
-    answerTokens: Option[Int]
+    answerTokens: Option[Int],
+    experimentId: Option[String] = None,
+    configSnapshot: Option[QueryConfigSnapshot] = None
   ): IO[String] = IO {
     val id = UUID.randomUUID().toString
     val entry = QueryLogEntry(
@@ -52,6 +54,8 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
       chunksUsed = chunksUsed,
       answerTokens = answerTokens,
       userRating = None,
+      experimentId = experimentId,
+      configSnapshot = configSnapshot,
       createdAt = Instant.now()
     )
     logs.update(id, entry)

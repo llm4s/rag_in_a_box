@@ -36,7 +36,9 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
       totalLatencyMs: Int,
       chunksRetrieved: Int,
       chunksUsed: Int,
-      answerTokens: Option[Int]
+      answerTokens: Option[Int],
+      experimentId: Option[String] = None,
+      configSnapshot: Option[QueryConfigSnapshot] = None
     ) = IO {
       val id = java.util.UUID.randomUUID().toString
       val entry = QueryLogEntry(
@@ -52,6 +54,8 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
         chunksUsed = chunksUsed,
         answerTokens = answerTokens,
         userRating = None,
+        experimentId = experimentId,
+        configSnapshot = configSnapshot,
         createdAt = Instant.now()
       )
       logs = logs + (id -> entry)

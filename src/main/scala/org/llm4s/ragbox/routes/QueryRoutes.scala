@@ -9,6 +9,7 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.http4s.headers.`Content-Type`
 import org.llm4s.rag.permissions._
+import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
@@ -36,7 +37,7 @@ import java.util.UUID
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // POST /api/v1/query - Search and generate answer
     // Supports permission-aware queries when SearchIndex is available
@@ -54,6 +55,20 @@ object QueryRoutes {
               // Extract user ID from headers if available
               userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
                 .map(_.head.value)
+
+              // Calculate effective topK with override support
+              effectiveTopK = body.overrides.flatMap(_.topK).orElse(body.topK)
+
+              // Build config snapshot for experiment tracking
+              configSnapshot = config.map { c =>
+                QueryConfigSnapshot(
+                  topK = effectiveTopK.getOrElse(c.rag.search.topK),
+                  fusionStrategy = body.overrides.flatMap(_.fusionStrategy).getOrElse(c.rag.search.fusionStrategy),
+                  systemPrompt = body.overrides.flatMap(_.systemPrompt).orElse(Some(c.rag.systemPrompt)),
+                  llmTemperature = body.overrides.flatMap(_.llmTemperature).orElse(Some(c.llm.temperature))
+                )
+              }
+
               result <- ((ragService.hasPermissions, ragService.principals) match {
                 // Permission-aware query when SearchIndex is available
                 case (true, Some(principals)) =>
@@ -63,12 +78,12 @@ object QueryRoutes {
                       question = body.question,
                       auth = auth,
                       collectionPattern = collectionPattern,
-                      topK = body.topK
+                      topK = effectiveTopK
                     )
                   } yield response
                 // Fall back to legacy query (no permissions)
                 case _ =>
-                  ragService.queryWithAnswer(body.question, body.topK)
+                  ragService.queryWithAnswer(body.question, effectiveTopK)
               }).attempt
               endTime <- IO.realTimeInstant
               totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
@@ -85,7 +100,9 @@ object QueryRoutes {
                     totalLatencyMs = totalLatencyMs,
                     chunksRetrieved = queryResponse.contexts.size,
                     chunksUsed = queryResponse.contexts.size,
-                    answerTokens = queryResponse.usage.map(_.completionTokens)
+                    answerTokens = queryResponse.usage.map(_.completionTokens),
+                    experimentId = body.experimentId,
+                    configSnapshot = configSnapshot
                   ).attempt.void
                 case Left(_) => IO.unit
               }
@@ -160,6 +177,19 @@ object QueryRoutes {
             val userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
               .map(_.head.value)
 
+            // Calculate effective topK with override support
+            val effectiveTopK = body.overrides.flatMap(_.topK).orElse(body.topK)
+
+            // Build config snapshot for experiment tracking
+            val configSnapshot = config.map { c =>
+              QueryConfigSnapshot(
+                topK = effectiveTopK.getOrElse(c.rag.search.topK),
+                fusionStrategy = body.overrides.flatMap(_.fusionStrategy).getOrElse(c.rag.search.fusionStrategy),
+                systemPrompt = body.overrides.flatMap(_.systemPrompt).orElse(Some(c.rag.systemPrompt)),
+                llmTemperature = body.overrides.flatMap(_.llmTemperature).orElse(Some(c.llm.temperature))
+              )
+            }
+
             // Create the SSE stream
             val sseStream: Stream[IO, String] = Stream.eval(IO.realTimeInstant).flatMap { startTime =>
               // Start event
@@ -175,11 +205,11 @@ object QueryRoutes {
                         question = body.question,
                         auth = auth,
                         collectionPattern = collectionPattern,
-                        topK = body.topK
+                        topK = effectiveTopK
                       )
                     } yield response
                   case _ =>
-                    ragService.queryWithAnswer(body.question, body.topK)
+                    ragService.queryWithAnswer(body.question, effectiveTopK)
                 }).attempt
               }.flatMap {
                 case Right(queryResponse) =>
@@ -214,7 +244,9 @@ object QueryRoutes {
                         totalLatencyMs = totalLatencyMs,
                         chunksRetrieved = queryResponse.contexts.size,
                         chunksUsed = queryResponse.contexts.size,
-                        answerTokens = queryResponse.usage.map(_.completionTokens)
+                        answerTokens = queryResponse.usage.map(_.completionTokens),
+                        experimentId = body.experimentId,
+                        configSnapshot = configSnapshot
                       ).attempt.void
                     }
                   }.drain

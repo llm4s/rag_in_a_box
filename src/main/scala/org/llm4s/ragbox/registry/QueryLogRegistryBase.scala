@@ -1,7 +1,7 @@
 package org.llm4s.ragbox.registry
 
 import cats.effect.IO
-import org.llm4s.ragbox.model.{QueryAnalyticsSummary, QueryLogEntry}
+import org.llm4s.ragbox.model.{QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
 import java.time.Instant
 
 /**
@@ -18,6 +18,20 @@ trait QueryLogRegistryBase {
 
   /**
    * Log a query execution.
+   *
+   * @param queryText The query text
+   * @param collectionPattern Collection pattern used
+   * @param userId Optional user ID
+   * @param embeddingLatencyMs Embedding generation latency
+   * @param searchLatencyMs Search latency
+   * @param llmLatencyMs LLM response latency
+   * @param totalLatencyMs Total query latency
+   * @param chunksRetrieved Number of chunks retrieved
+   * @param chunksUsed Number of chunks used in response
+   * @param answerTokens Number of tokens in answer
+   * @param experimentId Optional experiment ID for A/B testing
+   * @param configSnapshot Optional snapshot of config used for this query
+   * @return The generated query log ID
    */
   def logQuery(
     queryText: String,
@@ -29,7 +43,9 @@ trait QueryLogRegistryBase {
     totalLatencyMs: Int,
     chunksRetrieved: Int,
     chunksUsed: Int,
-    answerTokens: Option[Int]
+    answerTokens: Option[Int],
+    experimentId: Option[String] = None,
+    configSnapshot: Option[QueryConfigSnapshot] = None
   ): IO[String]
 
   /**
