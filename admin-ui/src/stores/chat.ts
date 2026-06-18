@@ -1,28 +1,174 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, QueryResponse, CollectionStats, ContextItem, UsageInfo } from '@/types/api'
-import * as queryApi from '@/api/query'
+import type {
+  ChatMessage,
+  CollectionStats,
+  ContextItem,
+  UsageInfo,
+  ChatSession,
+  ChatMessageRecord
+} from '@/types/api'
+import * as chatApi from '@/api/chat'
 import * as visibilityApi from '@/api/visibility'
-import * as analyticsApi from '@/api/analytics'
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
 }
 
+/**
+ * Convert a backend ChatMessageRecord to frontend ChatMessage format.
+ */
+function recordToMessage(record: ChatMessageRecord): ChatMessage {
+  return {
+    id: record.id,
+    role: record.role as 'user' | 'assistant',
+    content: record.content,
+    contexts: record.contexts,
+    usage: record.usage,
+    timestamp: new Date(record.createdAt),
+    rating: record.rating,
+    queryLogId: record.queryLogId
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
+  // Session state
+  const sessions = ref<ChatSession[]>([])
+  const currentSession = ref<ChatSession | null>(null)
+  const sessionsLoading = ref(false)
+
+  // Message state
   const messages = ref<ChatMessage[]>([])
   const loading = ref(false)
   const streaming = ref(false)
   const error = ref<string | null>(null)
+
+  // Collection state
   const selectedCollection = ref<string>('*')
   const collections = ref<CollectionStats[]>([])
   const collectionsLoading = ref(false)
+
+  // Streaming state
   const streamController = ref<AbortController | null>(null)
-  const useStreaming = ref(true) // Toggle between streaming and non-streaming mode
+  const useStreaming = ref(true)
 
   const hasMessages = computed(() => messages.value.length > 0)
+  const hasSession = computed(() => currentSession.value !== null)
 
-  async function fetchCollections() {
+  // ============================================================
+  // Session Operations
+  // ============================================================
+
+  /**
+   * Fetch all chat sessions from the backend.
+   */
+  async function fetchSessions(includeArchived = false): Promise<void> {
+    sessionsLoading.value = true
+    try {
+      const response = await chatApi.listSessions(includeArchived)
+      sessions.value = response.sessions
+    } catch (e) {
+      console.error('Failed to fetch sessions', e)
+    } finally {
+      sessionsLoading.value = false
+    }
+  }
+
+  /**
+   * Create a new chat session.
+   */
+  async function createSession(title?: string): Promise<ChatSession | null> {
+    try {
+      const response = await chatApi.createSession({
+        title,
+        collectionPattern: selectedCollection.value
+      })
+      sessions.value.unshift(response.session)
+      return response.session
+    } catch (e) {
+      console.error('Failed to create session', e)
+      error.value = e instanceof Error ? e.message : 'Failed to create session'
+      return null
+    }
+  }
+
+  /**
+   * Select and load a session with its messages.
+   */
+  async function selectSession(sessionId: string): Promise<void> {
+    loading.value = true
+    error.value = null
+    cancelStream()
+
+    try {
+      const response = await chatApi.getSession(sessionId)
+      currentSession.value = response.session
+      selectedCollection.value = response.session.collectionPattern
+      messages.value = response.messages.map(recordToMessage)
+    } catch (e) {
+      console.error('Failed to load session', e)
+      error.value = e instanceof Error ? e.message : 'Failed to load session'
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Update the current session.
+   */
+  async function updateSession(updates: { title?: string; isArchived?: boolean }): Promise<boolean> {
+    if (!currentSession.value) return false
+
+    try {
+      const updated = await chatApi.updateSession(currentSession.value.id, updates)
+      currentSession.value = updated
+
+      // Update in sessions list
+      const index = sessions.value.findIndex(s => s.id === updated.id)
+      if (index >= 0) {
+        sessions.value[index] = updated
+      }
+      return true
+    } catch (e) {
+      console.error('Failed to update session', e)
+      return false
+    }
+  }
+
+  /**
+   * Delete a session.
+   */
+  async function deleteSession(sessionId: string): Promise<boolean> {
+    try {
+      await chatApi.deleteSession(sessionId)
+      sessions.value = sessions.value.filter(s => s.id !== sessionId)
+
+      if (currentSession.value?.id === sessionId) {
+        currentSession.value = null
+        messages.value = []
+      }
+      return true
+    } catch (e) {
+      console.error('Failed to delete session', e)
+      return false
+    }
+  }
+
+  /**
+   * Start a new chat (clear current session and messages).
+   */
+  function newChat(): void {
+    cancelStream()
+    currentSession.value = null
+    messages.value = []
+    error.value = null
+  }
+
+  // ============================================================
+  // Collection Operations
+  // ============================================================
+
+  async function fetchCollections(): Promise<void> {
     collectionsLoading.value = true
     try {
       collections.value = await visibilityApi.getCollections()
@@ -33,20 +179,26 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ============================================================
+  // Message Operations
+  // ============================================================
+
   /**
    * Send a message with optional streaming support.
+   * Auto-creates a session if none exists.
    */
   async function sendMessage(question: string): Promise<void> {
     if (!question.trim()) return
 
-    // Add user message
-    const userMessage: ChatMessage = {
-      id: generateId(),
-      role: 'user',
-      content: question.trim(),
-      timestamp: new Date()
+    // Auto-create session if needed
+    if (!currentSession.value) {
+      const session = await createSession()
+      if (!session) {
+        error.value = 'Failed to create chat session'
+        return
+      }
+      currentSession.value = session
     }
-    messages.value.push(userMessage)
 
     if (useStreaming.value) {
       await sendMessageStreaming(question.trim())
@@ -59,6 +211,8 @@ export const useChatStore = defineStore('chat', () => {
    * Send a message using SSE streaming for real-time updates.
    */
   async function sendMessageStreaming(question: string): Promise<void> {
+    if (!currentSession.value) return
+
     loading.value = true
     streaming.value = true
     error.value = null
@@ -73,20 +227,26 @@ export const useChatStore = defineStore('chat', () => {
       timestamp: new Date(),
       isStreaming: true
     }
-    messages.value.push(assistantMessage)
 
     // Get the message reference for updates
     const getMessage = () => messages.value.find(m => m.id === assistantMessageId)
 
     return new Promise((resolve) => {
-      streamController.value = queryApi.executeQueryStream(
+      streamController.value = chatApi.sendMessageStream(
+        currentSession.value!.id,
+        { content: question },
         {
-          question,
-          collection: selectedCollection.value !== '*' ? selectedCollection.value : undefined,
-          includeMetadata: true
-        },
-        {
-          onStart: (queryId) => {
+          onStart: (queryId, userMessageId) => {
+            // Add user message when we get confirmation
+            const userMsg: ChatMessage = {
+              id: userMessageId,
+              role: 'user',
+              content: question,
+              timestamp: new Date()
+            }
+            messages.value.push(userMsg)
+            messages.value.push(assistantMessage)
+
             const msg = getMessage()
             if (msg) {
               msg.queryLogId = queryId
@@ -97,12 +257,6 @@ export const useChatStore = defineStore('chat', () => {
             if (msg) {
               if (!msg.contexts) msg.contexts = []
               msg.contexts.push(context)
-            }
-          },
-          onChunk: (chunk: string) => {
-            const msg = getMessage()
-            if (msg) {
-              msg.content += chunk
             }
           },
           onAnswer: (answer: string) => {
@@ -122,16 +276,40 @@ export const useChatStore = defineStore('chat', () => {
             if (msg) {
               msg.isStreaming = false
             }
+
+            // Update session in list (message count changed)
+            if (currentSession.value) {
+              currentSession.value.messageCount += 2
+              const idx = sessions.value.findIndex(s => s.id === currentSession.value?.id)
+              if (idx >= 0) {
+                sessions.value[idx] = { ...currentSession.value }
+              }
+            }
+
             loading.value = false
             streaming.value = false
             streamController.value = null
             resolve()
           },
           onError: (_errorCode: string, errorMessage: string) => {
-            const msg = getMessage()
-            if (msg) {
-              msg.content = `Sorry, I encountered an error: ${errorMessage}`
-              msg.isStreaming = false
+            // If no messages added yet, add them now
+            if (!messages.value.find(m => m.id === assistantMessageId)) {
+              const userMsg: ChatMessage = {
+                id: generateId(),
+                role: 'user',
+                content: question,
+                timestamp: new Date()
+              }
+              messages.value.push(userMsg)
+              assistantMessage.content = `Sorry, I encountered an error: ${errorMessage}`
+              assistantMessage.isStreaming = false
+              messages.value.push(assistantMessage)
+            } else {
+              const msg = getMessage()
+              if (msg) {
+                msg.content = `Sorry, I encountered an error: ${errorMessage}`
+                msg.isStreaming = false
+              }
             }
             error.value = errorMessage
             loading.value = false
@@ -148,29 +326,45 @@ export const useChatStore = defineStore('chat', () => {
    * Send a message using traditional request/response (non-streaming).
    */
   async function sendMessageNonStreaming(question: string): Promise<void> {
+    if (!currentSession.value) return
+
     loading.value = true
     error.value = null
 
     try {
-      const response: QueryResponse = await queryApi.executeQuery({
-        question,
-        collection: selectedCollection.value !== '*' ? selectedCollection.value : undefined,
-        includeMetadata: true
-      })
+      const response = await chatApi.sendMessage(
+        currentSession.value.id,
+        { content: question }
+      )
 
-      // Add assistant message
-      const assistantMessage: ChatMessage = {
-        id: generateId(),
-        role: 'assistant',
-        content: response.answer,
-        contexts: response.contexts,
-        usage: response.usage,
-        timestamp: new Date()
+      // Add messages from response
+      messages.value.push(recordToMessage(response.userMessage))
+      messages.value.push(recordToMessage(response.assistantMessage))
+
+      if (response.error) {
+        error.value = response.error
       }
-      messages.value.push(assistantMessage)
+
+      // Update session in list
+      if (currentSession.value) {
+        currentSession.value.messageCount += 2
+        const idx = sessions.value.findIndex(s => s.id === currentSession.value?.id)
+        if (idx >= 0) {
+          sessions.value[idx] = { ...currentSession.value }
+        }
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to get response'
-      // Add error message
+
+      // Add local error message
+      const userMsg: ChatMessage = {
+        id: generateId(),
+        role: 'user',
+        content: question,
+        timestamp: new Date()
+      }
+      messages.value.push(userMsg)
+
       const errorMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
@@ -204,22 +398,15 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * Rate a message (updates both local state and backend).
+   */
   async function rateMessage(messageId: string, rating: number): Promise<boolean> {
     const message = messages.value.find(m => m.id === messageId)
     if (!message || message.role !== 'assistant') return false
 
     try {
-      // Find the corresponding user message to get the query text
-      const messageIndex = messages.value.findIndex(m => m.id === messageId)
-      if (messageIndex <= 0) return false
-
-      // Submit feedback (the backend will track this)
-      await analyticsApi.submitFeedback({
-        queryId: message.queryLogId || messageId, // Use queryLogId if available
-        rating,
-        comment: undefined
-      })
-
+      await chatApi.rateMessage(messageId, { rating })
       message.rating = rating
       return true
     } catch (e) {
@@ -228,31 +415,66 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function clearMessages() {
-    cancelStream() // Cancel any ongoing stream
-    messages.value = []
-    error.value = null
+  /**
+   * Clear messages (deprecated - use newChat instead).
+   */
+  function clearMessages(): void {
+    newChat()
   }
 
-  function setCollection(collection: string) {
+  function setCollection(collection: string): void {
     selectedCollection.value = collection
+
+    // Update current session's collection pattern if we have one
+    if (currentSession.value && currentSession.value.collectionPattern !== collection) {
+      chatApi.updateSession(currentSession.value.id, { collectionPattern: collection })
+        .then(updated => {
+          if (currentSession.value) {
+            currentSession.value = updated
+          }
+        })
+        .catch(e => console.error('Failed to update session collection', e))
+    }
   }
 
-  function toggleStreaming() {
+  function toggleStreaming(): void {
     useStreaming.value = !useStreaming.value
   }
 
   return {
+    // Session state
+    sessions,
+    currentSession,
+    sessionsLoading,
+    hasSession,
+
+    // Message state
     messages,
     loading,
     streaming,
     error,
+    hasMessages,
+
+    // Collection state
     selectedCollection,
     collections,
     collectionsLoading,
-    hasMessages,
+
+    // Streaming state
     useStreaming,
+
+    // Session actions
+    fetchSessions,
+    createSession,
+    selectSession,
+    updateSession,
+    deleteSession,
+    newChat,
+
+    // Collection actions
     fetchCollections,
+
+    // Message actions
     sendMessage,
     sendMessageStreaming,
     sendMessageNonStreaming,

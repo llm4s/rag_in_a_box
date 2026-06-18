@@ -430,3 +430,267 @@ export interface ApiResponse<T> {
   error?: string
   message?: string
 }
+
+// Optimization Suggestion types
+export type SuggestionType = 'chunking' | 'search' | 'embedding' | 'content'
+export type SuggestionSeverity = 'critical' | 'warning' | 'info'
+
+export interface SuggestionEvidence {
+  metric: string
+  currentValue: number
+  threshold: number
+  sampleSize: number
+  timeRange: string
+}
+
+export interface OptimizationSuggestion {
+  id: string
+  suggestionType: SuggestionType
+  severity: SuggestionSeverity
+  title: string
+  description: string
+  collection?: string
+  evidence: SuggestionEvidence
+  recommendation: string
+  estimatedImpact: string
+  currentValue?: string
+  suggestedValue?: string
+  createdAt: string
+}
+
+export interface SuggestionsResponse {
+  suggestions: OptimizationSuggestion[]
+  analyzedQueries: number
+  analyzedCollections: number
+  analysisTimestamp: string
+}
+
+export interface SuggestionsSummary {
+  criticalCount: number
+  warningCount: number
+  infoCount: number
+  total: number
+  topIssues: string[]
+}
+
+// Experiment types
+export type ExperimentStatus = 'draft' | 'running' | 'completed' | 'archived'
+
+export interface ExperimentConfigSnapshot {
+  topK?: number
+  fusionStrategy?: string
+  systemPrompt?: string
+  llmTemperature?: number
+}
+
+export interface Experiment {
+  id: string
+  name: string
+  description?: string
+  status: ExperimentStatus
+  baselineConfig: ExperimentConfigSnapshot
+  variantConfig: ExperimentConfigSnapshot
+  trafficSplit: number
+  collection?: string
+  createdAt: string
+  startedAt?: string
+  endedAt?: string
+}
+
+export interface CreateExperimentRequest {
+  name: string
+  description?: string
+  baselineConfig?: ExperimentConfigSnapshot
+  variantConfig: ExperimentConfigSnapshot
+  trafficSplit?: number
+  collection?: string
+}
+
+export interface UpdateExperimentRequest {
+  name?: string
+  description?: string
+  baselineConfig?: ExperimentConfigSnapshot
+  variantConfig?: ExperimentConfigSnapshot
+  trafficSplit?: number
+}
+
+export interface ExperimentVariantMetrics {
+  queryCount: number
+  avgLatencyMs: number
+  avgRating?: number
+  ratedCount: number
+  avgChunksUsed: number
+  avgChunksRetrieved: number
+}
+
+export interface ExperimentAnalysis {
+  latencyChange: string
+  ratingChange?: string
+  chunksUsedChange: string
+  statisticalSignificance?: number
+}
+
+export interface ExperimentResults {
+  experimentId: string
+  experimentName: string
+  status: ExperimentStatus
+  duration?: string
+  baseline: ExperimentVariantMetrics
+  variant: ExperimentVariantMetrics
+  analysis: ExperimentAnalysis
+}
+
+export interface ExperimentListResponse {
+  experiments: Experiment[]
+  total: number
+}
+
+export interface CreateExperimentResponse {
+  experiment: Experiment
+  message: string
+}
+
+export interface ExperimentOperationResponse {
+  success: boolean
+  message: string
+  experiment?: Experiment
+}
+
+// Query overrides for experiments
+export interface QueryOverrides {
+  topK?: number
+  fusionStrategy?: string
+  systemPrompt?: string
+  llmTemperature?: number
+  similarityThreshold?: number
+}
+
+// Extended query request with experiment support
+export interface ExperimentQueryRequest extends QueryRequest {
+  experimentId?: string
+  overrides?: QueryOverrides
+}
+
+// ============================================================
+// Chat Session Types (Backend-Persisted)
+// ============================================================
+
+/**
+ * A chat session stored in the database.
+ */
+export interface ChatSession {
+  id: string
+  title?: string
+  collectionPattern: string
+  messageCount: number
+  createdAt: string
+  updatedAt: string
+  isArchived: boolean
+}
+
+/**
+ * A chat message record stored in the database.
+ */
+export interface ChatMessageRecord {
+  id: string
+  sessionId: string
+  role: string
+  content: string
+  contexts?: ContextItem[]
+  usage?: UsageInfo
+  rating?: number
+  queryLogId?: string
+  createdAt: string
+  messageIndex: number
+}
+
+/**
+ * Request to create a new chat session.
+ */
+export interface CreateChatSessionRequest {
+  title?: string
+  collectionPattern?: string
+}
+
+/**
+ * Response after creating a chat session.
+ */
+export interface CreateChatSessionResponse {
+  session: ChatSession
+  message: string
+}
+
+/**
+ * Request to update a chat session.
+ */
+export interface UpdateChatSessionRequest {
+  title?: string
+  collectionPattern?: string
+  isArchived?: boolean
+}
+
+/**
+ * Response for listing chat sessions.
+ */
+export interface ChatSessionListResponse {
+  sessions: ChatSession[]
+  total: number
+}
+
+/**
+ * Response for a chat session with all its messages.
+ */
+export interface ChatSessionDetailResponse {
+  session: ChatSession
+  messages: ChatMessageRecord[]
+}
+
+/**
+ * Request to send a message in a chat session.
+ */
+export interface SendChatMessageRequest {
+  content: string
+}
+
+/**
+ * Request to rate a chat message.
+ */
+export interface RateChatMessageRequest {
+  rating: number
+}
+
+/**
+ * Response for chat operations.
+ */
+export interface ChatOperationResponse {
+  success: boolean
+  message: string
+}
+
+/**
+ * SSE start event for chat streaming (includes userMessageId).
+ */
+export interface ChatStartEvent {
+  queryId: string
+  userMessageId: string
+}
+
+/**
+ * SSE complete event for chat streaming.
+ */
+export interface ChatCompleteEvent {
+  queryId: string
+  totalContexts: number
+}
+
+/**
+ * Callbacks for chat SSE streaming.
+ */
+export interface ChatStreamingCallbacks {
+  onStart?: (queryId: string, userMessageId: string) => void
+  onContext?: (context: ContextItem, index: number) => void
+  onAnswer?: (answer: string) => void
+  onUsage?: (usage: UsageInfo) => void
+  onComplete?: (queryId: string, totalContexts: number) => void
+  onError?: (error: string, message: string) => void
+}

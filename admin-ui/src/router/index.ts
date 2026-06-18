@@ -70,6 +70,18 @@ const router = createRouter({
       meta: { title: 'Query Analytics' }
     },
     {
+      path: '/suggestions',
+      name: 'suggestions',
+      component: () => import('@/views/Suggestions.vue'),
+      meta: { title: 'Optimization Suggestions' }
+    },
+    {
+      path: '/experiments',
+      name: 'experiments',
+      component: () => import('@/views/Experiments.vue'),
+      meta: { title: 'A/B Experiments' }
+    },
+    {
       path: '/chat',
       name: 'chat',
       component: () => import('@/views/Chat.vue'),

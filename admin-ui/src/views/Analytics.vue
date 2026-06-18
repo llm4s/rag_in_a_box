@@ -177,6 +177,25 @@ const totalPages = computed(() => {
       </v-col>
     </v-row>
 
+    <!-- Optimization Suggestions Banner -->
+    <v-alert
+      v-if="summary && summary.totalQueries >= 10"
+      type="info"
+      variant="tonal"
+      class="mt-4"
+      closable
+    >
+      <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+        <div class="d-flex align-center">
+          <v-icon class="mr-2">mdi-lightbulb-on</v-icon>
+          <span>Get optimization suggestions based on your query analytics</span>
+        </div>
+        <v-btn color="primary" variant="flat" size="small" to="/suggestions">
+          View Suggestions
+        </v-btn>
+      </div>
+    </v-alert>
+
     <!-- Latency Distribution & Top Collections -->
     <v-row class="mt-4">
       <v-col cols="12" md="6">

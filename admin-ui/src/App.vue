@@ -53,6 +53,8 @@ const navItems = [
   { title: 'Upload', icon: 'mdi-upload', to: '/documents/upload' },
   { divider: true },
   { title: 'Analytics', icon: 'mdi-chart-line', to: '/analytics' },
+  { title: 'Optimization', icon: 'mdi-lightbulb-on', to: '/suggestions' },
+  { title: 'Experiments', icon: 'mdi-flask', to: '/experiments' },
   { divider: true },
   { title: 'Configuration', icon: 'mdi-cog', to: '/config' },
   { title: 'Runtime Config', icon: 'mdi-tune', to: '/config/runtime' },
