@@ -18,5 +18,8 @@ Learn how to configure and use RAG in a Box effectively.
 - [Permissions](/guide/permissions) - User and group access control for collections
 - [Chunking Strategies](/guide/chunking) - Optimize document chunking for better retrieval
 - [Analytics](/guide/analytics) - Query metrics, logging, and feedback collection
+- [Optimization](/guide/optimization) - AI-powered suggestions for improving RAG performance
+- [Experimentation](/guide/experimentation) - A/B test different RAG configurations
 - [External Ingesters](/guide/external-ingesters) - Build custom ingestion pipelines
+- [S3 Ingestion](/guide/s3-ingestion) - Ingest documents from Amazon S3
 - [Helm Deployment](/guide/helm-deployment) - Deploy to Kubernetes with Helm

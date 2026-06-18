@@ -15,6 +15,7 @@ A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](htt
 - **Chunking Preview** - test chunking strategies before committing
 - **Runtime Configuration** - modify settings without server restart
 - **Per-Collection Chunking** - different chunking strategies per collection with file-type overrides
+- **A/B Experimentation** - test different RAG configurations with traffic splitting and statistical analysis
 - Python SDK for custom ingesters
 - Docker Compose for easy deployment
 
@@ -81,6 +82,9 @@ RAG in a Box includes a built-in web-based admin interface for managing document
 - **Chunking Preview** - Test and compare chunking strategies before applying
 - **Visibility** - Inspect chunks and understand RAG behavior
 - **Ingestion** - Monitor and trigger ingestion jobs
+- **Analytics** - Query metrics, latency distribution, and feedback tracking
+- **Optimization** - AI-powered suggestions for improving RAG performance
+- **Experiments** - Create and manage A/B tests for RAG configurations
 
 ### Accessing the Admin UI
 
@@ -274,7 +278,22 @@ All settings can be configured via environment variables:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/query` | Query with answer generation |
+| POST | `/api/v1/query/stream` | Query with SSE streaming response |
 | POST | `/api/v1/search` | Search without LLM |
+
+### Experiments
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/experiments` | Create an experiment |
+| GET | `/api/v1/experiments` | List experiments |
+| GET | `/api/v1/experiments/running` | Get currently running experiment |
+| GET | `/api/v1/experiments/{id}` | Get experiment by ID |
+| PUT | `/api/v1/experiments/{id}/start` | Start an experiment |
+| PUT | `/api/v1/experiments/{id}/stop` | Stop an experiment |
+| PUT | `/api/v1/experiments/{id}/archive` | Archive an experiment |
+| DELETE | `/api/v1/experiments/{id}` | Delete a draft experiment |
+| GET | `/api/v1/experiments/{id}/results` | Get experiment results |
 
 ### Ingestion
 
@@ -642,6 +661,131 @@ Get preset configurations for different use cases:
 
 ```bash
 curl http://localhost:8080/api/v1/chunking/presets
+```
+
+## Experimentation API
+
+The Experimentation API enables A/B testing of RAG configurations to find optimal settings. Create experiments to compare different parameter combinations and analyze results with statistical significance.
+
+### Configuration Temperature
+
+Parameters are categorized by how quickly changes take effect:
+
+| Temperature | Parameters | Re-indexing? |
+|-------------|-----------|--------------|
+| **Hot** | topK, fusionStrategy, systemPrompt, llmTemperature | No - instant |
+| **Warm** | chunkStrategy, chunkSize, overlap | Preview only |
+| **Cold** | embeddingModel, vectorDimensions | Yes - full re-index |
+
+### Create an Experiment
+
+```bash
+curl -X POST http://localhost:8080/api/v1/experiments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test higher topK",
+    "description": "Compare topK=5 vs topK=10 for retrieval quality",
+    "baselineConfig": {
+      "topK": 5,
+      "fusionStrategy": "rrf"
+    },
+    "variantConfig": {
+      "topK": 10,
+      "fusionStrategy": "rrf"
+    },
+    "trafficSplit": 0.5
+  }'
+```
+
+### Start an Experiment
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/experiments/{id}/start
+```
+
+Once started, queries are automatically routed based on the traffic split. Query logs track which variant was used.
+
+### Query with Experiment
+
+When an experiment is running, queries are automatically assigned to baseline or variant:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is PostgreSQL?"}'
+```
+
+The response includes an `experimentId` and the query log tracks which configuration was used.
+
+### Manual Override (Testing)
+
+You can also manually specify configuration overrides for testing:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is PostgreSQL?",
+    "experimentId": "my-test",
+    "overrides": {
+      "topK": 10,
+      "fusionStrategy": "weighted",
+      "llmTemperature": 0.2
+    }
+  }'
+```
+
+### View Experiment Results
+
+```bash
+curl http://localhost:8080/api/v1/experiments/{id}/results
+```
+
+Response includes metrics comparison and statistical analysis:
+
+```json
+{
+  "experimentId": "exp-123",
+  "status": "running",
+  "duration": "3 days",
+  "baseline": {
+    "queryCount": 150,
+    "avgLatencyMs": 320,
+    "avgRating": 3.8,
+    "avgChunksUsed": 4.2
+  },
+  "variant": {
+    "queryCount": 148,
+    "avgLatencyMs": 285,
+    "avgRating": 4.1,
+    "avgChunksUsed": 3.8
+  },
+  "analysis": {
+    "latencyChange": "-10.9%",
+    "ratingChange": "+7.9%",
+    "statisticalSignificance": 0.92
+  }
+}
+```
+
+### Stop and Archive
+
+```bash
+# Stop the experiment
+curl -X PUT http://localhost:8080/api/v1/experiments/{id}/stop
+
+# Archive for historical reference
+curl -X PUT http://localhost:8080/api/v1/experiments/{id}/archive
+```
+
+### List Experiments
+
+```bash
+# List all experiments
+curl http://localhost:8080/api/v1/experiments
+
+# Get currently running experiment
+curl http://localhost:8080/api/v1/experiments/running
 ```
 
 ## Visibility API
