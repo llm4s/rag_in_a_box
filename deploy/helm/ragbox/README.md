@@ -62,7 +62,8 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `image.repository` | Container image | `ghcr.io/llm4s/rag-in-a-box` |
 | `image.tag` | Image tag | `Chart.AppVersion` |
 | `config.auth.mode` | Authentication mode (open/basic/oauth) | `basic` |
-| `config.llm.model` | LLM model for answer generation | `openai/gpt-4o` |
+| `config.llm.provider` | LLM provider for answer generation (openai/anthropic/ollama) | `openai` |
+| `config.llm.model` | Model for that provider | `gpt-4o` |
 | `config.embedding.provider` | Embedding provider | `openai` |
 | `postgresql.enabled` | Deploy bundled PostgreSQL | `true` |
 | `ingress.enabled` | Enable ingress | `false` |

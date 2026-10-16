@@ -62,7 +62,8 @@ curl http://localhost:8080/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o` | LLM model (format: provider/model) |
+| `LLM_PROVIDER` | `openai` | LLM provider section: openai, anthropic, ollama |
+| `OPENAI_MODEL` / `ANTHROPIC_MODEL` / `OLLAMA_MODEL` | `gpt-4o` / `claude-sonnet-4-5` / `llama3.1` | Model for each provider |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature (0.0-1.0) |
 | `EMBEDDING_PROVIDER` | `openai` | Embedding provider (openai, voyage, ollama) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |

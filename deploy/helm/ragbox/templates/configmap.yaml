@@ -21,7 +21,8 @@ data:
   {{- end }}
 
   # LLM settings
-  LLM_MODEL: {{ .Values.config.llm.model | quote }}
+  LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}
+  {{ .Values.config.llm.provider | upper }}_MODEL: {{ .Values.config.llm.model | quote }}
   LLM_TEMPERATURE: {{ .Values.config.llm.temperature | quote }}
 
   # Embedding settings

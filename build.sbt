@@ -7,6 +7,9 @@ ThisBuild / coverageFailOnMinimum := true   // Fail build if below minimum
 ThisBuild / coverageHighlighting := true
 ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
 
+// One version for every llm4s module: they are all published together.
+val llm4sVersion = "0.5.1"
+
 lazy val root = (project in file("."))
   .settings(
     name := "rag-in-a-box",
@@ -24,8 +27,13 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
-      // LLM4s - RAG framework (0.2.9 adds S3Loader with multi-format document support)
-      "org.llm4s" %% "core" % "0.2.9",
+      // LLM4s. Since 0.5.0 llm4s-core holds no provider: RAG and each provider are their own module.
+      "org.llm4s" %% "llm4s-core"      % llm4sVersion,
+      "org.llm4s" %% "llm4s-rag"       % llm4sVersion, // RAG, chunking, loaders (incl. S3), pgvector, permissions
+      "org.llm4s" %% "llm4s-openai"    % llm4sVersion, // OpenAI chat + embeddings
+      "org.llm4s" %% "llm4s-anthropic" % llm4sVersion, // Anthropic chat
+      "org.llm4s" %% "llm4s-ollama"    % llm4sVersion, // Ollama chat + embeddings
+      "org.llm4s" %% "llm4s-voyage"    % llm4sVersion, // Voyage embeddings
 
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
@@ -52,8 +60,9 @@ lazy val root = (project in file("."))
       // Conditional processing in logback.xml
       "org.codehaus.janino" % "janino" % "3.1.12",
 
-      // Database connection pooling
+      // Database connection pooling and the JDBC driver this app uses directly
       "com.zaxxer" % "HikariCP" % "5.1.0",
+      "org.postgresql" % "postgresql" % "42.7.11",
 
       // OAuth2/OIDC - JWT validation and JWKS
       "com.auth0" % "java-jwt" % "4.4.0",
@@ -71,6 +80,8 @@ lazy val root = (project in file("."))
     assembly / assemblyJarName := "ragbox-assembly.jar",
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
+      // llm4s finds providers with java.util.ServiceLoader: keep every module's entries
+      case PathList("META-INF", "services", _*) => MergeStrategy.filterDistinctLines
       // Discard signature files from signed JARs (BouncyCastle, etc.)
       case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".SF")) => MergeStrategy.discard
       case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".DSA")) => MergeStrategy.discard

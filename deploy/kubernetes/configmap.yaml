@@ -18,7 +18,8 @@ data:
   PG_TABLE_NAME: "rag_embeddings"
 
   # LLM settings
-  LLM_MODEL: "openai/gpt-4o"
+  LLM_PROVIDER: "openai"
+  OPENAI_MODEL: "gpt-4o"
   LLM_TEMPERATURE: "0.1"
 
   # Embedding settings

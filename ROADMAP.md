@@ -361,7 +361,7 @@ These can be implemented quickly with high impact:
 - [x] ~~Add `?include=hash,updatedAt` to sync/documents endpoint~~ (DONE)
 - [x] ~~Add `POST /sync/check` for batch document state checks~~ (DONE)
 - [x] ~~Add `dryRun` option to prune endpoint~~ (DONE)
-- [x] ~~Complete S3 ingester~~ (DONE - via llm4s v0.2.9 S3Loader)
+- [x] ~~Complete S3 ingester~~ (DONE - via llm4s S3Loader, in llm4s-rag)
 - [x] ~~Add streaming responses for chat interface (SSE)~~ (DONE)
 
 All Quick Wins completed!
