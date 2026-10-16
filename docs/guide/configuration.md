@@ -55,21 +55,29 @@ Configure the language model for answer generation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o` | Model in format `provider/model` |
+| `LLM_PROVIDER` | `openai` | Provider section: `openai`, `anthropic`, `ollama` |
+| `OPENAI_MODEL` | `gpt-4o` | Model when `LLM_PROVIDER=openai` |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` | Model when `LLM_PROVIDER=anthropic` |
+| `OLLAMA_MODEL` | `llama3.1` | Model when `LLM_PROVIDER=ollama` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server (chat and embeddings) |
 | `LLM_TEMPERATURE` | `0.1` | Temperature for generation (0.0-1.0) |
 
-### Supported Models
+The providers are [llm4s](https://github.com/llm4s/llm4s) named provider sections under
+`llm4s.providers` in `src/main/resources/application.conf`; add a section there for another
+llm4s provider (and its module in `build.sbt`). `LLM_MODEL` is no longer read.
 
 ```bash
 # OpenAI
-LLM_MODEL=openai/gpt-4o
-LLM_MODEL=openai/gpt-4o-mini
-LLM_MODEL=openai/gpt-3.5-turbo
+LLM_PROVIDER=openai
+OPENAI_MODEL=gpt-4o-mini
 
 # Anthropic
-LLM_MODEL=anthropic/claude-3-opus
-LLM_MODEL=anthropic/claude-3-sonnet
-LLM_MODEL=anthropic/claude-3-haiku
+LLM_PROVIDER=anthropic
+ANTHROPIC_MODEL=claude-sonnet-4-5
+
+# Ollama (no API key)
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama3.1
 ```
 
 ---

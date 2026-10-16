@@ -57,7 +57,7 @@ object Main extends IOApp {
       _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}")
       _ <- logger.info(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}")
       _ <- logger.info(s"CORS: ${if (config.production.cors.isAllowAll) "allow all origins" else s"restricted to ${config.production.cors.allowedOrigins.mkString(", ")}"}")
-      _ <- logger.info("Permission-based RAG: enabled (LLM4S v0.2.6+)")
+      _ <- logger.info("Permission-based RAG: enabled")
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
   }

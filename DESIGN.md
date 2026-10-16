@@ -292,7 +292,7 @@ Interactive Q&A interface for end users.
 ```bash
 # Required
 OPENAI_API_KEY=sk-...              # Or ANTHROPIC_API_KEY
-LLM_MODEL=openai/gpt-4o            # Model for answer generation
+LLM_PROVIDER=openai                # Provider for answer generation (openai, anthropic, ollama)
 
 # Database (defaults work with bundled postgres)
 DATABASE_URL=postgresql://rag:rag@postgres:5432/ragdb
@@ -375,7 +375,7 @@ services:
     environment:
       DATABASE_URL: postgresql://rag:rag@postgres:5432/ragdb
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
     ports:
       - "8080:8080"
     depends_on:

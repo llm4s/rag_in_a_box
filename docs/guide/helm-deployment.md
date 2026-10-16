@@ -138,7 +138,8 @@ autoscaling:
 | `image.repository` | Container image | `ghcr.io/llm4s/rag-in-a-box` |
 | `image.tag` | Image tag | `Chart.AppVersion` |
 | `config.auth.mode` | Auth mode (open/basic/oauth) | `basic` |
-| `config.llm.model` | LLM model | `openai/gpt-4o` |
+| `config.llm.provider` | LLM provider (openai/anthropic/ollama) | `openai` |
+| `config.llm.model` | Model for that provider | `gpt-4o` |
 | `config.embedding.provider` | Embedding provider | `openai` |
 | `config.embedding.model` | Embedding model | `text-embedding-3-small` |
 | `config.rag.chunkingStrategy` | Chunking strategy | `sentence` |

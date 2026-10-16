@@ -3,9 +3,12 @@ package org.llm4s.ragbox.service
 import cats.effect.IO
 import cats.syntax.all._
 import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk}
+import org.llm4s.config.Llm4sConfig
+import org.llm4s.error.ConfigurationError
 import org.llm4s.llmconnect.{LLMClient, LLMConnect}
-import org.llm4s.llmconnect.config.{EmbeddingProviderConfig, OpenAIConfig, AnthropicConfig}
-import org.llm4s.rag.{EmbeddingProvider, RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
+import org.llm4s.llmconnect.config.EmbeddingProviderConfig
+import org.llm4s.model.ModelRegistryService
+import org.llm4s.rag.{RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
 import org.llm4s.rag.RAG.RAGConfigOps
 import org.llm4s.rag.permissions._
 import org.llm4s.types.Result
@@ -13,6 +16,8 @@ import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentRegistry}
 import org.llm4s.ragbox.store.{ChunkStore, PgChunkStore}
+
+import org.slf4j.LoggerFactory
 
 import java.security.MessageDigest
 import java.time.Instant
@@ -29,6 +34,8 @@ class RAGService(
   chunkStore: ChunkStore,
   val searchIndex: Option[SearchIndex] = None
 ) {
+
+  private val logger = LoggerFactory.getLogger(classOf[RAGService])
 
   private val startTime: Long = System.currentTimeMillis()
   private var firstIngestionTime: Option[Instant] = None
@@ -51,74 +58,40 @@ class RAGService(
    */
   def hasPermissions: Boolean = searchIndex.isDefined
 
-  // Create LLM client for answer generation
+  // llm4s model metadata (context windows, capabilities), needed to build clients and the pipeline
+  private lazy val modelRegistry: Result[ModelRegistryService] = Llm4sConfig.modelRegistryService()
+
+  // LLM client for answer generation, built from the default section of `llm4s.providers` in
+  // application.conf. Without one (no API key, provider module missing) the service still
+  // searches; it only cannot generate answers.
   private lazy val llmClient: Option[LLMClient] = {
-    // Parse provider/model format (e.g., "openai/gpt-4o")
-    val parts = config.llm.model.split("/", 2)
-    val provider = if (parts.length > 1) parts(0) else "openai"
-    val model = if (parts.length > 1) parts(1) else config.llm.model
-
-    provider.toLowerCase match {
-      case "openai" =>
-        config.apiKeys.openai.flatMap { apiKey =>
-          LLMConnect.getClient(OpenAIConfig(
-            apiKey = apiKey,
-            model = model,
-            organization = None,
-            baseUrl = "https://api.openai.com/v1",
-            contextWindow = 128000,
-            reserveCompletion = 4096
-          )).toOption
-        }
-      case "anthropic" =>
-        config.apiKeys.anthropic.flatMap { apiKey =>
-          LLMConnect.getClient(AnthropicConfig(
-            apiKey = apiKey,
-            model = model,
-            baseUrl = "https://api.anthropic.com",
-            contextWindow = 200000,
-            reserveCompletion = 4096
-          )).toOption
-        }
-      case _ => None
+    val client = for {
+      registry <- modelRegistry
+      providerConfig <- Llm4sConfig.defaultProvider()
+      client <- LLMConnect.getClient(providerConfig)(using registry)
+    } yield client
+    client.left.foreach { e =>
+      logger.warn(s"No LLM client for answer generation (${config.llm.model}): ${e.message}")
     }
+    client.toOption
   }
 
-  // Base URLs for embedding providers (without /v1 - provider adds it)
-  private def getEmbeddingBaseUrl(provider: String): String = provider.toLowerCase match {
-    case "openai" => "https://api.openai.com"
-    case "voyage" => "https://api.voyageai.com"
-    case "ollama" => "http://localhost:11434"
-    case _ => "https://api.openai.com"
-  }
-
-  // Embedding provider config resolver
-  private def resolveEmbeddingProvider(provider: String): Result[EmbeddingProviderConfig] = {
-    val apiKey = config.embedding.provider.toLowerCase match {
-      case "openai" => config.apiKeys.openai
-      case "voyage" => config.apiKeys.voyage
-      case "ollama" => Some("") // Ollama doesn't need an API key
-      case _ => config.apiKeys.openai
-    }
-
-    apiKey match {
-      case Some(key) =>
-        Right(EmbeddingProviderConfig(
-          baseUrl = getEmbeddingBaseUrl(config.embedding.provider),
-          model = config.embedding.model,
-          apiKey = key
-        ))
-      case None =>
-        Left(org.llm4s.error.ConfigurationError(
-          s"No API key configured for embedding provider: ${config.embedding.provider}"
+  // Embedding provider config for the selected provider id, from `llm4s.embeddings` (each provider
+  // module binds its own API key and base URL). application.conf points `llm4s.embeddings.model`
+  // at this app's `embedding.provider`/`embedding.model`.
+  private def resolveEmbeddingProvider(provider: String): Result[EmbeddingProviderConfig] =
+    Llm4sConfig.embeddings().flatMap {
+      case (id, providerConfig) if id == provider => Right(providerConfig)
+      case (id, _) =>
+        Left(ConfigurationError(
+          s"Embedding provider '$provider' was requested, but llm4s.embeddings selects '$id'"
         ))
     }
-  }
 
   // Build RAG configuration
   private lazy val ragConfig: RAGConfig = {
     val baseConfig = RAGConfig.default
-      .withEmbeddings(config.embedding.toEmbeddingProvider, config.embedding.model)
+      .withEmbeddings(config.embedding.providerId, config.embedding.model)
       .withChunking(
         config.rag.chunking.toChunkerStrategy,
         config.rag.chunking.size,
@@ -128,14 +101,16 @@ class RAGService(
       .withFusion(config.rag.search.toFusionStrategy)
       .withSystemPrompt(config.rag.systemPrompt)
 
+    val withDimensions = config.embedding.dimensions.fold(baseConfig)(baseConfig.withEmbeddingDimensions)
+
     // Configure storage: use SearchIndex if available, otherwise pgvector directly
     val withStorage = searchIndex match {
       case Some(si) =>
         // Permission-based RAG with SearchIndex
-        baseConfig.withSearchIndex(si)
+        withDimensions.withSearchIndex(si)
       case None =>
         // Basic pgvector without permissions
-        baseConfig.withPgVector(
+        withDimensions.withPgVector(
           connectionString = config.database.connectionString,
           user = config.database.effectiveUser,
           password = config.database.effectivePassword,
@@ -148,7 +123,8 @@ class RAGService(
   }
 
   // Build the RAG instance
-  private lazy val ragInstance: Result[RAG] = ragConfig.build(resolveEmbeddingProvider)
+  private lazy val ragInstance: Result[RAG] =
+    modelRegistry.flatMap(registry => ragConfig.build(resolveEmbeddingProvider)(using registry))
 
   /**
    * Get the underlying RAG instance.

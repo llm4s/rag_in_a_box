@@ -1,13 +1,13 @@
 # RAG in a Box
 
-A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](https://github.com/llm4s/llm4s).
+A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](https://github.com/llm4s/llm4s) 0.5.1.
 
 **Features:**
 - REST API for document ingestion and querying
 - PostgreSQL + pgvector for scalable vector storage
 - **Persistent document registry** - survives restarts, tracks content changes
 - Multiple embedding providers (OpenAI, VoyageAI, Ollama)
-- Multiple LLM providers for answer generation (OpenAI, Anthropic)
+- Multiple LLM providers for answer generation (OpenAI, Anthropic, Ollama)
 - Hybrid search (vector + keyword) with RRF fusion
 - Incremental ingestion with content hash change detection
 - Built-in connectors (directory, URL) with scheduled sync
@@ -23,7 +23,8 @@ A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](htt
 
 ### Prerequisites
 - Docker and Docker Compose
-- An API key for OpenAI (or Anthropic)
+- An API key for OpenAI (or Anthropic), or a local [Ollama](https://ollama.com) server
+- For local development: JDK 21 and sbt (Scala 3.7.1), Node.js 20 for the Admin UI
 
 ### Run with Docker Compose
 
@@ -61,6 +62,13 @@ cp .env.example .env
 
 # Run the application
 ./run.sh
+```
+
+To run without an API key, use Ollama for both embeddings and answers:
+
+```bash
+ollama pull nomic-embed-text && ollama pull llama3.1
+EMBEDDING_PROVIDER=ollama EMBEDDING_MODEL=nomic-embed-text LLM_PROVIDER=ollama ./run.sh
 ```
 
 ### Access Points
@@ -241,7 +249,10 @@ All settings can be configured via environment variables:
 ### LLM Settings
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o` | Model for answer generation |
+| `LLM_PROVIDER` | `openai` | Provider for answer generation: `openai`, `anthropic`, `ollama` |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model (when `LLM_PROVIDER=openai`) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` | Anthropic model (when `LLM_PROVIDER=anthropic`) |
+| `OLLAMA_MODEL` / `OLLAMA_BASE_URL` | `llama3.1` / `http://localhost:11434` | Ollama model and server |
 | `LLM_TEMPERATURE` | `0.1` | Temperature for responses |
 
 ### RAG Settings
@@ -900,6 +911,39 @@ sbt test
    │  Anthropic) │                │ Scheduled   │
    └─────────────┘                └─────────────┘
 ```
+
+## llm4s modules
+
+The backend depends on these llm4s 0.5.1 artifacts (one `llm4sVersion` in `build.sbt`):
+
+| Module | Used for |
+|---|---|
+| `llm4s-core` | `Result`, configuration, the `LLMClient` API |
+| `llm4s-rag` | RAG pipeline, chunking, loaders (directory, URL, web, S3), pgvector, permissions |
+| `llm4s-openai` | OpenAI chat and embeddings |
+| `llm4s-anthropic` | Anthropic chat |
+| `llm4s-ollama` | Ollama chat and embeddings |
+| `llm4s-voyage` | Voyage embeddings |
+
+Chat providers are llm4s named sections under `llm4s.providers` in
+`src/main/resources/application.conf`; `LLM_PROVIDER` selects one. To add another llm4s provider,
+add its module to `build.sbt` and a section there.
+
+## Upgrading from llm4s 0.2.9
+
+This version moves from `"org.llm4s" %% "core" % "0.2.9"` to llm4s 0.5.1. If you run your own
+deployment:
+
+- **`LLM_MODEL` is no longer read.** Set `LLM_PROVIDER` (`openai`, `anthropic` or `ollama`) and
+  that provider's model variable (`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `OLLAMA_MODEL`). For example,
+  `LLM_MODEL=anthropic/claude-3-haiku` becomes `LLM_PROVIDER=anthropic` and
+  `ANTHROPIC_MODEL=claude-3-haiku`. The Helm chart has `config.llm.provider` next to `config.llm.model`.
+- `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` and the API key variables are unchanged.
+- **Re-index documents ingested with the `sentence` chunker** (the default). llm4s fixed a bug in
+  `SentenceChunker` that dropped characters at sentence boundaries, so existing chunks hold
+  damaged text; re-upload or re-sync them.
+- See the llm4s [0.4.1 to 0.5.0 upgrade guide](https://github.com/llm4s/llm4s/blob/main/docs/migrations/0-4-1-to-0-5-0.md)
+  for the library changes.
 
 ## License
 

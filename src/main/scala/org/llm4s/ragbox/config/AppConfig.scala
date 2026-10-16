@@ -3,7 +3,6 @@ package org.llm4s.ragbox.config
 import cats.effect.{IO, Resource}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.llm4s.chunking.ChunkerFactory
-import org.llm4s.rag.EmbeddingProvider
 import org.llm4s.vectorstore.FusionStrategy
 import org.llm4s.ragbox.auth.{ClaimMappingConfig, OAuthConfig, OAuthSessionConfig, OidcProviderConfig, OidcProviders}
 import org.llm4s.ragbox.ingestion.IngestionConfig
@@ -142,14 +141,22 @@ final case class EmbeddingConfig(
   model: String,
   dimensions: Option[Int]
 ) {
-  def toEmbeddingProvider: EmbeddingProvider = provider.toLowerCase match {
-    case "openai" => EmbeddingProvider.OpenAI
-    case "voyage" => EmbeddingProvider.Voyage
-    case "ollama" => EmbeddingProvider.Ollama
-    case other => throw new IllegalArgumentException(s"Unknown embedding provider: $other")
-  }
+  /**
+   * The llm4s embedding provider id (`openai`, `voyage`, `ollama`, ...).
+   *
+   * Since llm4s 0.5 providers are found on the classpath, so an id is resolved when the RAG
+   * pipeline is built: one whose module is missing fails there with a message naming it.
+   */
+  def providerId: String = provider.trim.toLowerCase
 }
 
+/**
+ * Answer-generation settings.
+ *
+ * @param model the selected llm4s chat section, shown as `provider/model` (for example
+ *              `openai/gpt-4o`). The client itself is built from `llm4s.providers` in
+ *              application.conf by `Llm4sConfig.defaultProvider()`.
+ */
 final case class LLMConfig(
   model: String,
   temperature: Double
@@ -373,7 +380,7 @@ object AppConfig {
         dimensions = getOptionalInt(config, "embedding.dimensions")
       ),
       llm = LLMConfig(
-        model = config.getString("llm.model"),
+        model = describeChatProvider(config),
         temperature = config.getDouble("llm.temperature")
       ),
       rag = RAGSettings(
@@ -449,6 +456,21 @@ object AppConfig {
         )
       )
     )
+  }
+
+  /**
+   * The default llm4s chat section (`llm4s.providers.provider`) as `provider/model`, for logs and
+   * the config API. Falls back to the section name when the section is incomplete; loading the
+   * client reports the actual problem.
+   */
+  private def describeChatProvider(config: Config): String = {
+    val section = getOptionalString(config, "llm4s.providers.provider").getOrElse("")
+    val provider = getOptionalString(config, s"llm4s.providers.$section.provider")
+    val model = getOptionalString(config, s"llm4s.providers.$section.model")
+    (provider, model) match {
+      case (Some(p), Some(m)) => s"$p/$m"
+      case _ => section
+    }
   }
 
   private def getOptionalString(config: Config, path: String): Option[String] =
