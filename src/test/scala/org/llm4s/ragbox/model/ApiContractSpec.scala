@@ -99,6 +99,20 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
   private val sizeDistribution = ChunkSizeDistribution(10, 900, 450.0, 430.0, 800.0, Seq(sizeBucket))
   private val detailedCollectionStats = DetailedCollectionStats("docs", 3, 9, 3.0, 450.0, Some("sentence"))
 
+  // --- Analytics --------------------------------------------------------------
+  private val queryConfigSnapshot = QueryConfigSnapshot(
+    topK = 5, fusionStrategy = "rrf", systemPrompt = Some("You are helpful."), llmTemperature = Some(0.1),
+    similarityThreshold = Some(0.25), rrfK = Some(60), reranking = Some("cohere")
+  )
+  private val queryLogEntry = QueryLogEntry(
+    id = "5f0c7a9e-1b2d-4c3e-8f40-123456789abc", queryText = "What is solar power?", collectionPattern = Some("docs"),
+    userId = Some("alice"), embeddingLatencyMs = Some(12), searchLatencyMs = Some(8), llmLatencyMs = Some(900),
+    totalLatencyMs = 930, chunksRetrieved = 5, chunksUsed = 4, answerTokens = Some(80), userRating = Some(4),
+    experimentId = Some("exp-1"), configSnapshot = Some(queryConfigSnapshot), createdAt = t0, promptTokens = Some(1200),
+    embeddingTokens = Some(7), costUsd = Some(0.0042), variant = Some("variant"), failed = true,
+    errorMessage = Some("LLM timed out")
+  )
+
   /** Model name (matching the key used in contract.check.ts) -> encoded sample. */
   private val contract: Json = Json.obj(
     // Runtime config
@@ -161,6 +175,10 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       answer = "An answer.", contexts = Seq(contextItem), usage = Some(UsageInfo(1200, 80, 1280)),
       metrics = Some(queryMetrics), queryId = Some("5f0c7a9e-1b2d-4c3e-8f40-123456789abc")
     )),
+    // Analytics: the query log (GET /analytics/queries, /analytics/queries/{id})
+    entry("QueryConfigSnapshot", queryConfigSnapshot),
+    entry("QueryLogEntry", queryLogEntry),
+    entry("QueryLogListResponse", QueryLogListResponse(Seq(queryLogEntry), total = 1, page = 1, pageSize = 20)),
     // Authentication
     entry("AuthModeResponse", org.llm4s.ragbox.routes.AuthModeResponse(
       mode = "basic", authRequired = true, methods = Seq("password", "api-key"), oauthLoginUrl = Some("/api/v1/oauth/login")

@@ -94,3 +94,40 @@ data:
   METRICS_REQUIRE_AUTH: {{ .Values.config.metrics.requireAuth | quote }}
   LOG_LEVEL: {{ .Values.config.logging.level | quote }}
   LOG_FORMAT: {{ .Values.config.logging.format | quote }}
+  {{- with .Values.ingestion }}
+  {{- $lists := dict }}
+  {{- range $key, $value := dict "patterns" .patterns "allowedRoots" .allowedRoots "allowedHosts" .url.allowedHosts }}
+  {{- $_ := set $lists $key (ternary (join "," ($value | default list)) (toString ($value | default "")) (kindIs "slice" $value)) }}
+  {{- end }}
+  {{- if or .dir $lists.patterns .onStartup .schedule .scheduleTimeZone $lists.allowedRoots $lists.allowedHosts .url.allowPrivateNetworks }}
+
+  # Ingestion
+  {{- end }}
+  {{- with .dir }}
+  INGEST_DIR: {{ . | quote }}
+  {{- end }}
+  {{- with $lists.patterns }}
+  INGEST_PATTERNS: {{ . | quote }}
+  {{- end }}
+  {{- if .dir }}
+  INGEST_RECURSIVE: {{ .recursive | quote }}
+  {{- end }}
+  {{- if .onStartup }}
+  INGEST_ON_STARTUP: "true"
+  {{- end }}
+  {{- with .schedule }}
+  INGEST_SCHEDULE: {{ . | quote }}
+  {{- end }}
+  {{- with .scheduleTimeZone }}
+  INGEST_SCHEDULE_TZ: {{ . | quote }}
+  {{- end }}
+  {{- with $lists.allowedRoots }}
+  INGEST_ALLOWED_ROOTS: {{ . | quote }}
+  {{- end }}
+  {{- with $lists.allowedHosts }}
+  INGEST_URL_ALLOWED_HOSTS: {{ . | quote }}
+  {{- end }}
+  {{- if .url.allowPrivateNetworks }}
+  INGEST_URL_ALLOW_PRIVATE_NETWORKS: "true"
+  {{- end }}
+  {{- end }}

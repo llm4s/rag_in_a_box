@@ -440,6 +440,84 @@
     "userId" : 1,
     "username" : "ingester"
   },
+  "QueryConfigSnapshot" : {
+    "fusionStrategy" : "rrf",
+    "llmTemperature" : 0.1,
+    "reranking" : "cohere",
+    "rrfK" : 60,
+    "similarityThreshold" : 0.25,
+    "systemPrompt" : "You are helpful.",
+    "topK" : 5
+  },
+  "QueryLogEntry" : {
+    "answerTokens" : 80,
+    "chunksRetrieved" : 5,
+    "chunksUsed" : 4,
+    "collectionPattern" : "docs",
+    "configSnapshot" : {
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.1,
+      "reranking" : "cohere",
+      "rrfK" : 60,
+      "similarityThreshold" : 0.25,
+      "systemPrompt" : "You are helpful.",
+      "topK" : 5
+    },
+    "costUsd" : 0.0042,
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "embeddingLatencyMs" : 12,
+    "embeddingTokens" : 7,
+    "errorMessage" : "LLM timed out",
+    "experimentId" : "exp-1",
+    "failed" : true,
+    "id" : "5f0c7a9e-1b2d-4c3e-8f40-123456789abc",
+    "llmLatencyMs" : 900,
+    "promptTokens" : 1200,
+    "queryText" : "What is solar power?",
+    "searchLatencyMs" : 8,
+    "totalLatencyMs" : 930,
+    "userId" : "alice",
+    "userRating" : 4,
+    "variant" : "variant"
+  },
+  "QueryLogListResponse" : {
+    "page" : 1,
+    "pageSize" : 20,
+    "queries" : [
+      {
+        "answerTokens" : 80,
+        "chunksRetrieved" : 5,
+        "chunksUsed" : 4,
+        "collectionPattern" : "docs",
+        "configSnapshot" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.1,
+          "reranking" : "cohere",
+          "rrfK" : 60,
+          "similarityThreshold" : 0.25,
+          "systemPrompt" : "You are helpful.",
+          "topK" : 5
+        },
+        "costUsd" : 0.0042,
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "embeddingLatencyMs" : 12,
+        "embeddingTokens" : 7,
+        "errorMessage" : "LLM timed out",
+        "experimentId" : "exp-1",
+        "failed" : true,
+        "id" : "5f0c7a9e-1b2d-4c3e-8f40-123456789abc",
+        "llmLatencyMs" : 900,
+        "promptTokens" : 1200,
+        "queryText" : "What is solar power?",
+        "searchLatencyMs" : 8,
+        "totalLatencyMs" : 930,
+        "userId" : "alice",
+        "userRating" : 4,
+        "variant" : "variant"
+      }
+    ],
+    "total" : 1
+  },
   "QueryMetrics" : {
     "chunksRetrieved" : 5,
     "chunksUsed" : 5,

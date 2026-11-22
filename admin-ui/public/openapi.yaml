@@ -4296,6 +4296,14 @@ components:
               type: number
               nullable: true
               description: The minimum chunk similarity the query applied (null when none)
+            rrfK:
+              type: integer
+              nullable: true
+              description: The RRF constant, with rrf fusion (absent in queries logged before it was recorded)
+            reranking:
+              type: string
+              nullable: true
+              description: The reranking strategy (none, cohere or llm; absent in queries logged before it was recorded)
         createdAt:
           type: string
           format: date-time

@@ -170,6 +170,63 @@ where the database and its credentials come from:
 migrate before the first install. Leaving `migrateOnStart: true` together with the job is also
 fine: the job does the work and the servers find nothing to apply.
 
+### Ingestion
+
+The `ingestion` block sets the ingestion environment variables (see
+[Configuration: Ingestion Sources](configuration.md#ingestion-sources)); anything left unset is not rendered, so the
+app's defaults apply. To ingest a directory, mount it and point `ingestion.dir` at it:
+
+```yaml
+ingestion:
+  dir: /data/docs                 # INGEST_DIR: a directory source named env-directory
+  patterns: ["*.md", "*.pdf"]     # INGEST_PATTERNS
+  recursive: true                 # INGEST_RECURSIVE
+  schedule: "0 2 * * *"           # INGEST_SCHEDULE: cron, hourly/daily/weekly, or e.g. "6h"
+  scheduleTimeZone: Europe/London # INGEST_SCHEDULE_TZ
+  onStartup: false                # INGEST_ON_STARTUP
+  allowedRoots: []                # INGEST_ALLOWED_ROOTS (default: the directory sources)
+  url:
+    allowedHosts: ["docs.example.com", "*.example.org"]  # INGEST_URL_ALLOWED_HOSTS
+    allowPrivateNetworks: false   # INGEST_URL_ALLOW_PRIVATE_NETWORKS
+
+extraVolumes:
+  - name: docs
+    persistentVolumeClaim:
+      claimName: ragbox-docs
+extraVolumeMounts:
+  - name: docs
+    mountPath: /data/docs
+    readOnly: true
+```
+
+List values may also be comma-separated strings. The schedule runs in every replica: with
+more than one, consider triggering runs from outside instead (e.g. a CronJob calling `POST /api/v1/ingest/run`) or
+run a single replica for scheduled ingestion.
+
+### Extra environment variables
+
+`extraEnv` (a list of `EnvVar`s) and `extraEnvFrom` (a list of `envFrom` sources) add
+variables the chart has no value for, e.g. `RAG_RERANKING_STRATEGY` or `JAVA_TOOL_OPTIONS`:
+
+```yaml
+extraEnv:
+  - name: RAG_RERANKING_STRATEGY
+    value: cohere
+  - name: COHERE_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: cohere
+        key: api-key
+extraEnvFrom:
+  - secretRef:
+      name: ragbox-extra-env
+```
+
+Both apply to the server container and to the migration job (so database settings stay the
+same for both). `extraEnv` comes after the chart's variables and `extraEnvFrom` after its
+ConfigMap, so a variable set there overrides the chart's. The migration job runs before the
+install / upgrade, so anything it references must already exist.
+
 ### Ingress Configuration
 
 Enable ingress with TLS:
@@ -247,6 +304,9 @@ autoscaling:
 | `config.logging.format` | `json` or `text` (`LOG_FORMAT`) | `json` |
 | `database.migrateOnStart` | Servers apply pending migrations at startup (`DB_MIGRATE_ON_START`) | `true` |
 | `migrations.job.enabled` | Run the migrations in a pre-upgrade (and, with an external database's existing secret, pre-install) Job | `false` |
+| `ingestion.*` | Ingestion settings (`INGEST_DIR`, `INGEST_SCHEDULE`, `INGEST_URL_ALLOWED_HOSTS`, ...) | unset |
+| `extraEnv` / `extraEnvFrom` | Extra variables / envFrom sources for the server and the migration job | `[]` |
+| `extraVolumes` / `extraVolumeMounts` | Extra volumes and mounts for the server pod (e.g. documents for `ingestion.dir`) | `[]` |
 
 See the [values.yaml](https://github.com/llm4s/rag_in_a_box/blob/main/deploy/helm/ragbox/values.yaml) for all configuration options.
 

@@ -421,6 +421,23 @@ export interface HealthResponse {
 }
 
 // Analytics types
+/**
+ * The effective configuration a logged query ran with. Fields added later are absent from
+ * entries logged before them.
+ */
+export interface QueryConfigSnapshot {
+  topK: number
+  fusionStrategy: string
+  systemPrompt?: string | null
+  llmTemperature?: number | null
+  /** Minimum chunk similarity the query applied (null: none). */
+  similarityThreshold?: number | null
+  /** RRF constant, with `rrf` fusion. */
+  rrfK?: number | null
+  /** Reranking strategy: `none`, `cohere` or `llm`. */
+  reranking?: string | null
+}
+
 export interface QueryLogEntry {
   id: string
   queryText: string
@@ -434,6 +451,10 @@ export interface QueryLogEntry {
   chunksUsed: number
   answerTokens?: number
   userRating?: number
+  /** Experiment the query was routed through. */
+  experimentId?: string | null
+  /** The configuration the query ran with (absent for queries logged without one). */
+  configSnapshot?: QueryConfigSnapshot | null
   createdAt: string
   promptTokens?: number | null
   embeddingTokens?: number | null

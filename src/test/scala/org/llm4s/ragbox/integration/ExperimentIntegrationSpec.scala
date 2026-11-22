@@ -72,8 +72,8 @@ class ExperimentIntegrationSpec extends AnyFlatSpec with Matchers with PgVectorF
     // keyword_only: the one context is the document that contains the word
     body.hcursor.downField("contexts").downArray.get[String]("documentId") shouldBe Right("zebra")
     logged.map(e => (e.experimentId, e.variant, e.failed)) shouldBe Seq((Some(exp.id), Some("variant"), false))
-    logged.head.configSnapshot.map(c => (c.topK, c.fusionStrategy, c.systemPrompt)) shouldBe
-      Some((1, "keyword_only", Some("Variant prompt.")))
+    logged.head.configSnapshot.map(c => (c.topK, c.fusionStrategy, c.systemPrompt, c.rrfK, c.reranking)) shouldBe
+      Some((1, "keyword_only", Some("Variant prompt."), None, Some("none")))
   }
 
   "The baseline" should "run with the runtime settings when its config sets nothing" in withContainers { pg =>

@@ -187,6 +187,22 @@ final case class IngestionConfig(
   def parsedSchedule: Option[Either[String, IngestionSchedule]] =
     schedule.map(s => scheduleZone.flatMap(IngestionSchedule.parse(s, _)))
 
+  /**
+   * One error per source name used by more than one configured source (enabled or not). Each
+   * source's documents are tracked by its name, so two sources sharing a name would prune each
+   * other's documents on every sync. Empty when the names are unique.
+   */
+  def duplicateSourceNameErrors: Seq[String] =
+    sources.groupBy(_.name).toSeq.filter(_._2.size > 1).sortBy(_._1).map { case (name, dups) =>
+      val hint =
+        if (name == IngestionConfig.EnvDirectorySourceName)
+          s" ('$name' is the name of the INGEST_DIR source: rename the configured source or unset INGEST_DIR)"
+        else if (IngestionConfig.SourceTypeNames.contains(name))
+          s" (a source without a name is named after its type, '$name': give each source a unique name)"
+        else ""
+      s"Ingestion source name '$name' is used by ${dups.size} sources; source names must be unique$hint"
+    }
+
   /** Sources a run ingests from. */
   def activeSources: Seq[SourceConfig] = if (enabled) sources.filter(_.enabled) else Seq.empty
 }
@@ -278,9 +294,14 @@ object IngestionConfig {
       runOnStartup = value("INGEST_ON_STARTUP").map(_.equalsIgnoreCase("true")).getOrElse(base.runOnStartup),
       schedule = value("INGEST_SCHEDULE").orElse(base.schedule),
       scheduleTimeZone = value("INGEST_SCHEDULE_TZ").orElse(base.scheduleTimeZone),
-      sources = base.sources.filterNot(s => envDirectory.isDefined && s.name == EnvDirectorySourceName) ++ envDirectory
+      // Appended, not replacing a configured source of the same name: that is a duplicate name,
+      // reported by duplicateSourceNameErrors, rather than a HOCON source silently dropped
+      sources = base.sources ++ envDirectory
     )
   }
+
+  /** The `type` values of a configured source: an unnamed source is named after its type. */
+  private[ingestion] val SourceTypeNames: Set[String] = Set("directory", "url", "database", "web", "crawler", "web-crawler", "s3")
 
   /** Name of the directory source `INGEST_DIR` adds. */
   val EnvDirectorySourceName: String = "env-directory"

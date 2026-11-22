@@ -51,6 +51,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "ragbox.configmapName" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           env:
             # Database credentials
             {{- include "ragbox.databaseCredentialsEnv" . | trim | nindent 12 }}
@@ -99,6 +102,11 @@ spec:
                   name: {{ include "ragbox.secretName" . }}
                   key: voyage-api-key
                   optional: true
+            {{- with .Values.extraEnv }}
+
+            # Extra variables (extraEnv)
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -112,6 +120,9 @@ spec:
             # the root filesystem is read-only by default
             - name: tmp
               mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           lifecycle:
             preStop:
               exec:
@@ -122,6 +133,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

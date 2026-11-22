@@ -212,7 +212,9 @@ object QueryRoutes {
           fusionStrategy = settings.fusionStrategy,
           systemPrompt = Some(settings.systemPrompt),
           llmTemperature = None,
-          similarityThreshold = overrides.similarityThreshold
+          similarityThreshold = overrides.similarityThreshold,
+          rrfK = Option.when(settings.fusionStrategy == "rrf")(settings.rrfK),
+          reranking = Some(settings.reranking.normalizedStrategy.getOrElse(settings.reranking.strategy))
         )
       }
       QueryPlan(

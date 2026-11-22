@@ -256,4 +256,11 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
     FieldPatch.Set("b").applyTo(Some("a")) shouldBe Some("b")
     FieldPatch.Set("b").applyTo(None) shouldBe Some("b")
   }
+
+  "QueryConfigSnapshot" should "decode snapshots logged before rrfK and reranking were recorded" in {
+    decode[QueryConfigSnapshot]("""{"topK":5,"fusionStrategy":"rrf","systemPrompt":"Be brief.","llmTemperature":null}""") shouldBe
+      Right(QueryConfigSnapshot(5, "rrf", Some("Be brief.")))
+    val full = QueryConfigSnapshot(5, "rrf", Some("p"), None, Some(0.3), Some(60), Some("cohere"))
+    decode[QueryConfigSnapshot](full.asJson.noSpaces) shouldBe Right(full)
+  }
 }

@@ -2,7 +2,7 @@ apiVersion: v2
 name: ragbox
 description: A Helm chart for RAG in a Box - a turnkey RAG solution powered by LLM4S
 type: application
-version: 0.3.0
+version: 0.4.0
 # Default image tag (image.tag overrides it). CI publishes images tagged with the
 # short commit SHA on every push to main, and semver tags on releases.
 appVersion: "9e5427d"

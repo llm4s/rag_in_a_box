@@ -142,6 +142,9 @@ final case class AppConfig(
       errors += s"Ingestion source name '$name' is reserved for API sync sources (api, api:*); rename the source"
     }
 
+    // Each source's documents are tracked by its name: duplicates would prune each other's
+    ingestion.duplicateSourceNameErrors.foreach(errors += _)
+
     if (rag.chat.historyMessages < 0) {
       errors += s"RAG_CHAT_HISTORY_MESSAGES must be non-negative (got ${rag.chat.historyMessages})"
     }
