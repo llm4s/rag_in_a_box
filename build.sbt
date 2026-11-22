@@ -70,7 +70,7 @@ lazy val root = (project in file("."))
       "org.typelevel" %% "cats-effect-testing-scalatest" % "1.5.0" % Test,
       // Testcontainers for Docker-based integration tests
       "com.dimafeng" %% "testcontainers-scala-scalatest" % "0.41.8" % Test,
-      "org.testcontainers" % "testcontainers" % "1.20.4" % Test
+      "org.testcontainers" % "testcontainers" % "1.21.4" % Test
     ),
 
     // Assembly settings for fat JAR
