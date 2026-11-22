@@ -28,9 +28,26 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 35  # Slightly longer than SHUTDOWN_TIMEOUT
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
-          image: ghcr.io/llm4s/rag-in-a-box:latest
+          # Pinned to a published commit-SHA tag; bump to a release version when available
+          image: ghcr.io/llm4s/rag_in_a_box:9e5427d
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp  # writable scratch space for the JVM
           ports:
             - containerPort: 8080
               name: http
@@ -118,6 +135,9 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep 5  # Allow load balancer to drain
+      volumes:
+        - name: tmp
+          emptyDir: {}
 
 ---
 apiVersion: v1

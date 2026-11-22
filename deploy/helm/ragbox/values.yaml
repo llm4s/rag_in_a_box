@@ -6,10 +6,11 @@ replicaCount: 2
 
 image:
   # -- Container image repository
-  repository: ghcr.io/llm4s/rag-in-a-box
+  repository: ghcr.io/llm4s/rag_in_a_box
   # -- Image pull policy
   pullPolicy: IfNotPresent
-  # -- Overrides the image tag (default: Chart appVersion)
+  # -- Overrides the image tag (default: Chart appVersion, a published commit-SHA tag).
+  # Pin to a release version or commit SHA; avoid "latest" with IfNotPresent.
   tag: ""
 
 # -- Image pull secrets for private registries
@@ -34,11 +35,22 @@ podAnnotations:
   prometheus.io/port: "8080"
   prometheus.io/path: "/metrics"
 
-# -- Pod security context
-podSecurityContext: {}
+# -- Pod security context (UID/GID 10001 is the non-root user in the ragbox image)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
 
-# -- Container security context
-securityContext: {}
+# -- Container security context. The root filesystem is read-only; /tmp is an emptyDir.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 service:
   # -- Service type
@@ -195,9 +207,11 @@ secrets:
 
   # Security secrets
   security:
-    # -- JWT secret for token signing (32+ chars, CHANGE THIS!)
+    # -- JWT secret for token signing (32+ chars). If empty, a random value is
+    # generated on install and kept across upgrades.
     jwtSecret: ""
-    # -- Admin password for basic auth (CHANGE THIS!)
+    # -- Admin password for basic auth. If empty, a random value is generated on
+    # install and kept across upgrades (see NOTES for how to read it).
     adminPassword: ""
 
   # API keys (leave empty if not using)
@@ -209,7 +223,8 @@ secrets:
     # -- Voyage AI API key
     voyage: ""
 
-  # -- Use existing secret instead of creating one
+  # -- Use an existing secret instead of creating one (must contain jwt-secret,
+  # admin-password and optionally the *-api-key keys)
   existingSecret: ""
 
 # =============================================================================
@@ -217,42 +232,65 @@ secrets:
 # =============================================================================
 
 postgresql:
-  # -- Deploy bundled PostgreSQL (Bitnami subchart)
-  # When enabled, the app automatically uses credentials from the Bitnami-generated secret
+  # -- Deploy a bundled single-instance PostgreSQL + pgvector StatefulSet.
+  # For production, consider a managed PostgreSQL with pgvector (postgresql.enabled=false).
   enabled: true
 
-  # -- PostgreSQL image (with pgvector)
   image:
+    # -- PostgreSQL image (official postgres image with pgvector)
     repository: pgvector/pgvector
+    # -- PostgreSQL image tag
     tag: pg15
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
 
   auth:
-    # -- Use existing secret for credentials (must have 'password' key)
+    # -- Use an existing secret for the password (must have a 'password' key)
     existingSecret: ""
     # -- Database username
     username: "rag"
-    # -- Database password (REQUIRED - set this for bundled PostgreSQL!)
-    # This password is used by both PostgreSQL and the app automatically
+    # -- Database password. If empty, a random value is generated on install
+    # and kept across upgrades. Used by both PostgreSQL and the app.
     password: ""
     # -- Database name
     database: "ragdb"
 
-  primary:
-    persistence:
-      # -- Enable persistence
-      enabled: true
-      # -- Storage size
-      size: 10Gi
-      # -- Storage class (leave empty for default)
-      storageClass: ""
+  persistence:
+    # -- Enable persistence (otherwise data lives in an emptyDir)
+    enabled: true
+    # -- Storage size
+    size: 10Gi
+    # -- Storage class (leave empty for default)
+    storageClass: ""
 
-    resources:
-      limits:
-        cpu: 2000m
-        memory: 4Gi
-      requests:
-        cpu: 500m
-        memory: 1Gi
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  # -- PostgreSQL pod security context (999 is the postgres user in the image)
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+
+  # -- PostgreSQL container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # -- Node selector for the PostgreSQL pod
+  nodeSelector: {}
+  # -- Tolerations for the PostgreSQL pod
+  tolerations: []
 
 # =============================================================================
 # External Database Configuration (when postgresql.enabled=false)

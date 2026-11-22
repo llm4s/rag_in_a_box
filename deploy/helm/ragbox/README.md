@@ -20,7 +20,9 @@ helm repo update
 ### Install the chart
 
 ```bash
-# Create a values file with your configuration
+# Create a values file with your configuration.
+# jwtSecret, adminPassword and the database password are optional: if left
+# empty they are generated randomly on install and preserved on upgrade.
 cat > my-values.yaml <<EOF
 # Database password (used by bundled PostgreSQL)
 postgresql:
@@ -59,12 +61,33 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of API replicas | `2` |
-| `image.repository` | Container image | `ghcr.io/llm4s/rag-in-a-box` |
-| `image.tag` | Image tag | `Chart.AppVersion` |
+| `image.repository` | Container image | `ghcr.io/llm4s/rag_in_a_box` |
+| `image.tag` | Image tag | `Chart.AppVersion` (a published commit-SHA tag) |
 | `config.auth.mode` | Authentication mode (open/basic/oauth) | `basic` |
 | `config.llm.model` | LLM model for answer generation | `openai/gpt-4o` |
 | `config.embedding.provider` | Embedding provider | `openai` |
-| `postgresql.enabled` | Deploy bundled PostgreSQL | `true` |
+| `postgresql.enabled` | Deploy bundled PostgreSQL + pgvector StatefulSet | `true` |
+| `secrets.security.jwtSecret` | JWT signing secret | generated if empty |
+| `secrets.security.adminPassword` | Admin password (basic auth) | generated if empty |
+| `podSecurityContext` / `securityContext` | Non-root UID 10001, read-only root FS, no privilege escalation, all capabilities dropped | secure defaults |
+
+### Generated secrets
+
+When `secrets.security.jwtSecret`, `secrets.security.adminPassword` or
+`postgresql.auth.password` are empty, the chart generates random values on the
+first `helm install` and reads them back from the cluster (`lookup`) on
+`helm upgrade`, so they stay stable. `helm template` and client-side dry runs
+cannot query the cluster and will render fresh random values each time, so set
+these values explicitly (or use `existingSecret`) when rendering manifests for
+GitOps tools such as Argo CD.
+
+### Bundled PostgreSQL
+
+The bundled database is a single-replica StatefulSet running the official
+`pgvector/pgvector` image (PostgreSQL with the pgvector extension), with a
+PersistentVolumeClaim from `volumeClaimTemplates`. It is intended for
+evaluation and small deployments; for production use a managed PostgreSQL with
+pgvector and set `postgresql.enabled=false`.
 | `ingress.enabled` | Enable ingress | `false` |
 
 ### Using External PostgreSQL
@@ -163,13 +186,6 @@ helm install ragbox deploy/helm/ragbox --dry-run --debug
 
 # Template rendering
 helm template ragbox deploy/helm/ragbox
-```
-
-### Updating dependencies
-
-```bash
-cd deploy/helm/ragbox
-helm dependency update
 ```
 
 ## License

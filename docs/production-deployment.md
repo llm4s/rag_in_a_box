@@ -195,7 +195,7 @@ services:
     restart: always
 
   api:
-    image: ghcr.io/llm4s/rag-in-a-box:latest
+    image: ghcr.io/llm4s/rag_in_a_box:9e5427d
     environment:
       # Database
       PG_HOST: postgres
