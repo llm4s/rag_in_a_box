@@ -14,14 +14,46 @@ RAG in a Box enforces PKCE for all OAuth flows. PKCE prevents authorization code
 
 PKCE is always enabled and cannot be disabled.
 
-### State Parameter
+### State Parameter and Browser Binding (Login CSRF Protection)
 
-The OAuth state parameter prevents CSRF attacks:
+The OAuth `state` parameter on its own only proves that *some* browser started a login.
+To stop an attacker from completing their own login in a victim's browser (login CSRF /
+session fixation), each login is also bound to the browser that started it:
 
-- Random 32-byte value generated per login attempt
-- Stored server-side with 5-minute TTL (configurable via `OAUTH_STATE_TTL`)
-- Verified on callback before processing authorization code
-- Single-use: removed from storage after verification
+- `GET /api/v1/oauth/login` generates a random 32-byte `state`, PKCE verifier, `nonce`
+  and a separate random *browser-binding* value
+- The binding value is set in a pre-auth cookie (`ragbox_oauth_state`); only its SHA-256
+  hash is stored server-side with the state
+- The endpoint responds with a `302` redirect to the provider; the state is never returned
+  to the client in a response body
+- `GET /api/v1/oauth/callback` requires the pre-auth cookie, and rejects the callback
+  (`400`) unless the cookie's hash matches the binding stored for that `state`
+- State is single-use (removed atomically on first use) and expires after
+  `OAUTH_STATE_TTL` seconds (default 300)
+- The pre-auth cookie is cleared on every callback response, success or failure
+
+Pre-auth cookie attributes:
+
+| Attribute | Value |
+|-----------|-------|
+| `HttpOnly` | `true` |
+| `Secure` | Follows `OAUTH_SESSION_COOKIE_SECURE` (default `true`) |
+| `SameSite` | `Lax` (required so the cookie accompanies the top-level redirect back from the provider) |
+| `Path` | `/api/v1/oauth` |
+| `Max-Age` | `OAUTH_STATE_TTL` |
+
+### Nonce
+
+A random `nonce` is sent in every authorization request and stored with the state. The ID
+token returned by the token endpoint must carry an identical `nonce` claim, otherwise the
+login is rejected (`401`). This binds the ID token to the login request and prevents ID
+token replay/injection.
+
+### Session Rotation
+
+On a successful callback a brand-new random session id is issued. If the browser already
+presented a session cookie, that session is deleted server-side, so a session id planted
+before login (session fixation) can never become authenticated.
 
 ### Token Validation
 
@@ -34,8 +66,27 @@ ID tokens are validated using industry-standard checks:
 | Audience | Must include configured `OAUTH_CLIENT_ID` |
 | Expiration | Token must not be expired |
 | Not Before | Token must be valid (if `nbf` claim present) |
+| Nonce | Must equal the nonce sent in the authorization request (browser logins) |
 
 JWKS keys are cached and refreshed periodically to handle key rotation.
+
+### User Identity
+
+The principal a login maps to is controlled by `OAUTH_CLAIM_USER_ID` (default `sub`):
+
+| `OAUTH_CLAIM_USER_ID` | Principal | Notes |
+|-----------------------|-----------|-------|
+| `sub` (default) | `<iss>\|<sub>`, e.g. `https://accounts.google.com\|1234567890` | `sub` is only unique per issuer, so it is qualified with the issuer |
+| The email claim (`email`, or whatever `OAUTH_CLAIM_EMAIL` names) | The email address | Accepted **only** when the token has `email_verified: true`; otherwise the login is rejected with `403` |
+| Any other claim (e.g. `oid`, `preferred_username`) | The claim's value | The login is rejected (`403`) if the claim is missing. Only use claims your provider guarantees are unique and immutable |
+
+The `email` claim is never used as identity implicitly: two accounts at a provider that
+lets users set an unverified email cannot collide on the same principal.
+
+### Groups
+
+Group names from the groups claim are stored as a PostgreSQL `TEXT[]`, so a group name
+containing a comma (e.g. `x,admins`) remains a single group.
 
 ---
 
@@ -55,29 +106,46 @@ Sessions are managed via HTTP cookies with these security settings:
 
 ### Session Storage
 
-**In-Memory Storage (Development)**
+Selected with `OAUTH_SESSION_STORAGE` (`memory` | `postgres`, default `memory`).
+
+**In-Memory Storage (Development)** - `OAUTH_SESSION_STORAGE=memory`
 
 - Sessions stored in application memory
 - Lost on application restart
 - Not suitable for multi-instance deployments
 
-**PostgreSQL Storage (Production)**
+**PostgreSQL Storage (Production)** - `OAUTH_SESSION_STORAGE=postgres`
 
-- Sessions persisted to database
+- Sessions and in-flight login states persisted to the application database
 - Survives application restarts
 - Supports horizontal scaling
-- Enable with: `OAUTH_SESSION_STORAGE=postgres`
+- Tables (`oauth_sessions`, `oauth_auth_state`) are created and migrated on startup
+
+**Upgrading an existing `oauth_sessions` table**: older releases stored groups as a
+comma-joined `TEXT` column. On startup the column is converted in place to `TEXT[]`,
+splitting existing values on commas exactly as they were previously read, so live sessions
+keep working. Because those legacy rows may already contain a comma-injected group split,
+operators who want to be strict can force everyone to log in again with
+`DELETE FROM oauth_sessions;`. In-flight login states from before the upgrade (no nonce /
+browser binding) are deleted automatically; affected users simply start the login again.
 
 ### Session Lifecycle
 
 ```
-Login Request → Create PKCE State → Redirect to Provider
+Login Request → Create state + PKCE + nonce + browser binding
+             → Set pre-auth cookie → 302 to Provider
                     ↓
-Provider Callback → Validate State → Exchange Code → Validate Token
+Provider Callback → Require pre-auth cookie → Validate state (single-use, TTL)
+                 → Check cookie matches state → Exchange code (PKCE)
+                 → Validate ID token (signature, iss, aud, exp, nonce)
                     ↓
-Create Session → Set Cookie → Redirect to App
+Resolve identity (iss|sub, or verified email / configured claim)
                     ↓
-Subsequent Requests → Validate Session Cookie → Allow/Deny
+Delete any pre-existing session → Create new session → Set session cookie
+                 → Clear pre-auth cookie → Redirect to App
+                    ↓
+Subsequent Requests → Validate session cookie → Resolve authorization
+                 → Allow (or 401 no/invalid session, 403 authorization unavailable)
                     ↓
 Logout → Delete Session → Clear Cookie
 ```
@@ -163,10 +231,15 @@ Validate user claims match expected values:
 | Threat | Mitigation |
 |--------|------------|
 | Authorization code interception | PKCE |
-| CSRF attacks | State parameter + SameSite cookies |
+| Login CSRF | State bound to the initiating browser via HttpOnly pre-auth cookie |
+| CSRF attacks | SameSite cookies |
+| Session fixation | Session id rotated (old session deleted) on every successful login |
 | Session hijacking | HttpOnly + Secure cookies |
 | Token tampering | Cryptographic signature validation |
+| ID token injection/replay | Nonce verification |
 | Replay attacks | Token expiration + single-use state |
+| Account takeover via unverified email | Identity keyed on `iss`+`sub`; email only used when `email_verified` |
+| Group name injection | Groups stored as `TEXT[]`, never split on delimiters |
 | Man-in-the-middle | HTTPS enforcement |
 
 ### Residual Risks

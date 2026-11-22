@@ -13,32 +13,119 @@ import org.scalatest.wordspec.AsyncWordSpec
 
 class OAuthRoutesSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
 
+  private val sessionConfig = OAuthSessionConfig(
+    cookieName = "ragbox_session",
+    cookieSecure = false,
+    cookieMaxAge = 86400
+  )
+
+  private def run(routes: HttpRoutes[IO], request: Request[IO]): IO[Response[IO]] =
+    routes.run(request).value.map(_.getOrElse(fail("Route not matched")))
+
   "GET /api/v1/oauth/login" should {
 
-    "return authorization URL with state" in {
+    "redirect to the IdP and set a short-lived HttpOnly, SameSite=Lax binding cookie" in {
       val mockOidcService = new MockOidcService()
-      val sessionConfig = OAuthSessionConfig(
-        cookieName = "ragbox_session",
-        cookieSecure = false,
-        cookieMaxAge = 86400
-      )
+      val routes = OAuthRoutes(mockOidcService, sessionConfig, stateTtlSeconds = 600).routes
 
+      run(routes, Request[IO](Method.GET, uri"/api/v1/oauth/login")).map { response =>
+        response.status shouldBe Status.Found
+        response.headers.get[headers.Location].map(_.uri.renderString) shouldBe
+          Some("https://provider.example.com/authorize?client_id=test")
+        val cookie = response.cookies.find(_.name == sessionConfig.preAuthCookieName)
+          .getOrElse(fail("pre-auth cookie not set"))
+        cookie.content shouldBe "mock-binding-456"
+        cookie.httpOnly shouldBe true
+        cookie.secure shouldBe false // follows sessionConfig.cookieSecure
+        cookie.sameSite shouldBe Some(SameSite.Lax)
+        cookie.maxAge shouldBe Some(600L)
+        cookie.path shouldBe Some("/api/v1/oauth")
+        // The state must not be handed to the client as JSON
+        response.headers.get[headers.`Content-Type`] shouldBe None
+      }
+    }
+
+    "mark the binding cookie Secure when session cookies are secure" in {
+      val routes = OAuthRoutes(new MockOidcService(), sessionConfig.copy(cookieSecure = true)).routes
+      run(routes, Request[IO](Method.GET, uri"/api/v1/oauth/login")).map { response =>
+        response.cookies.find(_.name == sessionConfig.preAuthCookieName).map(_.secure) shouldBe Some(true)
+      }
+    }
+  }
+
+  "GET /api/v1/oauth/callback" should {
+
+    "reject a callback without the binding cookie and not call the service" in {
+      val mockOidcService = new MockOidcService()
       val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
 
-      val request = Request[IO](Method.GET, uri"/api/v1/oauth/login")
-
-      routes.run(request).value.flatMap {
-        case Some(response) =>
-          response.as[Json].map { json =>
-            response.status shouldBe Status.Ok
-            val authUrl = json.hcursor.get[String]("authorizationUrl").toOption
-            val state = json.hcursor.get[String]("state").toOption
-            authUrl should not be empty
-            state should not be empty
-          }
-        case None =>
-          fail("Route not matched")
+      run(routes, Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")).map { response =>
+        response.status shouldBe Status.BadRequest
+        mockOidcService.callbackCalls shouldBe empty
+        response.cookies.find(_.name == sessionConfig.cookieName) shouldBe None
       }
+    }
+
+    "pass the binding cookie to the service, set the session cookie and clear the binding cookie" in {
+      val mockOidcService = new MockOidcService()
+      val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
+      val request = Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")
+        .addCookie(sessionConfig.preAuthCookieName, "binding-1")
+
+      run(routes, request).map { response =>
+        response.status shouldBe Status.SeeOther
+        mockOidcService.callbackCalls shouldBe List(("c", "s", "binding-1"))
+        response.cookies.find(_.name == sessionConfig.cookieName).map(_.content) shouldBe Some("mock-session")
+        response.cookies.find(_.name == sessionConfig.preAuthCookieName).flatMap(_.maxAge) shouldBe Some(0L)
+      }
+    }
+
+    "rotate the session: invalidate any pre-existing session id presented by the browser" in {
+      val mockOidcService = new MockOidcService()
+      val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
+      val request = Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")
+        .addCookie(sessionConfig.preAuthCookieName, "binding-1")
+        .addCookie(sessionConfig.cookieName, "fixated-session-id")
+
+      run(routes, request).map { response =>
+        response.status shouldBe Status.SeeOther
+        mockOidcService.loggedOut shouldBe List("fixated-session-id")
+        response.cookies.find(_.name == sessionConfig.cookieName).map(_.content) shouldBe Some("mock-session")
+      }
+    }
+
+    "return 400 and clear the binding cookie when the service rejects the state" in {
+      val mockOidcService = new MockOidcService()
+      mockOidcService.setCallbackResponse(Left(OidcError.InvalidState("binding mismatch")))
+      val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
+      val request = Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")
+        .addCookie(sessionConfig.preAuthCookieName, "binding-1")
+
+      run(routes, request).map { response =>
+        response.status shouldBe Status.BadRequest
+        response.cookies.find(_.name == sessionConfig.cookieName) shouldBe None
+        response.cookies.find(_.name == sessionConfig.preAuthCookieName).flatMap(_.maxAge) shouldBe Some(0L)
+      }
+    }
+
+    "return 401 for an ID token nonce mismatch" in {
+      val mockOidcService = new MockOidcService()
+      mockOidcService.setCallbackResponse(Left(OidcError.InvalidNonce("nonce mismatch")))
+      val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
+      val request = Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")
+        .addCookie(sessionConfig.preAuthCookieName, "binding-1")
+
+      run(routes, request).map(_.status shouldBe Status.Unauthorized)
+    }
+
+    "return 403 when the identity cannot be established (e.g. unverified email)" in {
+      val mockOidcService = new MockOidcService()
+      mockOidcService.setCallbackResponse(Left(OidcError.IdentityError("email not verified")))
+      val routes = OAuthRoutes(mockOidcService, sessionConfig).routes
+      val request = Request[IO](Method.GET, uri"/api/v1/oauth/callback?code=c&state=s")
+        .addCookie(sessionConfig.preAuthCookieName, "binding-1")
+
+      run(routes, request).map(_.status shouldBe Status.Forbidden)
     }
   }
 
@@ -193,8 +280,11 @@ class OAuthRoutesSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
 class MockOidcService extends OidcService[IO]:
   private var loginResponse = OAuthLoginResponse(
     authorizationUrl = "https://provider.example.com/authorize?client_id=test",
-    state = "mock-state-123"
+    state = "mock-state-123",
+    browserBinding = "mock-binding-456"
   )
+  @volatile var callbackCalls: List[(String, String, String)] = Nil
+  @volatile var loggedOut: List[String] = Nil
   private var callbackResponse: Either[OidcError, OAuthSessionData] = Right(OAuthSessionData(
     sessionId = "mock-session",
     userId = "test-user",
@@ -223,8 +313,12 @@ class MockOidcService extends OidcService[IO]:
   override def initiateLogin(redirectAfterLogin: Option[String]): IO[OAuthLoginResponse] =
     IO.pure(loginResponse)
 
-  override def handleCallback(code: String, state: String): IO[Either[OidcError, OAuthSessionData]] =
-    IO.pure(callbackResponse)
+  override def handleCallback(
+      code: String,
+      state: String,
+      browserBinding: String
+  ): IO[Either[OidcError, OAuthSessionData]] =
+    IO { callbackCalls = callbackCalls :+ ((code, state, browserBinding)) }.as(callbackResponse)
 
   override def validateSession(sessionId: String): IO[Option[OAuthSessionData]] =
     IO.pure(validSession)
@@ -233,4 +327,4 @@ class MockOidcService extends OidcService[IO]:
     IO.pure(authorization)
 
   override def logout(sessionId: String): IO[Unit] =
-    IO.unit
+    IO { loggedOut = loggedOut :+ sessionId }

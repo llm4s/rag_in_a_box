@@ -4,7 +4,13 @@ import cats.effect.IO
 import cats.effect.testing.scalatest.AsyncIOSpec
 import com.dimafeng.testcontainers.GenericContainer
 import com.dimafeng.testcontainers.scalatest.TestContainerForAll
+import io.circe.Json
+import org.http4s.{Method, Request, Response, Status, Uri, UrlForm}
+import org.http4s.circe.*
 import org.http4s.ember.client.EmberClientBuilder
+import org.http4s.headers.Location
+import org.http4s.implicits.*
+import org.llm4s.ragbox.routes.OAuthRoutes
 import org.llm4s.ragbox.auth.*
 import org.llm4s.ragbox.testkit.{KeycloakAdminClient, MockPrincipalStore}
 import org.scalatest.matchers.should.Matchers
@@ -170,7 +176,7 @@ class OAuthIntegrationSpec
             retrievedSession <- sessionRegistry.getSession("test-session-123")
           yield
             retrievedSession should not be empty
-            retrievedSession.get.userId shouldBe testEmail
+            retrievedSession.get.userId shouldBe s"$issuer|${validatedToken.subject}"
             retrievedSession.get.email shouldBe Some(testEmail)
             retrievedSession.get.provider shouldBe "keycloak"
         }
@@ -224,8 +230,8 @@ class OAuthIntegrationSpec
             authorization <- claimMapper.mapToAuthorization(validatedToken)
           yield
             authorization should not be null
-            // User should have been created in the principal store
-            principalStore.getCreatedUsers should contain(testEmail)
+            // User principal is keyed on issuer + subject, not on email
+            principalStore.getCreatedUsers should contain(s"$issuer|${validatedToken.subject}")
         }
       }
     }
@@ -338,4 +344,115 @@ class OAuthIntegrationSpec
         }
       }
     }
+    "complete the cookie-bound browser login flow through OAuthRoutes" in {
+      withContainers { container =>
+        val baseUrl = keycloakBaseUrl(container)
+        val issuer = keycloakIssuer(container)
+        val redirectUri = "http://localhost/callback"
+
+        EmberClientBuilder.default[IO].build.use { httpClient =>
+          val adminClient = KeycloakAdminClient(baseUrl, httpClient)
+          val providerConfig = OidcProviderConfig(
+            clientId = testClientId,
+            clientSecret = testClientSecret,
+            redirectUri = redirectUri,
+            authorizationEndpoint = s"$issuer/protocol/openid-connect/auth",
+            tokenEndpoint = s"$issuer/protocol/openid-connect/token",
+            userinfoEndpoint = s"$issuer/protocol/openid-connect/userinfo",
+            jwksUri = s"$issuer/protocol/openid-connect/certs",
+            issuer = issuer
+          )
+          val sessionConfig = OAuthSessionConfig(cookieSecure = false)
+          val oauthConfig = OAuthConfig(provider = providerConfig, session = sessionConfig)
+
+          for
+            _ <- adminClient.authenticate()
+            _ <- adminClient.createRealm(testRealmName)
+            _ <- adminClient.createClient(testRealmName, testClientId, testClientSecret, redirectUri)
+            _ <- adminClient.createUser(testRealmName, testUsername, testEmail, testPassword)
+
+            validator <- OidcTokenValidatorImpl.create(providerConfig)
+            claimMapper <- ClaimMapperImpl.create(MockPrincipalStore())
+            sessionRegistry <- InMemorySessionRegistry.create
+            oidcService <- OidcServiceImpl.create(oauthConfig, httpClient, validator, sessionRegistry, claimMapper)
+            routes = OAuthRoutes(oidcService, sessionConfig).routes.orNotFound
+
+            // 1. Browser hits /oauth/login: 302 to Keycloak + binding cookie
+            loginResp <- routes.run(Request[IO](Method.GET, uri"/api/v1/oauth/login"))
+            bindingCookie = loginResp.cookies.find(_.name == sessionConfig.preAuthCookieName)
+              .getOrElse(fail("no pre-auth cookie"))
+            authUrl = loginResp.headers.get[Location].getOrElse(fail("no Location")).uri
+
+            // 2. Browser follows redirect to Keycloak and submits the login form
+            callbackUri <- keycloakLogin(httpClient, authUrl, testUsername, testPassword)
+            code = callbackUri.query.params.getOrElse("code", fail("no code"))
+            state = callbackUri.query.params.getOrElse("state", fail("no state"))
+            // The IdP redirects to OAUTH_REDIRECT_URI; route the same query to our callback endpoint
+            ourCallback = uri"/api/v1/oauth/callback".copy(query = callbackUri.query)
+
+            // 3a. A different browser (no binding cookie) cannot complete the login
+            noCookieResp <- routes.run(Request[IO](Method.GET, ourCallback))
+
+            // 3b. The original browser completes the callback with its binding cookie
+            callbackResp <- routes.run(
+              Request[IO](Method.GET, ourCallback).addCookie(bindingCookie.name, bindingCookie.content)
+            )
+            sessionCookie = callbackResp.cookies.find(_.name == sessionConfig.cookieName)
+              .getOrElse(fail("no session cookie"))
+
+            // 4. Replaying the same callback fails (single-use state)
+            replayResp <- routes.run(
+              Request[IO](Method.GET, ourCallback).addCookie(bindingCookie.name, bindingCookie.content)
+            )
+
+            userInfoResp <- routes.run(
+              Request[IO](Method.GET, uri"/api/v1/oauth/userinfo").addCookie(sessionCookie.name, sessionCookie.content)
+            )
+            userInfo <- userInfoResp.as[Json]
+          yield
+            authUrl.query.params.get("nonce") should not be empty
+            state should not be empty
+            code should not be empty
+            noCookieResp.status shouldBe Status.BadRequest
+            callbackResp.status shouldBe Status.SeeOther
+            callbackResp.cookies.find(_.name == sessionConfig.preAuthCookieName).flatMap(_.maxAge) shouldBe Some(0L)
+            replayResp.status shouldBe Status.BadRequest
+            userInfoResp.status shouldBe Status.Ok
+            val userId = userInfo.hcursor.get[String]("userId").toOption.get
+            userId should startWith(s"$issuer|")
+            userInfo.hcursor.get[String]("email").toOption shouldBe Some(testEmail)
+        }
+      }
+    }
   }
+
+  /**
+   * Drive Keycloak's login page like a browser: GET the authorization URL, submit the
+   * username/password form (carrying Keycloak's own cookies) and return the redirect
+   * back to our callback (which carries `code` and `state`).
+   */
+  private def keycloakLogin(
+      httpClient: org.http4s.client.Client[IO],
+      authUrl: Uri,
+      username: String,
+      password: String
+  ): IO[Uri] =
+    httpClient.run(Request[IO](Method.GET, authUrl)).use { page =>
+      page.as[String].map(html => (html, page.cookies))
+    }.flatMap { (html, kcCookies) =>
+      val action = """id="kc-form-login"[^>]*action="([^"]+)"""".r
+        .findFirstMatchIn(html)
+        .orElse("""action="([^"]+)"[^>]*id="kc-form-login"""".r.findFirstMatchIn(html))
+        .map(_.group(1).replace("&amp;", "&"))
+        .getOrElse(fail("Keycloak login form not found"))
+      val post = kcCookies.foldLeft(
+        Request[IO](Method.POST, Uri.unsafeFromString(action))
+          .withEntity(UrlForm("username" -> username, "password" -> password, "credentialId" -> ""))
+      )((req, c) => req.addCookie(c.name, c.content))
+      httpClient.run(post).use { (resp: Response[IO]) =>
+        IO {
+          resp.status.code shouldBe 302
+          resp.headers.get[Location].getOrElse(fail("no redirect from Keycloak")).uri
+        }
+      }
+    }

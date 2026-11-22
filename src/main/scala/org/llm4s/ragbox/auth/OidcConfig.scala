@@ -32,16 +32,36 @@ object ClaimMappingConfig:
   given Encoder[ClaimMappingConfig] = deriveEncoder
   given Decoder[ClaimMappingConfig] = deriveDecoder
 
-/** Session configuration for OAuth */
+/**
+ * Session configuration for OAuth.
+ *
+ * `cookieSecure` applies to both the session cookie and the short-lived pre-auth
+ * (login binding) cookie; set it to false only for local HTTP development.
+ */
 case class OAuthSessionConfig(
     cookieName: String = "ragbox_session",
     cookieSecure: Boolean = true,
-    cookieMaxAge: Int = 86400 // 24 hours in seconds
+    cookieMaxAge: Int = 86400, // 24 hours in seconds
+    preAuthCookieName: String = "ragbox_oauth_state"
 )
 
 object OAuthSessionConfig:
   given Encoder[OAuthSessionConfig] = deriveEncoder
   given Decoder[OAuthSessionConfig] = deriveDecoder
+
+/** Where OAuth sessions and in-flight authorization states are stored */
+enum OAuthSessionStorage:
+  case Memory, Postgres
+
+object OAuthSessionStorage:
+  def fromString(s: String): Either[String, OAuthSessionStorage] =
+    s.trim.toLowerCase match
+      case "memory"                   => Right(Memory)
+      case "postgres" | "postgresql" => Right(Postgres)
+      case other                      => Left(s"Unknown OAuth session storage: $other. Use: memory or postgres")
+
+  given Encoder[OAuthSessionStorage] = Encoder.encodeString.contramap(_.toString.toLowerCase)
+  given Decoder[OAuthSessionStorage] = Decoder.decodeString.emap(fromString)
 
 /** Complete OAuth configuration */
 case class OAuthConfig(
@@ -49,7 +69,8 @@ case class OAuthConfig(
     claimMapping: ClaimMappingConfig = ClaimMappingConfig(),
     session: OAuthSessionConfig = OAuthSessionConfig(),
     pkceEnabled: Boolean = true,
-    stateTtl: Int = 300 // 5 minutes in seconds
+    stateTtl: Int = 300, // 5 minutes in seconds
+    sessionStorage: OAuthSessionStorage = OAuthSessionStorage.Memory
 )
 
 object OAuthConfig:
@@ -64,15 +85,25 @@ case class ValidatedIdToken(
     groups: List[String],
     issuedAt: Long,
     expiresAt: Long,
-    rawClaims: Map[String, Any]
+    rawClaims: Map[String, Any],
+    issuer: String,
+    emailVerified: Boolean
 )
 
-/** Authorization state for PKCE flow */
+/**
+ * Server-side state for an in-flight login (PKCE + nonce + browser binding).
+ *
+ * @param browserBindingHash SHA-256 (base64url) of the random value placed in the
+ *                           browser's pre-auth cookie; the callback must present a
+ *                           cookie whose hash matches.
+ */
 case class AuthorizationState(
     state: String,
     codeVerifier: String,
     redirectAfterLogin: Option[String],
-    createdAt: Long
+    createdAt: Long,
+    nonce: String,
+    browserBindingHash: String
 )
 
 /** Session data stored after successful authentication */
@@ -91,15 +122,19 @@ object OAuthSessionData:
   given Encoder[OAuthSessionData] = deriveEncoder
   given Decoder[OAuthSessionData] = deriveDecoder
 
-/** OAuth login response */
+/**
+ * Result of initiating a login.
+ *
+ * Deliberately has no JSON codec: `browserBinding` must only ever be sent to the
+ * browser in an HttpOnly cookie, never in a response body.
+ *
+ * @param browserBinding random value to set in the pre-auth cookie
+ */
 case class OAuthLoginResponse(
     authorizationUrl: String,
-    state: String
+    state: String,
+    browserBinding: String
 )
-
-object OAuthLoginResponse:
-  given Encoder[OAuthLoginResponse] = deriveEncoder
-  given Decoder[OAuthLoginResponse] = deriveDecoder
 
 /** OAuth userinfo response */
 case class OAuthUserInfo(
@@ -129,4 +164,7 @@ object OidcError:
   case class TokenExchangeError(message: String) extends OidcError
   case class InvalidState(message: String) extends OidcError
   case class StateExpired(message: String) extends OidcError
+  case class InvalidNonce(message: String) extends OidcError
+  /** The token is valid but no acceptable user identity could be derived from it */
+  case class IdentityError(message: String) extends OidcError
   case class ConfigurationError(message: String) extends OidcError

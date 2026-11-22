@@ -7,7 +7,7 @@ import org.llm4s.ragbox.db.ConnectionPool
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 
-import java.sql.{Connection, PreparedStatement, ResultSet, Timestamp}
+import java.sql.{ResultSet, Timestamp}
 
 /**
  * PostgreSQL-backed session registry for production use.
@@ -27,13 +27,16 @@ class PgSessionRegistry private (
   override def storeAuthState(state: AuthorizationState): IO[Unit] =
     ConnectionPool.withConnection(pool) { conn =>
       val sql = """
-        INSERT INTO oauth_auth_state (state, code_verifier, redirect_after_login, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO oauth_auth_state (
+          state, code_verifier, redirect_after_login, created_at, expires_at, nonce, browser_binding_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (state) DO UPDATE SET
           code_verifier = EXCLUDED.code_verifier,
           redirect_after_login = EXCLUDED.redirect_after_login,
           created_at = EXCLUDED.created_at,
-          expires_at = EXCLUDED.expires_at
+          expires_at = EXCLUDED.expires_at,
+          nonce = EXCLUDED.nonce,
+          browser_binding_hash = EXCLUDED.browser_binding_hash
       """
       val stmt = conn.prepareStatement(sql)
       try
@@ -43,38 +46,37 @@ class PgSessionRegistry private (
         stmt.setTimestamp(4, new Timestamp(state.createdAt))
         // Default 5 minute expiry for auth states
         stmt.setTimestamp(5, new Timestamp(state.createdAt + 300000))
+        stmt.setString(6, state.nonce)
+        stmt.setString(7, state.browserBindingHash)
         stmt.executeUpdate()
       finally
         stmt.close()
     } *> logger.debug(s"Stored auth state: ${state.state.take(8)}...")
 
   override def getAndRemoveAuthState(stateKey: String): IO[Option[AuthorizationState]] =
-    ConnectionPool.withTransaction(pool) { conn =>
-      // First select the state
-      val selectSql = "SELECT state, code_verifier, redirect_after_login, created_at FROM oauth_auth_state WHERE state = ?"
-      val selectStmt = conn.prepareStatement(selectSql)
+    // Single atomic statement: a state can only ever be consumed once, even under concurrency
+    ConnectionPool.withConnection(pool) { conn =>
+      val stmt = conn.prepareStatement(
+        """DELETE FROM oauth_auth_state WHERE state = ?
+          |RETURNING state, code_verifier, redirect_after_login, created_at, nonce, browser_binding_hash""".stripMargin
+      )
       try
-        selectStmt.setString(1, stateKey)
-        val rs = selectStmt.executeQuery()
+        stmt.setString(1, stateKey)
+        val rs = stmt.executeQuery()
         if rs.next() then
-          val state = AuthorizationState(
+          for
+            nonce <- Option(rs.getString("nonce"))
+            bindingHash <- Option(rs.getString("browser_binding_hash"))
+          yield AuthorizationState(
             state = rs.getString("state"),
             codeVerifier = rs.getString("code_verifier"),
             redirectAfterLogin = Option(rs.getString("redirect_after_login")),
-            createdAt = rs.getTimestamp("created_at").getTime
+            createdAt = rs.getTimestamp("created_at").getTime,
+            nonce = nonce,
+            browserBindingHash = bindingHash
           )
-          // Delete the state (one-time use)
-          val deleteStmt = conn.prepareStatement("DELETE FROM oauth_auth_state WHERE state = ?")
-          try
-            deleteStmt.setString(1, stateKey)
-            deleteStmt.executeUpdate()
-          finally
-            deleteStmt.close()
-          Some(state)
-        else
-          None
-      finally
-        selectStmt.close()
+        else None
+      finally stmt.close()
     }
 
   override def createSession(session: OAuthSessionData): IO[Unit] =
@@ -97,7 +99,7 @@ class PgSessionRegistry private (
         stmt.setString(2, session.userId)
         stmt.setString(3, session.email.orNull)
         stmt.setString(4, session.name.orNull)
-        stmt.setString(5, session.groups.mkString(","))
+        stmt.setArray(5, conn.createArrayOf("text", session.groups.toArray[AnyRef]))
         stmt.setString(6, session.provider)
         stmt.setTimestamp(7, new Timestamp(session.expiresAt))
         stmt.setTimestamp(8, new Timestamp(session.createdAt))
@@ -123,7 +125,7 @@ class PgSessionRegistry private (
             userId = rs.getString("user_id"),
             email = Option(rs.getString("email")),
             name = Option(rs.getString("name")),
-            groups = Option(rs.getString("groups")).map(_.split(",").toList.filter(_.nonEmpty)).getOrElse(List.empty),
+            groups = readGroups(rs),
             provider = rs.getString("provider"),
             expiresAt = rs.getTimestamp("expires_at").getTime,
             createdAt = rs.getTimestamp("created_at").getTime
@@ -133,6 +135,13 @@ class PgSessionRegistry private (
       finally
         stmt.close()
     }
+
+  private def readGroups(rs: ResultSet): List[String] =
+    Option(rs.getArray("groups")) match
+      case Some(arr) =>
+        try arr.getArray.asInstanceOf[Array[AnyRef]].toList.collect { case g: String => g }
+        finally arr.free()
+      case None => Nil
 
   override def deleteSession(sessionId: String): IO[Unit] =
     ConnectionPool.withConnection(pool) { conn =>
@@ -192,7 +201,7 @@ object PgSessionRegistry:
       user_id VARCHAR(255) NOT NULL,
       email VARCHAR(255),
       name VARCHAR(255),
-      groups TEXT,
+      groups TEXT[] NOT NULL DEFAULT '{}',
       provider VARCHAR(50) NOT NULL,
       expires_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -207,20 +216,60 @@ object PgSessionRegistry:
       code_verifier VARCHAR(128) NOT NULL,
       redirect_after_login VARCHAR(512),
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      expires_at TIMESTAMP NOT NULL
+      expires_at TIMESTAMP NOT NULL,
+      nonce VARCHAR(128),
+      browser_binding_hash VARCHAR(128)
     );
 
     CREATE INDEX IF NOT EXISTS idx_oauth_auth_state_expires_at ON oauth_auth_state(expires_at);
   """
 
   /**
-   * Initialize database tables if they don't exist.
+   * Idempotent migrations for tables created by earlier releases.
+   *
+   * - `oauth_sessions.groups` was a comma-joined TEXT column, which let a group named
+   *   `x,admins` be read back as two groups. It is converted in place to TEXT[]; existing
+   *   rows are split on commas exactly as they were previously read (empty/NULL become an
+   *   empty array), so live sessions keep working until they expire.
+   * - `oauth_auth_state` gains `nonce` and `browser_binding_hash`. In-flight login states
+   *   created before the upgrade have neither and can never pass the callback checks, so
+   *   they are deleted (users simply click "login" again).
+   */
+  val migrateTablesSql: String = """
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'oauth_sessions'
+          AND column_name = 'groups'
+          AND data_type <> 'ARRAY'
+      ) THEN
+        ALTER TABLE oauth_sessions
+          ALTER COLUMN groups TYPE TEXT[]
+          USING CASE
+            WHEN groups IS NULL OR groups = '' THEN ARRAY[]::TEXT[]
+            ELSE array_remove(string_to_array(groups, ','), '')
+          END;
+        ALTER TABLE oauth_sessions ALTER COLUMN groups SET DEFAULT '{}';
+        ALTER TABLE oauth_sessions ALTER COLUMN groups SET NOT NULL;
+      END IF;
+    END $$;
+
+    ALTER TABLE oauth_auth_state ADD COLUMN IF NOT EXISTS nonce VARCHAR(128);
+    ALTER TABLE oauth_auth_state ADD COLUMN IF NOT EXISTS browser_binding_hash VARCHAR(128);
+    DELETE FROM oauth_auth_state WHERE nonce IS NULL OR browser_binding_hash IS NULL;
+  """
+
+  /**
+   * Initialize database tables if they don't exist, then apply migrations.
    */
   def initializeTables(pool: HikariDataSource): IO[Unit] =
     ConnectionPool.withConnection(pool) { conn =>
       val stmt = conn.createStatement()
       try
         stmt.execute(createTablesSql)
+        stmt.execute(migrateTablesSql)
       finally
         stmt.close()
     }

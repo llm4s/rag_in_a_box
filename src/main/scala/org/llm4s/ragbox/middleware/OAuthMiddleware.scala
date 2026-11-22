@@ -57,8 +57,10 @@ object OAuthMiddleware:
                       routes(enrichedRequest).value
 
                     case None =>
-                      // Session valid but couldn't get authorization
-                      routes(request.withAttribute(SessionDataKey, sessionData)).value
+                      // Session valid but authorization could not be resolved: fail closed
+                      Forbidden(
+                        ErrorResponse("Could not resolve authorization for this session.")
+                      ).map(Some(_))
                   }
 
                 case None =>

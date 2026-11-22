@@ -27,11 +27,20 @@ import java.util.Base64
  * - Logout
  */
 trait OidcService[F[_]]:
-  /** Initiate OAuth login flow, returns authorization URL and state */
+  /**
+   * Initiate OAuth login flow. Returns the authorization URL, the state, and a
+   * random browser-binding value that the caller must set in an HttpOnly cookie.
+   */
   def initiateLogin(redirectAfterLogin: Option[String]): F[OAuthLoginResponse]
 
-  /** Handle authorization callback, exchange code for tokens */
-  def handleCallback(code: String, state: String): F[Either[OidcError, OAuthSessionData]]
+  /**
+   * Handle authorization callback, exchange code for tokens.
+   *
+   * @param browserBinding value of the pre-auth cookie presented by the browser; it must
+   *                       match the binding stored for `state`, otherwise the callback is
+   *                       rejected (login CSRF protection).
+   */
+  def handleCallback(code: String, state: String, browserBinding: String): F[Either[OidcError, OAuthSessionData]]
 
   /** Validate an existing session */
   def validateSession(sessionId: String): F[Option[OAuthSessionData]]
@@ -76,6 +85,8 @@ class OidcServiceImpl private (
     logger: Logger[IO]
 ) extends OidcService[IO]:
 
+  import OidcServiceImpl.sha256Base64Url
+
   private val random = new SecureRandom()
   private val providerConfig = config.provider
 
@@ -83,28 +94,33 @@ class OidcServiceImpl private (
     for
       _ <- logger.info("Initiating OAuth login flow")
 
-      // Generate state and PKCE code verifier
+      // Generate state, PKCE code verifier, nonce and browser binding
       state <- generateSecureString(32)
       codeVerifier <- generateSecureString(64)
-      codeChallenge = generateCodeChallenge(codeVerifier)
+      nonce <- generateSecureString(32)
+      browserBinding <- generateSecureString(32)
+      codeChallenge = sha256Base64Url(codeVerifier)
+      now <- IO.realTime
 
-      // Store authorization state
+      // Store authorization state (only a hash of the browser binding is kept server-side)
       authState = AuthorizationState(
         state = state,
         codeVerifier = codeVerifier,
         redirectAfterLogin = redirectAfterLogin,
-        createdAt = System.currentTimeMillis()
+        createdAt = now.toMillis,
+        nonce = nonce,
+        browserBindingHash = sha256Base64Url(browserBinding)
       )
       _ <- sessionRegistry.storeAuthState(authState)
 
       // Build authorization URL
-      authUrl = buildAuthorizationUrl(state, codeChallenge)
-      _ <- logger.debug(s"Generated authorization URL: $authUrl")
-    yield OAuthLoginResponse(authUrl, state)
+      authUrl = buildAuthorizationUrl(state, codeChallenge, nonce)
+    yield OAuthLoginResponse(authUrl, state, browserBinding)
 
   override def handleCallback(
       code: String,
-      state: String
+      state: String,
+      browserBinding: String
   ): IO[Either[OidcError, OAuthSessionData]] =
     (for
       _ <- logger.info(s"Handling OAuth callback with state: ${state.take(8)}...")
@@ -117,8 +133,19 @@ class OidcServiceImpl private (
           logger.warn(s"Invalid or expired state: ${state.take(8)}...")
           IO.raiseError(OidcError.InvalidState("State not found or already used"))
 
+      // The state must belong to the browser that started the login
+      _ <-
+        if MessageDigest.isEqual(
+            sha256Base64Url(browserBinding).getBytes(StandardCharsets.US_ASCII),
+            authState.browserBindingHash.getBytes(StandardCharsets.US_ASCII)
+          )
+        then IO.unit
+        else
+          logger.warn(s"OAuth callback state ${state.take(8)}... not bound to this browser") *>
+            IO.raiseError(OidcError.InvalidState("Login was not initiated by this browser"))
+
       // Check state expiration
-      now = System.currentTimeMillis()
+      now <- IO.realTime.map(_.toMillis)
       _ <-
         if (now - authState.createdAt) > (config.stateTtl * 1000L) then
           IO.raiseError(OidcError.StateExpired("Authorization state has expired"))
@@ -135,7 +162,7 @@ class OidcServiceImpl private (
           IO.raiseError(OidcError.TokenExchangeError("No ID token in response"))
 
       _ <- logger.debug("Validating ID token")
-      validatedToken <- tokenValidator.validate(idToken).flatMap {
+      validatedToken <- tokenValidator.validate(idToken, Some(authState.nonce)).flatMap {
         case Right(t)  => IO.pure(t)
         case Left(err) => IO.raiseError(err)
       }
@@ -155,9 +182,7 @@ class OidcServiceImpl private (
       )
     yield sessionData).attempt.map {
       case Right(data)              => Right(data)
-      case Left(e: OidcError)       => Left(e)
-      case Left(e: RuntimeException) if e.getMessage.contains("State") =>
-        Left(OidcError.InvalidState(e.getMessage))
+      case Left(e: OidcError) => Left(e)
       case Left(e) =>
         Left(OidcError.TokenExchangeError(s"Callback handling failed: ${e.getMessage}"))
     }
@@ -176,17 +201,8 @@ class OidcServiceImpl private (
   override def getAuthorization(sessionId: String): IO[Option[UserAuthorization]] =
     validateSession(sessionId).flatMap {
       case Some(session) =>
-        // Create a mock ValidatedIdToken from session data for claim mapping
-        val token = ValidatedIdToken(
-          subject = session.userId,
-          email = session.email,
-          name = session.name,
-          groups = session.groups,
-          issuedAt = session.createdAt,
-          expiresAt = session.expiresAt,
-          rawClaims = Map.empty
-        )
-        claimMapper.mapToAuthorization(token).map(Some(_))
+        // The session already holds the resolved identity; don't re-derive it from claims
+        claimMapper.authorizationFor(session.userId, session.groups).map(Some(_))
       case None =>
         IO.pure(None)
     }
@@ -207,18 +223,14 @@ class OidcServiceImpl private (
     Base64.getUrlEncoder.withoutPadding().encodeToString(bytes)
   }
 
-  private def generateCodeChallenge(verifier: String): String =
-    val bytes = verifier.getBytes(StandardCharsets.US_ASCII)
-    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-    Base64.getUrlEncoder.withoutPadding().encodeToString(digest)
-
-  private def buildAuthorizationUrl(state: String, codeChallenge: String): String =
+  private def buildAuthorizationUrl(state: String, codeChallenge: String, nonce: String): String =
     val params = List(
       "response_type" -> "code",
       "client_id" -> providerConfig.clientId,
       "redirect_uri" -> providerConfig.redirectUri,
       "scope" -> providerConfig.scopes.mkString(" "),
       "state" -> state,
+      "nonce" -> nonce,
       "code_challenge" -> codeChallenge,
       "code_challenge_method" -> "S256"
     )
@@ -259,6 +271,11 @@ class OidcServiceImpl private (
     }
 
 object OidcServiceImpl:
+  /** base64url(SHA-256(value)) - used for the PKCE S256 challenge and the browser binding hash */
+  private[auth] def sha256Base64Url(value: String): String =
+    val digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))
+    Base64.getUrlEncoder.withoutPadding().encodeToString(digest)
+
   def create(
       config: OAuthConfig,
       httpClient: Client[IO],

@@ -15,6 +15,7 @@ import java.security.*
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Base64, UUID}
+import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.duration.*
 
 /**
@@ -31,6 +32,12 @@ class MockOidcServer(
   private val algorithm = Algorithm.RSA256(publicKey, privateKey)
   private val keyId = "test-key-id"
 
+  /** ID token the mock token endpoint will return next (set by tests). */
+  val nextIdToken: AtomicReference[Option[String]] = new AtomicReference(None)
+
+  /** Form parameters of every request received by the token endpoint. */
+  val tokenRequests: AtomicReference[List[Map[String, String]]] = new AtomicReference(Nil)
+
   // OIDC endpoint URLs
   def authorizationEndpoint: String = s"$issuer/authorize"
   def tokenEndpoint: String = s"$issuer/token"
@@ -46,7 +53,9 @@ class MockOidcServer(
       name: Option[String] = None,
       groups: List[String] = Nil,
       audience: String = "test-client-id",
-      expiresIn: FiniteDuration = 1.hour
+      expiresIn: FiniteDuration = 1.hour,
+      nonce: Option[String] = None,
+      emailVerified: Option[Boolean] = None
   ): String =
     val now = Instant.now()
     var builder = JWT
@@ -60,6 +69,8 @@ class MockOidcServer(
 
     email.foreach(e => builder = builder.withClaim("email", e))
     name.foreach(n => builder = builder.withClaim("name", n))
+    nonce.foreach(n => builder = builder.withClaim("nonce", n))
+    emailVerified.foreach(v => builder = builder.withClaim("email_verified", java.lang.Boolean.valueOf(v)))
     if (groups.nonEmpty) {
       import scala.jdk.CollectionConverters.*
       builder = builder.withClaim("groups", groups.asJava)
@@ -131,6 +142,23 @@ class MockOidcServer(
     // JWKS endpoint
     case GET -> Root / ".well-known" / "jwks.json" =>
       Ok(jwksJson)
+
+    // Token endpoint: returns whatever ID token the test configured
+    case req @ POST -> Root / "token" =>
+      req.as[UrlForm].flatMap { form =>
+        val params = form.values.view.mapValues(_.headOption.getOrElse("")).toMap
+        tokenRequests.updateAndGet(params :: _)
+        nextIdToken.get match
+          case Some(idToken) =>
+            Ok(Json.obj(
+              "access_token" -> Json.fromString("mock-access-token"),
+              "token_type" -> Json.fromString("Bearer"),
+              "expires_in" -> Json.fromLong(3600),
+              "id_token" -> Json.fromString(idToken)
+            ))
+          case None =>
+            BadRequest(Json.obj("error" -> Json.fromString("invalid_grant")))
+      }
 
     // OpenID discovery endpoint
     case GET -> Root / ".well-known" / "openid-configuration" =>

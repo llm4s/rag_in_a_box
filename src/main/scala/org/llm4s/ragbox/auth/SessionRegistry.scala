@@ -3,6 +3,7 @@ package org.llm4s.ragbox.auth
 import cats.effect.IO
 import cats.effect.Ref
 import cats.syntax.all.*
+import com.zaxxer.hikari.HikariDataSource
 
 /** Registry for OAuth authorization state (PKCE) and sessions */
 trait SessionRegistry[F[_]]:
@@ -79,3 +80,24 @@ object InMemorySessionRegistry:
       authStates <- Ref.of[IO, Map[String, AuthorizationState]](Map.empty)
       sessions <- Ref.of[IO, Map[String, OAuthSessionData]](Map.empty)
     yield new InMemorySessionRegistry(authStates, sessions)
+
+object SessionRegistry:
+  /**
+   * Build the session registry selected by `OAUTH_SESSION_STORAGE`.
+   *
+   * - `memory`: single-instance only; sessions are lost on restart.
+   * - `postgres`: uses the application's database pool; tables are created/migrated on startup.
+   */
+  def create(
+      storage: OAuthSessionStorage,
+      pool: Option[HikariDataSource]
+  ): IO[SessionRegistry[IO]] =
+    storage match
+      case OAuthSessionStorage.Memory => InMemorySessionRegistry.create.widen
+      case OAuthSessionStorage.Postgres =>
+        pool match
+          case Some(ds) => PgSessionRegistry.initializeTables(ds) *> PgSessionRegistry.create(ds).widen
+          case None =>
+            IO.raiseError(
+              OidcError.ConfigurationError("OAUTH_SESSION_STORAGE=postgres requires a database connection pool")
+            )
