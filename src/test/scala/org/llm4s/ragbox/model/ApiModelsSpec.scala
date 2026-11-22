@@ -206,8 +206,7 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
     val response = SyncStatusResponse(
       lastSyncTime = Some(now),
       documentCount = 10,
-      chunkCount = 50,
-      pendingDeletes = 0
+      chunkCount = 50
     )
 
     val json = response.asJson

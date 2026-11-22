@@ -1,14 +1,11 @@
 package org.llm4s.ragbox.auth
 
 import cats.effect.IO
-import cats.effect.Ref
-import cats.syntax.all.*
-import com.auth0.jwk.{Jwk, JwkProvider, JwkProviderBuilder}
+import com.auth0.jwk.{JwkProvider, JwkProviderBuilder}
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.auth0.jwt.exceptions.*
 import com.auth0.jwt.interfaces.DecodedJWT
-import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 
 import java.net.URI
@@ -16,6 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.interfaces.RSAPublicKey
 import java.util.concurrent.TimeUnit
+import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
 
@@ -33,25 +31,28 @@ trait OidcTokenValidator[F[_]]:
   /** Validate an ID token without a nonce check (e.g. tokens not obtained via a browser login) */
   def validate(idToken: String): F[Either[OidcError, ValidatedIdToken]] = validate(idToken, None)
 
-  /** Force refresh of JWKS cache */
-  def refreshJwks(): F[Unit]
-
-/** Implementation using Auth0 JWT library with JWKS */
+/**
+ * Implementation using the Auth0 JWT library with the provider's JWKS.
+ *
+ * '''Key rotation.''' Signing keys are fetched from the JWKS endpoint on demand and cached by key
+ * id (`kid`), so no scheduled refresh is needed:
+ *  - a token signed with a new key has a `kid` that is not cached yet, which fetches the JWKS
+ *    again (at most 10 fetches a minute, so unknown `kid`s cannot be used to flood the provider);
+ *  - a cached key is forgotten after `keyCacheTtl`, so a key the provider has retired (removed
+ *    from its JWKS) stops being accepted at most that long after it was last fetched.
+ */
 class OidcTokenValidatorImpl private (
     config: OidcProviderConfig,
     claimMapping: ClaimMappingConfig,
-    jwkProviderRef: Ref[IO, JwkProvider],
-    logger: Logger[IO]
+    jwkProvider: JwkProvider
 ) extends OidcTokenValidator[IO]:
 
   override def validate(
       idToken: String,
       expectedNonce: Option[String]
   ): IO[Either[OidcError, ValidatedIdToken]] =
-    jwkProviderRef.get.flatMap { jwkProvider =>
-      IO.blocking {
-        validateToken(idToken, jwkProvider).flatMap(t => checkNonce(t, expectedNonce))
-      }
+    IO.blocking {
+      validateToken(idToken, jwkProvider).flatMap(t => checkNonce(t, expectedNonce))
     }
 
   private def checkNonce(
@@ -145,33 +146,23 @@ class OidcTokenValidatorImpl private (
       ).toMap.asInstanceOf[Map[String, Any]]
     )
 
-  override def refreshJwks(): IO[Unit] =
-    for
-      _ <- logger.info(s"Refreshing JWKS from ${config.jwksUri}")
-      newProvider <- IO.blocking(createJwkProvider(config.jwksUri))
-      _ <- jwkProviderRef.set(newProvider)
-      _ <- logger.info("JWKS refresh complete")
-    yield ()
-
-  private def createJwkProvider(jwksUri: String): JwkProvider =
-    new JwkProviderBuilder(URI.create(jwksUri).toURL)
-      .cached(10, 24, TimeUnit.HOURS) // Cache up to 10 keys for 24 hours
-      .rateLimited(10, 1, TimeUnit.MINUTES) // Rate limit: 10 requests per minute
-      .build()
-
 object OidcTokenValidatorImpl:
+
+  /** How long a fetched signing key is trusted before the JWKS is consulted again. */
+  val DefaultKeyCacheTtl: FiniteDuration = 1.hour
+
   def create(
       config: OidcProviderConfig,
-      claimMapping: ClaimMappingConfig = ClaimMappingConfig()
+      claimMapping: ClaimMappingConfig = ClaimMappingConfig(),
+      keyCacheTtl: FiniteDuration = DefaultKeyCacheTtl
   ): IO[OidcTokenValidatorImpl] =
     for
       logger <- Slf4jLogger.create[IO]
       _ <- logger.info(s"Creating OIDC token validator for issuer: ${config.issuer}")
-      initialProvider <- IO.blocking {
+      provider <- IO.blocking {
         new JwkProviderBuilder(URI.create(config.jwksUri).toURL)
-          .cached(10, 24, TimeUnit.HOURS)
-          .rateLimited(10, 1, TimeUnit.MINUTES)
+          .cached(10, keyCacheTtl.toMillis, TimeUnit.MILLISECONDS) // up to 10 keys
+          .rateLimited(10, 1, TimeUnit.MINUTES) // at most 10 JWKS fetches a minute
           .build()
       }
-      providerRef <- Ref.of[IO, JwkProvider](initialProvider)
-    yield new OidcTokenValidatorImpl(config, claimMapping, providerRef, logger)
+    yield new OidcTokenValidatorImpl(config, claimMapping, provider)

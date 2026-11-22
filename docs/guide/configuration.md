@@ -348,6 +348,13 @@ Required for the respective providers.
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `VOYAGE_API_KEY` | Voyage AI API key |
 | `COHERE_API_KEY` | Cohere API key, for `RAG_RERANKING_STRATEGY=cohere` |
+| `<PROVIDER>_API_KEY` | The key of any other llm4s provider, e.g. `MISTRAL_API_KEY` |
+
+Keys are resolved by llm4s provider id, so any provider module on the classpath works without
+ragbox knowing it. A provider's key is, highest precedence first: ragbox's
+`api-keys.<id>` (HOCON), the variable the llm4s module binds for its vendor
+(`llm4s.credentials.<id>.apiKey` in the module's `reference.conf`, e.g. `GEMINI_API_KEY`), and
+finally `<ID>_API_KEY` (the id upper-cased, other characters as `_`).
 
 ---
 
@@ -388,6 +395,7 @@ principals). See [OAuth configuration](../oauth-configuration.md) for provider w
 | `OAUTH_REDIRECT_URI` | - | Callback URL, e.g. `https://ragbox.example.com/api/v1/oauth/callback` |
 | `OAUTH_AZURE_TENANT_ID` | - | Azure AD tenant (provider `azure`, required) |
 | `OAUTH_OKTA_DOMAIN` | - | Okta domain (provider `okta`, required) |
+| `OAUTH_OKTA_AUTH_SERVER_ID` | `default` | Okta custom authorization server id (provider `okta`) |
 | `OAUTH_KEYCLOAK_BASE_URL` / `OAUTH_KEYCLOAK_REALM` | - | Keycloak server and realm (provider `keycloak`, required) |
 | `OAUTH_AUTHORIZATION_ENDPOINT`, `OAUTH_TOKEN_ENDPOINT`, `OAUTH_USERINFO_ENDPOINT`, `OAUTH_JWKS_URI`, `OAUTH_ISSUER` | - | Endpoints of a `custom` provider (all required) |
 | `OAUTH_SCOPES` | provider preset (e.g. `openid profile email`) | Scopes to request, space- or comma-separated; must include `openid` |
@@ -397,7 +405,6 @@ principals). See [OAuth configuration](../oauth-configuration.md) for provider w
 | `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
 | `OAUTH_SESSION_COOKIE_SECURE` | `true` | `Secure` flag on the cookie (set `false` only for plain-HTTP development) |
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session lifetime in seconds |
-| `OAUTH_PKCE_ENABLED` | `true` | Use PKCE |
 | `OAUTH_STATE_TTL` | `300` | Seconds a login may take between redirect and callback |
 
 ---
@@ -481,7 +488,7 @@ INGEST_DIR=/data/docs
 INGEST_PATTERNS=*.md,*.txt,*.pdf
 INGEST_RECURSIVE=true
 INGEST_ON_STARTUP=true
-INGEST_SCHEDULE=daily        # every 24 hours, see below
+INGEST_SCHEDULE="0 2 * * *"  # every day at 02:00, see below
 # Directories the API may ingest from (defaults to INGEST_DIR)
 INGEST_ALLOWED_ROOTS=/data/docs
 ```
@@ -491,26 +498,26 @@ INGEST_ALLOWED_ROOTS=/data/docs
 | `INGEST_DIR` | - | Directory to ingest (a source named `env-directory`) |
 | `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | Comma-separated file patterns |
 | `INGEST_RECURSIVE` | `true` | Descend into subdirectories |
-| `INGEST_ON_STARTUP` | `false` | Run the ingestion once at startup |
-| `INGEST_SCHEDULE` | - | Interval between scheduled runs (see [Schedules](#schedules)) |
+| `INGEST_ON_STARTUP` | `false` | Run every configured source once at startup |
+| `INGEST_SCHEDULE` | - | When to run every configured source (see [Schedules](#schedules)) |
 
-When `INGEST_DIR` is set these variables replace any `ingestion` sources in the HOCON
-configuration; without `INGEST_DIR`, `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` are ignored (set
-`run-on-startup` / `schedule` in HOCON instead).
+`INGEST_DIR` adds a directory source named `env-directory` to the sources configured in HOCON
+(and enables ingestion). `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and
+`schedule`, which apply to **every** configured source, with or without `INGEST_DIR`.
 
 ### Schedules
 
-`schedule` / `INGEST_SCHEDULE` is an **interval**, counted from server start (it is not a
-calendar schedule):
+`schedule` / `INGEST_SCHEDULE` is one of:
 
-- `hourly`, `daily`, `weekly`
-- a duration: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
-- a few cron-like patterns, read as intervals: `0 * * * *` (every hour), `0 */2 * * *`,
-  `0 */4 * * *`, `0 */6 * * *`, `0 */12 * * *` (every 2/4/6/12 hours) and `0 0 * * *` (every 24
-  hours, not at midnight)
+- a standard five-field **cron expression** (minute, hour, day of month, month, day of week;
+  Sunday is `0` or `7`), evaluated in the server's time zone (set `TZ` to change it), e.g.
+  `0 2 * * *` (02:00 every day), `*/30 * * * *`, `0 6,18 * * 1-5`
+- `hourly`, `daily`, `weekly`: `0 * * * *`, `0 0 * * *` (midnight), `0 0 * * 0` (Sunday midnight)
+- an **interval** between runs, counted from server start: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
 
-Any other value is ignored: no scheduled runs happen (check the startup log). Runs can always
-be started with `POST /api/v1/ingest/run`.
+An invalid schedule fails startup. A run that is still going when the next one is due delays
+nothing: the missed slot is skipped. `GET /api/v1/ingest/status` reports `nextScheduledRun`.
+Runs can always be started with `POST /api/v1/ingest/run`.
 
 ### Advanced Configuration (HOCON)
 

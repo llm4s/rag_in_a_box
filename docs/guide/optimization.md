@@ -111,8 +111,9 @@ thresholds. These are all the rules:
 
 ### Per-collection rules
 
-Evaluated for each collection pattern in the summary's `topCollections` with at least 5
-queries:
+Evaluated for each of the 10 most queried collection patterns with at least 5 successful queries,
+on that collection's own metrics (chunk averages, ratings, zero-result count and p95s computed in
+PostgreSQL with `PERCENTILE_CONT`):
 
 | Type | Severity | Title | Trigger |
 |------|----------|-------|---------|
@@ -120,12 +121,7 @@ queries:
 | chunking | info | Consider Markdown Strategy for '...' | the name contains `docs` or `readme` and the runtime strategy is not `markdown` |
 | content | warning | Low Ratings for '...' | the collection's average rating < 2.5 |
 | content | critical | High Zero-Result Rate for '...' | > 10% of the collection's queries returned no chunks |
-| search | warning | High Latency for '...' | estimated p95 latency > 750 ms |
-
-{: .note }
-The per-collection analysis is approximate: it reuses the global chunk averages, estimates the
-p95 latency as 1.5 x the collection's average latency, and does not yet count zero-result
-queries per collection (so the zero-result rule never fires).
+| search | warning | High Latency for '...' | the collection's p95 retrieval latency (total minus answer generation) > 750 ms; the total p95 when no answer latency was recorded |
 
 With fewer than 10 queries in the period, the only suggestion is an `info` "Insufficient
 Data" entry (its `suggestionType` is `info`).

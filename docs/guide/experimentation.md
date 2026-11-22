@@ -276,9 +276,9 @@ Manual overrides are useful for:
 - Debugging specific queries
 - Exploring parameter effects
 
-The overrides `topK`, `fusionStrategy` and `systemPrompt` are applied; `llmTemperature` (see
-above) and `similarityThreshold` are accepted but ignored, and `rrfK` and `reranking` can only be
-set through an experiment. The query is logged with your custom `experimentId` and the
+The overrides `topK`, `fusionStrategy`, `systemPrompt` and `similarityThreshold` (minimum vector
+similarity of a chunk, 0 to 1) are applied; `llmTemperature` is rejected with `400` (see above),
+and `rrfK` and `reranking` can only be set through an experiment. The query is logged with your custom `experimentId` and the
 configuration it ran with. A running experiment's group config takes precedence over request
 overrides.
 

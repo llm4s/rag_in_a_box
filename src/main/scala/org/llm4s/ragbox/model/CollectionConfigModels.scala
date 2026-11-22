@@ -95,10 +95,10 @@ final case class CollectionConfigDeleteResponse(
 ) derives Codec.AsObject
 
 /**
- * Request to preview effective config for a file in a collection.
+ * Request to preview effective config for a file in a collection. The collection is the one in
+ * the path (`POST /api/v1/collections/{collection}/config/preview`).
  */
 final case class EffectiveConfigPreviewRequest(
-  collection: String,
   filename: Option[String] = None
 ) derives Codec.AsObject
 

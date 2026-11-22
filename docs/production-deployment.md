@@ -50,6 +50,7 @@ At least the keys for the configured LLM and embedding providers are needed.
 | `ANTHROPIC_API_KEY` | Anthropic API key (for `anthropic/...` LLM models) | `sk-ant-...` |
 | `VOYAGE_API_KEY` | Voyage AI key (for `EMBEDDING_PROVIDER=voyage`) | |
 | `COHERE_API_KEY` | Cohere key (for `RAG_RERANKING_STRATEGY=cohere`) | |
+| `<PROVIDER>_API_KEY` | Key of any other llm4s provider (e.g. `MISTRAL_API_KEY`) | |
 
 ### Database
 
@@ -152,7 +153,7 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 | `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | File patterns for `INGEST_DIR` |
 | `INGEST_RECURSIVE` | `true` | Recurse into subdirectories |
 | `INGEST_ON_STARTUP` | `false` | Ingest when the server starts |
-| `INGEST_SCHEDULE` | - | Cron expression for scheduled ingestion |
+| `INGEST_SCHEDULE` | - | Schedule for all ingestion sources: five-field cron (`0 2 * * *`), `daily`, or an interval (`6h`); invalid values fail startup |
 | `INGEST_ALLOWED_ROOTS` | the configured directory sources | Directories `POST /api/v1/ingest/directory` may read under; with none, that endpoint is disabled |
 | `INGEST_URL_ALLOWED_HOSTS` | - (any public host) | Only hosts URL/web ingestion may fetch (`*.example.com` allowed) |
 | `INGEST_URL_ALLOW_PRIVATE_NETWORKS` | `false` | Allow URLs resolving to loopback/private/link-local addresses |

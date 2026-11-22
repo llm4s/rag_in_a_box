@@ -76,7 +76,7 @@ object Llm4sPipeline {
   def rerankerConfig(config: AppConfig): Result[Option[RerankProviderConfig]] =
     config.rag.reranking.normalizedStrategy match {
       case Right("cohere") =>
-        config.apiKeys.cohere
+        config.apiKeys.getKey("cohere")
           .toRight(ConfigurationError("Cohere reranking needs COHERE_API_KEY"))
           .map(key => Some(RerankProviderConfig(CohereReranker.DEFAULT_BASE_URL, key, config.rag.reranking.model)))
       case _ => Right(None)

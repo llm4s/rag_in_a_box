@@ -455,12 +455,12 @@ Response:
 {
   "lastSyncTime": "2024-01-15T10:30:00Z",
   "documentCount": 150,
-  "chunkCount": 2500,
-  "pendingDeletes": 0
+  "chunkCount": 2500
 }
 ```
 
-`pendingDeletes` is always `0` (reserved).
+Deletes (`DELETE /api/v1/documents/{id}`, batch deletes and pruning) take effect immediately,
+so there is nothing pending to report.
 
 ## Best Practices
 

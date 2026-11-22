@@ -45,6 +45,9 @@ COPY src /app/src
 # Copy built admin-ui from first stage (SBT will bundle it into JAR)
 COPY --from=admin-builder /admin-ui/dist /app/admin-ui/dist
 
+# The version /health and /metrics report (the build context has no .git for sbt-dynver)
+ARG RAGBOX_VERSION=""
+
 # Build the fat JAR (includes admin-ui via resourceGenerators)
 RUN sbt assembly
 

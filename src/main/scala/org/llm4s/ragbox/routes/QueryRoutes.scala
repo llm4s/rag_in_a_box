@@ -45,6 +45,7 @@ object QueryRoutes {
         // Validate query input
         validation = InputValidation.validateQuery(body.question)
         response <- InputValidation.toResponse(validation)
+          .orElse(overridesError(body))
           .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
@@ -91,6 +92,7 @@ object QueryRoutes {
         // Validate query input
         validation = InputValidation.validateQuery(body.question)
         response <- InputValidation.toResponse(validation)
+          .orElse(overridesError(body))
           .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
@@ -162,8 +164,24 @@ object QueryRoutes {
     variant: Option[String],
     topK: Option[Int],
     overrides: RAGService.SettingsOverride,
-    snapshot: Option[QueryConfigSnapshot]
+    snapshot: Option[QueryConfigSnapshot],
+    includeMetadata: Boolean = true
   )
+
+  /**
+   * 400 for overrides the request may not use: `llmTemperature`, which llm4s 0.6.0 cannot apply
+   * to `/query` answers (llm4s/llm4s#2715, adopted by #40), and a `similarityThreshold` outside
+   * 0 to 1.
+   */
+  private def overridesError(body: QueryRequest): Option[IO[Response[IO]]] =
+    body.overrides.flatMap { o =>
+      o.llmTemperature.map(_ =>
+        "overrides.llmTemperature is not supported: llm4s 0.6.0 answers /query at temperature 0.0 " +
+          "(llm4s/llm4s#2715). Use the runtime llmTemperature setting for chat."
+      ).orElse(o.similarityThreshold.collect {
+        case t if t.isNaN || t < 0 || t > 1 => s"overrides.similarityThreshold must be between 0 and 1 (got $t)"
+      })
+    }.map(message => BadRequest(ErrorResponse.badRequest(message).asJson))
 
   /**
    * Plan a query: assign it to an experiment group if an experiment applies (see
@@ -181,7 +199,8 @@ object QueryRoutes {
         fusionStrategy = group.flatMap(_.fusionStrategy).orElse(requested.flatMap(_.fusionStrategy)),
         rrfK = group.flatMap(_.rrfK),
         systemPrompt = group.flatMap(_.systemPrompt).orElse(requested.flatMap(_.systemPrompt)),
-        reranking = group.flatMap(_.reranking)
+        reranking = group.flatMap(_.reranking),
+        similarityThreshold = requested.flatMap(_.similarityThreshold)
       )
       val current = ragService.currentSettings
       val snapshot = ragService.pipelineSettingsFor(overrides).toOption.map { settings =>
@@ -197,11 +216,15 @@ object QueryRoutes {
         variant = routing.map(_._2),
         topK = topK,
         overrides = overrides,
-        snapshot = snapshot
+        snapshot = snapshot,
+        includeMetadata = body.includeMetadata.getOrElse(true)
       )
     }
 
-  /** Answer the query as `plan` says, permission-filtered when a SearchIndex is available. */
+  /**
+   * Answer the query as `plan` says, permission-filtered when a SearchIndex is available. Without
+   * `includeMetadata` the contexts carry no metadata (`documentId` and `chunkIndex` remain).
+   */
   private def runQuery(
     ragService: RAGService,
     principal: Principal,
@@ -209,7 +232,10 @@ object QueryRoutes {
     collectionPattern: String,
     plan: QueryPlan
   ): IO[QueryResponse] =
-    ragService.answer(principal, question, collectionPattern, plan.topK, plan.overrides)
+    ragService.answer(principal, question, collectionPattern, plan.topK, plan.overrides).map { response =>
+      if (plan.includeMetadata) response
+      else response.copy(contexts = response.contexts.map(_.copy(metadata = Map.empty)))
+    }
 
   /**
    * Log a query's outcome: answered with its metrics, or failed - so experiment results count

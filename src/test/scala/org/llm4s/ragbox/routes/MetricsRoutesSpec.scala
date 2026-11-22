@@ -38,7 +38,7 @@ class MetricsRoutesSpec extends AnyFlatSpec with Matchers {
     val body = runRequest(request).as[String].unsafeRunSync()
 
     body should include("ragbox_info")
-    body should include("version=")
+    body should include(s"""ragbox_info{version="${org.llm4s.ragbox.BuildInfo.version}"} 1""")
   }
 
   it should "include document count metrics" in {

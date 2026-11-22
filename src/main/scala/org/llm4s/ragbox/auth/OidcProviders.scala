@@ -43,13 +43,21 @@ object OidcProviders:
       scopes = List("openid", "profile", "email", "User.Read")
     )
 
-  /** Okta OIDC provider */
+  /** Okta's built-in custom authorization server (`OAUTH_OKTA_AUTH_SERVER_ID` when unset) */
+  val OktaDefaultAuthServerId: String = "default"
+
+  /**
+   * Okta OIDC provider.
+   *
+   * @param authorizationServerId the custom authorization server (`OAUTH_OKTA_AUTH_SERVER_ID`),
+   *                              `default` unless configured
+   */
   def okta(
       domain: String,
       clientId: String,
       clientSecret: String,
       redirectUri: String,
-      authorizationServerId: String = "default"
+      authorizationServerId: String = OktaDefaultAuthServerId
   ): OidcProviderConfig =
     val baseUrl = s"https://$domain/oauth2/$authorizationServerId"
     OidcProviderConfig(

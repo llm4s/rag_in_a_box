@@ -124,7 +124,7 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
       database = db,
       embedding = EmbeddingConfig(provider = "openai", model = FakeEmbeddings.Model, dimensions = Some(FakeEmbeddings.Dimensions)),
       llm = llm.fold(base.llm)(_ => base.llm.copy(model = s"${FakeLLM.Id.asString}/${FakeLLM.Model}")),
-      apiKeys = ApiKeysConfig(openai = None, anthropic = None, voyage = None)
+      apiKeys = ApiKeysConfig()
     )
   }
 

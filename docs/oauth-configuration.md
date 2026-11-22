@@ -65,6 +65,7 @@ RAG in a Box includes pre-configured settings for major identity providers:
 |----------|--------------|-------------|
 | `OAUTH_AZURE_TENANT_ID` | Azure | Azure AD tenant ID |
 | `OAUTH_OKTA_DOMAIN` | Okta | Okta org domain (e.g., `company.okta.com`) |
+| `OAUTH_OKTA_AUTH_SERVER_ID` | Okta (optional) | Okta custom authorization server id (default `default`) |
 | `OAUTH_KEYCLOAK_BASE_URL` | Keycloak | Keycloak server URL |
 | `OAUTH_KEYCLOAK_REALM` | Keycloak | Keycloak realm name |
 
@@ -85,7 +86,6 @@ RAG in a Box includes pre-configured settings for major identity providers:
 | `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
 | `OAUTH_SESSION_COOKIE_SECURE` | `true` | Require HTTPS for the session and pre-auth (login) cookies. Set `false` only for local HTTP development |
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session duration in seconds (24 hours) |
-| `OAUTH_PKCE_ENABLED` | `true` | Parsed but currently has no effect: PKCE (S256) is always used |
 | `OAUTH_STATE_TTL` | `300` | Auth state and pre-auth cookie lifetime in seconds (5 minutes) |
 | `OAUTH_SESSION_STORAGE` | `memory` | Session and login-state storage: `memory` (single instance) or `postgres` (`postgresql` is also accepted) |
 | `OAUTH_ADMIN_GROUPS` | (none) | Comma-separated groups (from the groups claim) whose members are ragbox administrators. With none, no SSO user is an administrator |
@@ -163,10 +163,15 @@ RAG in a Box includes pre-configured settings for major identity providers:
    export OAUTH_REDIRECT_URI=https://your-app.example.com/api/v1/oauth/callback
    ```
 
-The Okta preset uses the `default` custom authorization server
-(`https://<OAUTH_OKTA_DOMAIN>/oauth2/default`) and requests the scopes
-`openid profile email groups`. There is no setting for another authorization server; to use
-one, configure Okta as a `custom` provider with that server's endpoints.
+The Okta preset uses the custom authorization server `OAUTH_OKTA_AUTH_SERVER_ID` (default
+`default`, i.e. `https://<OAUTH_OKTA_DOMAIN>/oauth2/default`) and requests the scopes
+`openid profile email groups`. To use another authorization server, set its id:
+
+```bash
+export OAUTH_OKTA_AUTH_SERVER_ID=aus1a2b3c4d5e6f7g8h9
+```
+
+The issuer, endpoints and JWKS are then those of `https://<OAUTH_OKTA_DOMAIN>/oauth2/<id>`.
 
 ### Keycloak
 

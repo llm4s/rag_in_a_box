@@ -75,11 +75,11 @@ Compose starts PostgreSQL + pgvector (host port 15432) and the server (port 8080
 mode**: no authentication, every request is an administrator. That is fine on your own machine,
 not anywhere else; see [Authentication](#authentication).
 
-`docker-compose.yml` passes a fixed list of variables to the server (models, API keys, chunking
-and search settings, `API_KEY`, ingestion, logging, rate limits). To use others, such as
-`AUTH_MODE`, `JWT_SECRET`, `ADMIN_PASSWORD`, `COHERE_API_KEY` or the `OAUTH_*` settings, add them
-to the `api` service's `environment:` block. Files in `./data` (or `INGEST_HOST_DIR`) are
-mounted at `/data` for directory ingestion.
+`docker-compose.yml` passes every variable in `.env` to the server (`env_file`), so any setting
+in [.env.example](.env.example), such as `AUTH_MODE`, `JWT_SECRET` or the `OAUTH_*` settings,
+works as it does with `./run.sh`, with the same defaults. Only the database connection (the
+compose `postgres` service), the listen address and `INGEST_DIR` are fixed. Files in `./data`
+(or `INGEST_HOST_DIR`) are mounted at `/data` for directory ingestion.
 
 ### Local development
 
@@ -198,7 +198,7 @@ lists every variable with its default; the
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY` | - | Provider API keys |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY`, `<PROVIDER>_API_KEY` | - | Provider API keys (any llm4s provider) |
 | `LLM_MODEL` | `openai/gpt-4o` | Answer model, `<provider>/<model>` |
 | `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` | `openai` / `text-embedding-3-small` | Embeddings (changing them needs a re-index) |
 | `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` | `localhost`, `15432`, `ragdb`, `rag`, `rag` | Database; or `DATABASE_URL` |
@@ -207,7 +207,7 @@ lists every variable with its default; the
 | `RAG_CHUNKING_STRATEGY`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` | `sentence`, `800`, `150` | Default chunking |
 | `RAG_TOP_K`, `RAG_FUSION_STRATEGY` | `5`, `rrf` | Retrieval |
 | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM` | `none`, `none` | Reranking (`cohere`, `llm`) and query rewriting (`llm-rewrite`) |
-| `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source and its interval (`30m`, `6h`, `daily`) |
+| `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source; cron schedule (`0 2 * * *`, `daily`) or interval (`6h`) for all sources |
 | `ALLOWED_ORIGINS` | - | CORS origins, also allowed to open `/ws` (same-origin only when unset) |
 
 Runtime settings changed through the API or the admin UI are stored in the database and survive

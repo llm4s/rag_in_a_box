@@ -250,7 +250,9 @@ object Main extends IOApp {
    * Run ingestion on startup if configured.
    */
   private def runOnStartupIngestion(config: AppConfig, ingestionService: IngestionService): IO[Unit] = {
-    if (config.ingestion.enabled && config.ingestion.runOnStartup) {
+    if (config.ingestion.runOnStartup && config.ingestion.activeSources.isEmpty) {
+      logger.warn("INGEST_ON_STARTUP / run-on-startup ignored: no ingestion sources are configured and enabled")
+    } else if (config.ingestion.runOnStartup) {
       logger.info("Running startup ingestion...") *>
         ingestionService.runAll().flatMap { results =>
           results.traverse_ { result =>

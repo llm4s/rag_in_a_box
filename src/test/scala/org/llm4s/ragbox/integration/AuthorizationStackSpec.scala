@@ -119,7 +119,6 @@ class AuthorizationStackSpec extends AnyFlatSpec with Matchers with PgVectorFixt
       get("/api/v1/principals/users"),
       put("/api/v1/config/runtime", Json.obj("systemPrompt" -> "pwned".asJson)),
       get("/api/v1/config/runtime/history"),
-      put("/api/v1/config", Json.obj()),
       put("/api/v1/collections/public/config", Json.obj("strategy" -> "simple".asJson)),
       req(Method.DELETE, "/api/v1/collections/public/config"),
       post("/api/v1/experiments", Json.obj("name" -> "x".asJson)),

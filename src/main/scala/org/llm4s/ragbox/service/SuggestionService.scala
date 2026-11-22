@@ -3,7 +3,7 @@ package org.llm4s.ragbox.service
 import cats.effect.IO
 import org.llm4s.ragbox.config.{AppConfig, RuntimeSettings}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.registry.QueryLogRegistry
+import org.llm4s.ragbox.registry.QueryLogRegistryBase
 
 import java.time.{Duration, Instant}
 import java.util.UUID
@@ -15,7 +15,7 @@ import java.util.UUID
  * provide actionable recommendations for improving RAG performance.
  */
 class SuggestionService(
-  queryLogRegistry: QueryLogRegistry,
+  queryLogRegistry: QueryLogRegistryBase,
   config: AppConfig,
   runtime: RuntimeSettings
 ) {
@@ -409,18 +409,23 @@ class SuggestionService(
       }
     }
 
-    // High latency for collection
-    if (metrics.p95LatencyMs > Thresholds.HighLatencyP95Ms * 1.5) {
+    // High retrieval latency for the collection: judged, like the global rule, without answer
+    // generation (which dominates total latency); the total p95 when no LLM latency is known
+    val (p95, metric) = metrics.p95RetrievalLatencyMs match {
+      case Some(retrieval) => (retrieval, "p95_retrieval_latency_ms")
+      case None => (metrics.p95LatencyMs, "p95_latency_ms")
+    }
+    if (p95 > Thresholds.HighLatencyP95Ms * 1.5) {
       suggestions += createSuggestion(
         suggestionType = "search",
         severity = "warning",
         title = s"High Latency for '${metrics.collection}'",
-        description = s"p95 latency for this collection is ${metrics.p95LatencyMs}ms, significantly above average.",
+        description = s"p95 retrieval latency for this collection is ${p95}ms, significantly above the ${Thresholds.HighLatencyP95Ms}ms target.",
         collection = Some(metrics.collection),
-        evidence = SuggestionEvidence("p95_latency_ms", metrics.p95LatencyMs.toDouble, Thresholds.HighLatencyP95Ms * 1.5, metrics.queryCount, timeRange),
+        evidence = SuggestionEvidence(metric, p95.toDouble, Thresholds.HighLatencyP95Ms * 1.5, metrics.queryCount, timeRange),
         recommendation = "This collection may have too many documents or very large chunks. Consider optimizing.",
         estimatedImpact = "Faster queries for this collection",
-        currentValue = Some(s"${metrics.p95LatencyMs}ms"),
+        currentValue = Some(s"${p95}ms"),
         suggestedValue = Some(s"<${Thresholds.HighLatencyP95Ms}ms")
       )
     }
@@ -445,25 +450,8 @@ class SuggestionService(
     )
   }
 
-  private def getCollectionMetrics(from: Instant, to: Instant): IO[Seq[CollectionMetrics]] = {
-    // Derive collection metrics from the summary's topCollections
-    // This is a simplified implementation that uses the existing summary data
-    queryLogRegistry.getSummary(from, to).map { summary =>
-      summary.topCollections.map { cs =>
-        CollectionMetrics(
-          collection = cs.collection,
-          queryCount = cs.queryCount,
-          avgLatencyMs = cs.averageLatencyMs,
-          avgChunksRetrieved = summary.averageChunksRetrieved, // Global average as proxy
-          avgChunksUsed = summary.averageChunksUsed,           // Global average as proxy
-          avgRating = cs.averageRating,
-          ratedQueryCount = (cs.queryCount * summary.ratedQueriesCount.toDouble / math.max(1, summary.totalQueries)).toInt,
-          zeroResultQueries = 0, // Not available from summary, assume 0
-          p95LatencyMs = (cs.averageLatencyMs * 1.5).toInt // Estimate p95 as 1.5x average
-        )
-      }
-    }
-  }
+  private def getCollectionMetrics(from: Instant, to: Instant): IO[Seq[CollectionMetrics]] =
+    queryLogRegistry.getCollectionMetrics(from, to)
 
   private def createSuggestion(
     suggestionType: String,
@@ -508,13 +496,13 @@ object SuggestionService {
    * Create a SuggestionService with the given dependencies.
    */
   def apply(
-    queryLogRegistry: QueryLogRegistry,
+    queryLogRegistry: QueryLogRegistryBase,
     config: AppConfig,
     runtime: RuntimeSettings
   ): SuggestionService =
     new SuggestionService(queryLogRegistry, config, runtime)
 
   /** A service that judges the configuration file's settings. */
-  def apply(queryLogRegistry: QueryLogRegistry, config: AppConfig): SuggestionService =
+  def apply(queryLogRegistry: QueryLogRegistryBase, config: AppConfig): SuggestionService =
     new SuggestionService(queryLogRegistry, config, RuntimeSettings.fixed(config))
 }

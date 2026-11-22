@@ -106,6 +106,15 @@ object ExperimentRoutes {
     case PUT -> Root / "api" / "v1" / "experiments" / id / "archive" as principal =>
       experimentService.archiveExperiment(id).flatMap(result => Ok(result.asJson)).recoverWith(operationError)
 
+    // PATCH /api/v1/experiments/:id - Update a draft experiment (fields left out are unchanged)
+    case (req @ PATCH -> Root / "api" / "v1" / "experiments" / id) as _ =>
+      req.as[UpdateExperimentRequest].flatMap { body =>
+        experimentService.updateExperiment(id, body).flatMap(result => Ok(result.asJson))
+          .recoverWith(operationError.orElse { case e: InvalidExperimentError =>
+            BadRequest(ErrorResponse.badRequest(e.getMessage).asJson)
+          })
+      }
+
     // DELETE /api/v1/experiments/:id - Delete a draft experiment
     case DELETE -> Root / "api" / "v1" / "experiments" / id as principal =>
       experimentService.deleteExperiment(id).flatMap(result => Ok(result.asJson)).recoverWith(operationError)

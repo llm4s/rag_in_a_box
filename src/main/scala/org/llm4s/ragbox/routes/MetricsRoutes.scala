@@ -59,7 +59,7 @@ object MetricsRoutes {
     lines += ""
     lines += "# HELP ragbox_info RAG in a Box version information"
     lines += "# TYPE ragbox_info gauge"
-    lines += """ragbox_info{version="0.1.0"} 1"""
+    lines += s"""ragbox_info{version="${escapeLabel(org.llm4s.ragbox.BuildInfo.version)}"} 1"""
 
     // ============================================================
     // RAG Stats Metrics

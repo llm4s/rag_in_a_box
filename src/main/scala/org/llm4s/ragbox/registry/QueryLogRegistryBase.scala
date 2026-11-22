@@ -1,7 +1,7 @@
 package org.llm4s.ragbox.registry
 
 import cats.effect.IO
-import org.llm4s.ragbox.model.{QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
+import org.llm4s.ragbox.model.{CollectionMetrics, QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
 import java.time.Instant
 
 /**
@@ -85,6 +85,21 @@ trait QueryLogRegistryBase {
    * Get analytics summary.
    */
   def getSummary(from: Instant, to: Instant): IO[QueryAnalyticsSummary]
+
+  /**
+   * Per-collection metrics of the queries that succeeded between `from` and `to`, for the
+   * optimization suggestions: the `limit` collection patterns queried most, busiest first.
+   *
+   * By default computed from [[list]] in memory; the PostgreSQL registry does it in SQL.
+   */
+  def getCollectionMetrics(from: Instant, to: Instant, limit: Int = 10): IO[Seq[CollectionMetrics]] = {
+    def all(page: Int, acc: Vector[QueryLogEntry]): IO[Vector[QueryLogEntry]] =
+      list(Some(from), Some(to), None, page, 500).flatMap { case (entries, total) =>
+        val next = acc ++ entries
+        if (entries.isEmpty || next.size >= total) IO.pure(next) else all(page + 1, next)
+      }
+    all(1, Vector.empty).map(CollectionMetrics.fromEntries(_, limit))
+  }
 
   /**
    * Close any resources.

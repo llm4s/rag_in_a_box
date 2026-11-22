@@ -32,6 +32,9 @@ object CollectionPermissionRoutes {
   // Query param matchers
   object PatternParam extends OptionalQueryParamDecoderMatcher[String]("pattern")
 
+  /** The collection metadata key `CreateCollectionRequest.description` is stored under. */
+  val CollectionDescriptionKey: String = "description"
+
   // Request/Response models
   case class CreateCollectionRequest(
     path: String,
@@ -123,7 +126,8 @@ object CollectionPermissionRoutes {
           path = path,
           queryableBy = queryableBy,
           isLeaf = body.isLeaf.getOrElse(true),
-          metadata = body.metadata.getOrElse(Map.empty)
+          // The description is kept in the llm4s collection's metadata, under "description"
+          metadata = body.metadata.getOrElse(Map.empty) ++ body.description.map(CollectionDescriptionKey -> _)
         )))
         response <- Created(toResponse(created).asJson)
       } yield response

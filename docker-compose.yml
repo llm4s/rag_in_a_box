@@ -25,63 +25,27 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ragbox-api
+    # Every variable in .env (see .env.example) is passed to the server, so all settings work
+    # here as they do with ./run.sh; unset ones take the defaults in application.conf.
+    # .env is optional.
+    env_file:
+      - path: .env
+        required: false
+    # Fixed by this compose setup; these take precedence over .env.
     environment:
-      # Server settings
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "8080"
-
-      # Database settings
+      # The postgres service below. DATABASE_URL is cleared so a host-side URL in .env
+      # (e.g. localhost:15432 for ./run.sh) does not override it.
       PG_HOST: postgres
       PG_PORT: "5432"
       PG_DATABASE: ragdb
       PG_USER: rag
       PG_PASSWORD: rag
-      PG_TABLE_NAME: rag_embeddings
-
-      # API Keys (pass from host environment)
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
-
-      # LLM settings
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o}
-      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
-
-      # Embedding settings
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
-
-      # RAG settings
-      RAG_CHUNKING_STRATEGY: ${RAG_CHUNKING_STRATEGY:-sentence}
-      RAG_CHUNK_SIZE: ${RAG_CHUNK_SIZE:-800}
-      RAG_CHUNK_OVERLAP: ${RAG_CHUNK_OVERLAP:-150}
-      RAG_TOP_K: ${RAG_TOP_K:-5}
-      RAG_FUSION_STRATEGY: ${RAG_FUSION_STRATEGY:-rrf}
-
-      # Ingestion settings
-      # The host directory INGEST_HOST_DIR (default ./data) is mounted at /data,
-      # so the in-container path is always /data.
+      DATABASE_URL: ""
+      # The host directory INGEST_HOST_DIR (default ./data) is mounted at /data, so the
+      # in-container path is always /data.
       INGEST_DIR: /data
-      INGEST_PATTERNS: ${INGEST_PATTERNS:-*.md,*.txt,*.pdf}
-      INGEST_RECURSIVE: ${INGEST_RECURSIVE:-true}
-      INGEST_ON_STARTUP: ${INGEST_ON_STARTUP:-false}
-      INGEST_SCHEDULE: ${INGEST_SCHEDULE:-}
-
-      # API Authentication (optional)
-      API_KEY: ${API_KEY:-}
-
-      # Observability
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-console}  # console or json
-      METRICS_ENABLED: ${METRICS_ENABLED:-true}  # Enable metrics in production
-
-      # Production hardening
-      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
-      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-100}
-      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
-      REQUEST_SIZE_ENABLED: ${REQUEST_SIZE_ENABLED:-true}
-      MAX_BODY_SIZE_MB: ${MAX_BODY_SIZE_MB:-10}
-      SHUTDOWN_TIMEOUT_SECONDS: ${SHUTDOWN_TIMEOUT_SECONDS:-30}
     ports:
       - "8080:8080"
     volumes:

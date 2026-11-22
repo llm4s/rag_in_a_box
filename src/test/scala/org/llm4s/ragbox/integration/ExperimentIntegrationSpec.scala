@@ -183,6 +183,43 @@ class ExperimentIntegrationSpec extends AnyFlatSpec with Matchers with PgVectorF
     running should have size 1
   }
 
+  "PATCH /api/v1/experiments/{id}" should "update a draft, validate it, and refuse other statuses" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val results = run(stack(db, None).use { s =>
+      def patch(id: String, body: Json): IO[(Status, Json)] =
+        s.experimentRoutes.run(Request[IO](Method.PATCH, Uri.unsafeFromString(s"/api/v1/experiments/$id")).withEntity(body))
+          .flatMap(r => r.as[Json].map(r.status -> _))
+      for {
+        draft <- s.experiments.createExperiment(CreateExperimentRequest("draft", Some("first"), variantConfig = ExperimentConfigSnapshot(topK = Some(3))))
+        updated <- patch(draft.id, Json.obj(
+          "name" -> " renamed ".asJson,
+          "variantConfig" -> Json.obj("topK" -> 8.asJson, "systemPrompt" -> "Be brief.".asJson),
+          "trafficSplit" -> 0.25.asJson
+        ))
+        stored <- s.experiments.getExperiment(draft.id)
+        invalid <- patch(draft.id, Json.obj("trafficSplit" -> 2.0.asJson, "variantConfig" -> Json.obj("topK" -> 0.asJson)))
+        afterInvalid <- s.experiments.getExperiment(draft.id)
+        unknown <- patch("exp-missing", Json.obj("name" -> "x".asJson))
+        _ <- s.experiments.startExperiment(draft.id)
+        running <- patch(draft.id, Json.obj("name" -> "too late".asJson))
+      } yield (draft, updated, stored, invalid, afterInvalid, unknown, running)
+    })
+    val (draft, (updatedStatus, updatedBody), stored, (invalidStatus, invalidBody), afterInvalid, (unknownStatus, _), (runningStatus, _)) = results
+
+    updatedStatus shouldBe Status.Ok
+    updatedBody.hcursor.downField("experiment").get[String]("name") shouldBe Right("renamed")
+    val exp = stored.get
+    (exp.name, exp.description, exp.trafficSplit) shouldBe ("renamed", Some("first"), 0.25)
+    exp.variantConfig shouldBe ExperimentConfigSnapshot(topK = Some(8), systemPrompt = Some("Be brief."))
+    exp.baselineConfig shouldBe draft.baselineConfig
+
+    invalidStatus shouldBe Status.BadRequest
+    invalidBody.hcursor.get[String]("message").toOption.get should (include("trafficSplit") and include("topK"))
+    afterInvalid shouldBe stored
+    unknownStatus shouldBe Status.NotFound
+    runningStatus shouldBe Status.Conflict
+  }
+
   "An experiment's status" should "keep its JSON string" in {
     val json = Experiment("exp-1", "n", status = ExperimentStatus.Running, createdAt = java.time.Instant.EPOCH).asJson
     json.hcursor.get[String]("status") shouldBe Right("running")

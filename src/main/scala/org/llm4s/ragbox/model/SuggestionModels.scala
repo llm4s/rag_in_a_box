@@ -144,7 +144,12 @@ final case class SuggestionsSummary(
 // ============================================================
 
 /**
- * Collection metrics for analysis.
+ * Metrics of the queries to one collection (pattern), for analysis.
+ *
+ * @param zeroResultQueries     queries that retrieved no chunks
+ * @param p95LatencyMs          p95 of the total latency, answer generation included
+ * @param p95RetrievalLatencyMs p95 of the latency without answer generation, over the queries
+ *                              whose LLM latency is known
  */
 final case class CollectionMetrics(
   collection: String,
@@ -155,8 +160,45 @@ final case class CollectionMetrics(
   avgRating: Option[Double],
   ratedQueryCount: Int,
   zeroResultQueries: Int,
-  p95LatencyMs: Int
+  p95LatencyMs: Int,
+  p95RetrievalLatencyMs: Option[Int] = None
 ) derives Codec.AsObject
+
+object CollectionMetrics {
+
+  /**
+   * The metrics of the `limit` busiest collections among `entries`, over the queries that
+   * succeeded. p95s are nearest-rank (PostgreSQL's `PERCENTILE_CONT` interpolates).
+   */
+  def fromEntries(entries: Seq[QueryLogEntry], limit: Int): Seq[CollectionMetrics] = {
+    def p95(values: Seq[Int]): Option[Int] =
+      Option.when(values.nonEmpty) {
+        val sorted = values.sorted
+        sorted(((0.95 * sorted.size).ceil.toInt - 1).max(0))
+      }
+    def avg(values: Seq[Int]): Option[Double] = Option.when(values.nonEmpty)(values.sum.toDouble / values.size)
+    entries
+      .filterNot(_.failed)
+      .groupBy(_.collectionPattern.getOrElse("*"))
+      .map { case (collection, group) =>
+        CollectionMetrics(
+          collection = collection,
+          queryCount = group.size,
+          avgLatencyMs = avg(group.map(_.totalLatencyMs)).getOrElse(0.0),
+          avgChunksRetrieved = avg(group.map(_.chunksRetrieved)).getOrElse(0.0),
+          avgChunksUsed = avg(group.map(_.chunksUsed)).getOrElse(0.0),
+          avgRating = avg(group.flatMap(_.userRating)),
+          ratedQueryCount = group.count(_.userRating.isDefined),
+          zeroResultQueries = group.count(_.chunksRetrieved == 0),
+          p95LatencyMs = p95(group.map(_.totalLatencyMs)).getOrElse(0),
+          p95RetrievalLatencyMs = p95(group.flatMap(e => e.llmLatencyMs.map(e.totalLatencyMs - _)))
+        )
+      }
+      .toSeq
+      .sortBy(m => (-m.queryCount, m.collection))
+      .take(limit)
+  }
+}
 
 /**
  * Global metrics summary for analysis.

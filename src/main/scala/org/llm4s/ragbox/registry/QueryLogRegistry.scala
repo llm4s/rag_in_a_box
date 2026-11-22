@@ -4,7 +4,7 @@ import cats.effect.IO
 import io.circe.syntax._
 import io.circe.parser._
 import org.llm4s.ragbox.db.ConnectionPool
-import org.llm4s.ragbox.model.{CollectionQueryStats, QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
+import org.llm4s.ragbox.model.{CollectionMetrics, CollectionQueryStats, QueryAnalyticsSummary, QueryConfigSnapshot, QueryLogEntry}
 
 import java.sql.{Connection, ResultSet, Timestamp}
 import java.time.Instant
@@ -340,6 +340,60 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       stmt.close()
     }
   }
+
+  /**
+   * Per-collection metrics, over the queries that succeeded: the real p95 latencies
+   * (`PERCENTILE_CONT`), the number of queries that retrieved nothing, and the collection's own
+   * chunk and rating averages. A query without a collection counts as `*`.
+   */
+  override def getCollectionMetrics(from: Instant, to: Instant, limit: Int = 10): IO[Seq[CollectionMetrics]] =
+    ConnectionPool.withConnection(dataSource) { conn =>
+      val sql =
+        """SELECT
+          |    COALESCE(collection_pattern, '*') as collection,
+          |    COUNT(*) as query_count,
+          |    AVG(total_latency_ms) as avg_latency,
+          |    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_latency_ms) as p95,
+          |    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_latency_ms - llm_latency_ms)
+          |        FILTER (WHERE llm_latency_ms IS NOT NULL) as p95_retrieval,
+          |    AVG(chunks_retrieved) as avg_chunks_retrieved,
+          |    AVG(chunks_used) as avg_chunks_used,
+          |    AVG(user_rating) as avg_rating,
+          |    COUNT(user_rating) as rated_count,
+          |    COUNT(*) FILTER (WHERE chunks_retrieved = 0) as zero_results
+          |FROM query_logs
+          |WHERE created_at >= ? AND created_at <= ? AND NOT failed
+          |GROUP BY COALESCE(collection_pattern, '*')
+          |ORDER BY query_count DESC, collection
+          |LIMIT ?""".stripMargin
+      val stmt = conn.prepareStatement(sql)
+      try {
+        stmt.setQueryTimeout(30)
+        stmt.setTimestamp(1, Timestamp.from(from))
+        stmt.setTimestamp(2, Timestamp.from(to))
+        stmt.setInt(3, limit)
+        val rs = stmt.executeQuery()
+        def optDouble(column: String): Option[Double] = Option(rs.getDouble(column)).filterNot(_ => rs.wasNull())
+        val metrics = scala.collection.mutable.ArrayBuffer.empty[CollectionMetrics]
+        while (rs.next()) {
+          metrics += CollectionMetrics(
+            collection = rs.getString("collection"),
+            queryCount = rs.getInt("query_count"),
+            avgLatencyMs = optDouble("avg_latency").getOrElse(0.0),
+            avgChunksRetrieved = optDouble("avg_chunks_retrieved").getOrElse(0.0),
+            avgChunksUsed = optDouble("avg_chunks_used").getOrElse(0.0),
+            avgRating = optDouble("avg_rating"),
+            ratedQueryCount = rs.getInt("rated_count"),
+            zeroResultQueries = rs.getInt("zero_results"),
+            p95LatencyMs = optDouble("p95").map(math.round(_).toInt).getOrElse(0),
+            p95RetrievalLatencyMs = optDouble("p95_retrieval").map(math.round(_).toInt)
+          )
+        }
+        metrics.toSeq
+      } finally {
+        stmt.close()
+      }
+    }
 
   /**
    * Close the registry: a no-op, since the connection pool is owned by the caller.

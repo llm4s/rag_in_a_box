@@ -354,7 +354,7 @@ class PersistenceSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
       )
       for {
         manager <- RuntimeConfigManager(TestFixtures.testAppConfig, ds)
-        _ <- updates.parTraverse_(manager.update)
+        _ <- updates.parTraverse_(manager.update(_))
         current <- manager.get
         history <- manager.getHistory(1, 100)
       } yield {

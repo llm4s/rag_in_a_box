@@ -43,7 +43,9 @@ GET /health
 }
 ```
 
-`uptime` is in milliseconds. This endpoint does not check dependencies; use
+`version` is the build's version, from its git tag (`v0.2.0` gives `0.2.0`; a build after the
+tag adds the commit, e.g. `0.2.0+3-1a2b3c4d`). `uptime` is in milliseconds. This endpoint does
+not check dependencies; use
 [`/health/ready`](#ready) for that.
 
 ---
@@ -119,7 +121,7 @@ The response is Prometheus text format (`text/plain`). Metrics include:
 | Metric | Description |
 |--------|-------------|
 | `ragbox_uptime_seconds` | Time since start |
-| `ragbox_info{version}` | Build info |
+| `ragbox_info{version}` | Build info (the version `/health` reports) |
 | `ragbox_documents_total`, `ragbox_chunks_total`, `ragbox_vectors_total`, `ragbox_collections_total` | Index size |
 | `ragbox_collection_documents{collection}`, `ragbox_collection_chunks{collection}` | Per collection |
 | `ragbox_stats_available` | `0` when statistics could not be read |

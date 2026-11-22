@@ -60,10 +60,9 @@ object TestFixtures {
     port = 8080
   )
 
-  val testApiKeysConfig: ApiKeysConfig = ApiKeysConfig(
-    openai = Some(Secret("test-openai-key")),
-    anthropic = Some(Secret("test-anthropic-key")),
-    voyage = None
+  val testApiKeysConfig: ApiKeysConfig = ApiKeysConfig.of(
+    "openai" -> Some(Secret("test-openai-key")),
+    "anthropic" -> Some(Secret("test-anthropic-key"))
   )
 
   val testAuthConfig: AuthConfig = AuthConfig(

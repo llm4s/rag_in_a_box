@@ -185,6 +185,18 @@ def test_query_parses_contexts_and_usage(client):
 
 
 @responses.activate
+def test_query_sends_include_metadata_and_similarity_threshold(client):
+    responses.post(
+        f"{BASE}/api/v1/query",
+        json={"answer": "a", "contexts": []},
+        match=[matchers.json_params_matcher({
+            "question": "q?", "includeMetadata": False, "overrides": {"similarityThreshold": 0.6}
+        })],
+    )
+    assert client.query("q?", include_metadata=False, similarity_threshold=0.6).answer == "a"
+
+
+@responses.activate
 def test_search_parses_results(client):
     responses.post(f"{BASE}/api/v1/search",
                    json={"results": [{"content": "c", "score": 0.5, "metadata": {"a": "b"}}], "count": 1})
@@ -253,7 +265,7 @@ def test_sync_prunes_and_status(client):
     )
     responses.get(
         f"{BASE}/api/v1/sync/status",
-        json={"lastSyncTime": "2026-01-01T00:00:00Z", "documentCount": 1, "chunkCount": 4, "pendingDeletes": 0},
+        json={"lastSyncTime": "2026-01-01T00:00:00Z", "documentCount": 1, "chunkCount": 4},
     )
     assert client.sync(keep_ids=["a"])["prunedCount"] == 1
     status = client.sync_status()

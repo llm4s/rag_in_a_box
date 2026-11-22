@@ -154,13 +154,13 @@ in those collections (and their descendants), and may only query patterns inside
 | GET | [`/api/v1/experiments`](/api/experiments#list) | Admin | List experiments |
 | GET | [`/api/v1/experiments/running`](/api/experiments#running) | Admin | The running experiment |
 | GET | [`/api/v1/experiments/{id}`](/api/experiments#get) | Admin | One experiment |
+| PATCH | [`/api/v1/experiments/{id}`](/api/experiments#update) | Admin | Update a draft |
 | PUT | [`/api/v1/experiments/{id}/start`](/api/experiments#lifecycle) | Admin | Start |
 | PUT | [`/api/v1/experiments/{id}/stop`](/api/experiments#lifecycle) | Admin | Stop |
 | PUT | [`/api/v1/experiments/{id}/archive`](/api/experiments#lifecycle) | Admin | Archive |
 | DELETE | [`/api/v1/experiments/{id}`](/api/experiments#lifecycle) | Admin | Delete a draft |
 | GET | [`/api/v1/experiments/{id}/results`](/api/experiments#results) | Admin | Results with significance tests |
 | GET | [`/api/v1/config`](/api/config#get) | Authenticated | Static configuration |
-| PUT | [`/api/v1/config`](/api/config#get) | Admin | Not supported (always `400`) |
 | GET | [`/api/v1/config/providers`](/api/config#providers) | Authenticated | Providers and strategies |
 | GET | [`/api/v1/config/runtime`](/api/config#runtime) | Authenticated | Runtime settings |
 | PUT | [`/api/v1/config/runtime`](/api/config#runtime-update) | Admin | Change runtime settings |

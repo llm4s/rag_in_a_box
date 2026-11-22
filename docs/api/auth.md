@@ -229,7 +229,7 @@ default, `OAUTH_SESSION_COOKIE_NAME`; `OAUTH_SESSION_COOKIE_SECURE` controls `Se
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/oauth/login?redirect_after=/admin/` | Redirects (`302`) to the identity provider (authorization code flow with state, nonce and, unless `OAUTH_PKCE_ENABLED=false`, PKCE) and sets a short-lived pre-auth cookie binding the login to this browser. `redirect_after` must be a relative path; anything else falls back to `/admin/` |
+| GET | `/api/v1/oauth/login?redirect_after=/admin/` | Redirects (`302`) to the identity provider (authorization code flow with state, nonce and PKCE) and sets a short-lived pre-auth cookie binding the login to this browser. `redirect_after` must be a relative path; anything else falls back to `/admin/` |
 | GET | `/api/v1/oauth/callback?code=...&state=...` | Provider callback. On success: `303` to the `redirect_after` target with the session cookie set (any previous session is invalidated). `400` on a missing pre-auth cookie, invalid or expired state, or a provider `error`; `401` on an invalid ID token; `403` when the identity is rejected |
 | POST | `/api/v1/oauth/logout` | Ends the session and clears the cookie. `200 {"message": "Logged out successfully"}` (or `"No active session"`) |
 | GET | `/api/v1/oauth/userinfo` | The session's user: `{"userId", "email", "name", "groups"}`; `401` without a valid session |

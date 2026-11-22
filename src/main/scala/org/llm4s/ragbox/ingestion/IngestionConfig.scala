@@ -21,7 +21,7 @@ sealed trait SourceConfig {
 final case class DirectorySourceConfig(
   name: String,
   path: String,
-  patterns: Set[String] = Set("*.md", "*.txt", "*.pdf"),
+  patterns: Set[String] = DirectorySourceConfig.DefaultPatterns,
   recursive: Boolean = true,
   maxDepth: Int = 10,
   metadata: Map[String, String] = Map.empty,
@@ -34,6 +34,10 @@ final case class DirectorySourceConfig(
    */
   def extensions: Set[String] =
     patterns.map(_.stripPrefix("*.").stripPrefix("."))
+}
+
+object DirectorySourceConfig {
+  val DefaultPatterns: Set[String] = Set("*.md", "*.txt", "*.pdf")
 }
 
 /**
@@ -146,7 +150,7 @@ final case class S3SourceConfig(
 final case class IngestionConfig(
   enabled: Boolean = false,
   runOnStartup: Boolean = false,
-  schedule: Option[String] = None, // Cron expression
+  schedule: Option[String] = None, // see IngestionSchedule.parse
   sources: Seq[SourceConfig] = Seq.empty,
   policy: IngestionPolicyConfig = IngestionPolicyConfig()
 ) {
@@ -157,6 +161,12 @@ final case class IngestionConfig(
    */
   def allowedRoots: Seq[String] =
     policy.allowedRoots.getOrElse(sources.collect { case d: DirectorySourceConfig => d.path })
+
+  /** The parsed [[schedule]]: None without one, Some(Left(reason)) when it is invalid. */
+  def parsedSchedule: Option[Either[String, IngestionSchedule]] = schedule.map(IngestionSchedule.parse(_))
+
+  /** Sources a run ingests from. */
+  def activeSources: Seq[SourceConfig] = if (enabled) sources.filter(_.enabled) else Seq.empty
 }
 
 object IngestionConfig {
@@ -175,7 +185,7 @@ object IngestionConfig {
 
     val enabled = Try(ingestion.getBoolean("enabled")).getOrElse(false)
     val runOnStartup = Try(ingestion.getBoolean("run-on-startup")).getOrElse(false)
-    val schedule = Try(ingestion.getString("schedule")).toOption
+    val schedule = Try(ingestion.getString("schedule")).toOption.map(_.trim).filter(_.nonEmpty)
 
     val sources = if (ingestion.hasPath("sources")) {
       ingestion.getConfigList("sources").asScala.toSeq.flatMap(parseSource)
@@ -218,40 +228,36 @@ object IngestionConfig {
   }
 
   /**
-   * Load from environment variables.
-   * INGEST_DIR=/path/to/docs
-   * INGEST_PATTERNS=*.md,*.txt
-   * INGEST_RECURSIVE=true
+   * Apply the environment variables to `base` (the HOCON `ingestion` section):
+   *
+   *  - `INGEST_DIR` adds a directory source named `env-directory` (with `INGEST_PATTERNS` and
+   *    `INGEST_RECURSIVE`) to the configured sources and enables ingestion;
+   *  - `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and `schedule`, which apply
+   *    to every configured source, whether or not `INGEST_DIR` is set.
    */
-  def fromEnv(): IngestionConfig = {
-    val dirPath = sys.env.get("INGEST_DIR")
-    val patterns = sys.env.get("INGEST_PATTERNS")
-      .map(_.split(",").map(_.trim).toSet)
-      .getOrElse(Set("*.md", "*.txt", "*.pdf"))
-    val recursive = sys.env.get("INGEST_RECURSIVE")
-      .map(_.toLowerCase == "true")
-      .getOrElse(true)
-    val runOnStartup = sys.env.get("INGEST_ON_STARTUP")
-      .map(_.toLowerCase == "true")
-      .getOrElse(false)
-    val schedule = sys.env.get("INGEST_SCHEDULE").filter(_.nonEmpty)
+  def withEnv(base: IngestionConfig, env: Map[String, String] = sys.env): IngestionConfig = {
+    def value(name: String): Option[String] = env.get(name).map(_.trim).filter(_.nonEmpty)
 
-    val sources = dirPath.map { path =>
+    val envDirectory = value("INGEST_DIR").map { path =>
       DirectorySourceConfig(
-        name = "env-directory",
+        name = EnvDirectorySourceName,
         path = path,
-        patterns = patterns,
-        recursive = recursive
+        patterns = value("INGEST_PATTERNS").map(_.split(",").map(_.trim).filter(_.nonEmpty).toSet)
+          .getOrElse(DirectorySourceConfig.DefaultPatterns),
+        recursive = value("INGEST_RECURSIVE").forall(_.equalsIgnoreCase("true"))
       )
-    }.toSeq
+    }
 
-    IngestionConfig(
-      enabled = sources.nonEmpty,
-      runOnStartup = runOnStartup,
-      schedule = schedule,
-      sources = sources
+    base.copy(
+      enabled = base.enabled || envDirectory.isDefined,
+      runOnStartup = value("INGEST_ON_STARTUP").map(_.equalsIgnoreCase("true")).getOrElse(base.runOnStartup),
+      schedule = value("INGEST_SCHEDULE").orElse(base.schedule),
+      sources = base.sources.filterNot(s => envDirectory.isDefined && s.name == EnvDirectorySourceName) ++ envDirectory
     )
   }
+
+  /** Name of the directory source `INGEST_DIR` adds. */
+  val EnvDirectorySourceName: String = "env-directory"
 
   private def parseSource(config: Config): Option[SourceConfig] = {
     val sourceType = Try(config.getString("type")).getOrElse("directory")

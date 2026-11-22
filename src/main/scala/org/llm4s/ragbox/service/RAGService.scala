@@ -326,13 +326,17 @@ object RAGService {
    * Settings a query runs with instead of the runtime settings' (an experiment group's or a
    * request's overrides). topK is not here: it is passed with each call.
    *
-   * @param reranking `none`, `cohere` or `llm`
+   * @param reranking           `none`, `cohere` or `llm`
+   * @param similarityThreshold minimum vector similarity (0-1) of a retrieved chunk for it to be
+   *                            passed to the LLM and returned (see [[QueryService.aboveThreshold]]).
+   *                            Applied per query; it does not select a different pipeline.
    */
   final case class SettingsOverride(
     fusionStrategy: Option[String] = None,
     rrfK: Option[Int] = None,
     systemPrompt: Option[String] = None,
-    reranking: Option[String] = None
+    reranking: Option[String] = None,
+    similarityThreshold: Option[Double] = None
   )
 
   object SettingsOverride {

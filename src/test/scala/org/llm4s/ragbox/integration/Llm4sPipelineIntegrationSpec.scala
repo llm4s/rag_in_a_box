@@ -2,6 +2,7 @@ package org.llm4s.ragbox.integration
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
+import cats.syntax.all._
 import org.llm4s.llmconnect.model.{AssistantMessage, SystemMessage, UserMessage}
 import org.llm4s.ragbox.config.{AppConfig, DatabaseConfig}
 import org.llm4s.ragbox.model.{QueryMetrics, QueryResponse}
@@ -241,5 +242,88 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     })
     search.results.flatMap(_.documentId) shouldBe Seq("zebra")
     answer.left.map(_.getMessage).left.getOrElse("") should include("LLM client required")
+  }
+
+  "Per-collection query metrics" should "count zero-result queries and compute real p95s in SQL" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    def logged(registry: QueryLogRegistry, collection: Option[String], chunks: Int, totalMs: Int, llmMs: Option[Int], failed: Boolean = false) =
+      registry.logQuery("q", collection, None, None, None, llmMs, totalMs, chunks, chunks, None, failed = failed)
+    val metrics = run(pool(db).use { ds =>
+      for {
+        registry <- QueryLogRegistry(ds)
+        _ <- (1 to 17).toList.traverse_(_ => logged(registry, Some("slow"), 5, 1100, Some(1000)))
+        _ <- (1 to 3).toList.traverse_(_ => logged(registry, Some("slow"), 0, 3000, Some(1000)))
+        _ <- (1 to 3).toList.traverse_(_ => logged(registry, Some("slow"), 0, 9000, None, failed = true))
+        _ <- (1 to 4).toList.traverse_(_ => logged(registry, None, 3, 200, None))
+        now = java.time.Instant.now()
+        metrics <- registry.getCollectionMetrics(now.minusSeconds(3600), now.plusSeconds(60))
+        viaSuggestions <- SuggestionService(registry, testConfig(db)).generateSuggestions(Some(now.minusSeconds(3600)), Some(now.plusSeconds(60)))
+      } yield (metrics, viaSuggestions.suggestions.map(_.title))
+    })
+    val (byCollection, titles) = metrics
+    byCollection.map(_.collection) shouldBe Seq("slow", "*")
+    val slow = byCollection.head
+    (slow.queryCount, slow.zeroResultQueries) shouldBe (20, 3) // failed queries are not counted
+    slow.p95RetrievalLatencyMs shouldBe Some(2000)
+    slow.p95LatencyMs shouldBe 3000
+    slow.avgChunksRetrieved shouldBe 4.25
+    byCollection(1).p95RetrievalLatencyMs shouldBe None
+    titles should contain allOf ("High Latency for 'slow'", "High Zero-Result Rate for 'slow'")
+  }
+
+  "The health check" should "report the build's version (sbt-dynver, through BuildInfo)" in withContainers { pg =>
+    val health = run(plainService(freshDatabase(pg)).use(_.healthCheck))
+    health.version shouldBe org.llm4s.ragbox.BuildInfo.version
+    health.version should not be empty
+  }
+
+  "A similarity threshold" should "keep chunks below it from the answer LLM and the response" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val vectorOnly: AppConfig => AppConfig = c => c.copy(rag = c.rag.copy(search = c.rag.search.copy(fusionStrategy = "vector_only")))
+    val (all, filtered, none) = run(plainService(db, llm = Some(llm), configure = vectorOnly).use { service =>
+      for {
+        _ <- service.ingestDocument("Zebras have black and white stripes.", "zebra", Map.empty)
+        _ <- service.ingestDocument("Penguins live in the southern hemisphere.", "penguin", Map.empty)
+        all <- service.queryWithAnswer("zebras have stripes", Some(2))
+        // vector_only: score is the vector similarity; cut between the two chunks
+        cut = all.contexts.map(_.score).sum / 2
+        filtered <- service.queryWithAnswer("zebras have stripes", Some(2), RAGService.SettingsOverride(similarityThreshold = Some(cut)))
+        none <- service.queryWithAnswer("zebras have stripes", Some(2), RAGService.SettingsOverride(similarityThreshold = Some(1.0)))
+      } yield (all, filtered, none)
+    })
+
+    all.contexts.flatMap(_.documentId) shouldBe Seq("zebra", "penguin")
+    all.contexts.map(_.score).distinct.size shouldBe 2
+    filtered.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+    none.contexts shouldBe empty
+    filtered.answer shouldBe FakeLLM.Answer
+    filtered.metrics.map(_.chunksRetrieved) shouldBe Some(1)
+
+    // What the LLM was sent: llm4s's prompt and temperature, with only the kept chunks
+    val prompts = llm.requests.map { case (conversation, options) => (conversation.messages.last.content, options.temperature) }
+    prompts.head._1 should include("Penguins")
+    prompts(1)._1 should include("[1] Zebras have black and white stripes.")
+    prompts(1)._1 should not include "Penguins"
+    prompts(1)._2 shouldBe 0.0
+    prompts(2)._1 should include("Context:\n\n\nQuestion: zebras have stripes")
+  }
+
+  it should "apply in permission mode too" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val (all, filtered) = run(permissionService(db, llm = Some(llm)).use { service =>
+      val anonymous = org.llm4s.rag.permissions.UserAuthorization.Anonymous
+      for {
+        _ <- service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.")
+        _ <- service.ingestWithPermissions(RAGService.DefaultCollection, "penguin", "Penguins live in the southern hemisphere.")
+        all <- service.queryWithPermissionsAndAnswer("zebras have stripes", anonymous, "*", Some(2))
+        cut = all.contexts.map(_.score).sum / 2
+        filtered <- service.queryWithPermissionsAndAnswer("zebras have stripes", anonymous, "*", Some(2),
+          RAGService.SettingsOverride(similarityThreshold = Some(cut)))
+      } yield (all, filtered)
+    })
+    all.contexts.flatMap(_.documentId).toSet shouldBe Set("zebra", "penguin")
+    filtered.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
   }
 }

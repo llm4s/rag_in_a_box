@@ -263,4 +263,46 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
     ingestionConfig.sources.head.metadata should contain ("source" -> "internal")
     ingestionConfig.sources.head.metadata should contain ("team" -> "engineering")
   }
+
+  private val hoconWithUrlSource = IngestionConfig.fromConfig(ConfigFactory.parseString(
+    """ingestion {
+      |  enabled = true
+      |  sources = [{ type = "url", name = "site", urls = ["https://example.com/a"] }]
+      |}""".stripMargin
+  ))
+
+  "IngestionConfig.withEnv" should "apply INGEST_ON_STARTUP and INGEST_SCHEDULE without INGEST_DIR" in {
+    val config = IngestionConfig.withEnv(hoconWithUrlSource, Map("INGEST_ON_STARTUP" -> "true", "INGEST_SCHEDULE" -> "0 2 * * *"))
+    config.runOnStartup shouldBe true
+    config.schedule shouldBe Some("0 2 * * *")
+    config.activeSources.map(_.name) shouldBe Seq("site")
+  }
+
+  it should "add the INGEST_DIR source to the configured ones" in {
+    val config = IngestionConfig.withEnv(hoconWithUrlSource, Map("INGEST_DIR" -> "/data", "INGEST_PATTERNS" -> "*.md, *.rst", "INGEST_RECURSIVE" -> "false"))
+    config.activeSources.map(_.name) shouldBe Seq("site", "env-directory")
+    val dir = config.sources.collectFirst { case d: DirectorySourceConfig => d }.get
+    (dir.path, dir.patterns, dir.recursive) shouldBe ("/data", Set("*.md", "*.rst"), false)
+  }
+
+  it should "enable ingestion for INGEST_DIR alone, and leave the HOCON settings without env vars" in {
+    val dirOnly = IngestionConfig.withEnv(IngestionConfig(), Map("INGEST_DIR" -> "/data"))
+    dirOnly.enabled shouldBe true
+    dirOnly.activeSources.map(_.name) shouldBe Seq("env-directory")
+
+    val hocon = hoconWithUrlSource.copy(runOnStartup = true, schedule = Some("daily"))
+    IngestionConfig.withEnv(hocon, Map("INGEST_SCHEDULE" -> " ")) shouldBe hocon
+  }
+
+  "IngestionConfig.parsedSchedule" should "report an invalid schedule" in {
+    IngestionConfig(schedule = Some("0 0 * *")).parsedSchedule.get.isLeft shouldBe true
+    IngestionConfig(schedule = Some("0 0 * * *")).parsedSchedule.get.isRight shouldBe true
+    IngestionConfig().parsedSchedule shouldBe None
+  }
+
+  "AppConfig.validate" should "fail startup on an invalid ingestion schedule" in {
+    val config = org.llm4s.ragbox.testkit.TestFixtures.testAppConfig
+    config.copy(ingestion = IngestionConfig(schedule = Some("every day"))).validate().exists(_.contains("Invalid ingestion schedule")) shouldBe true
+    config.copy(ingestion = IngestionConfig(schedule = Some("0 3 * * 1"))).validate().exists(_.contains("schedule")) shouldBe false
+  }
 }

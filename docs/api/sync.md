@@ -190,8 +190,7 @@ curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync
 {
   "lastSyncTime": "2024-01-15T10:30:00Z",
   "documentCount": 150,
-  "chunkCount": 2500,
-  "pendingDeletes": 0
+  "chunkCount": 2500
 }
 ```
 

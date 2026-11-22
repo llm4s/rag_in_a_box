@@ -216,8 +216,7 @@ class MockRAGService(
     } yield SyncStatusResponse(
       lastSyncTime = syncInfo.lastSyncTime,
       documentCount = docCount,
-      chunkCount = chunkCount,
-      pendingDeletes = 0
+      chunkCount = chunkCount
     )
 
   override def listDocumentEntries: IO[Seq[DocumentEntry]] =

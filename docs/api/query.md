@@ -55,15 +55,24 @@ POST /api/v1/query
 | `question` | string | Yes | The question (at most 10,000 characters) |
 | `collection` | string | No | Collection pattern (default `*`) |
 | `topK` | integer | No | Chunks to retrieve (default: the runtime `topK`, initially `RAG_TOP_K` = 5) |
+| `includeMetadata` | boolean | No | `false` returns contexts with an empty `metadata` (`documentId` and `chunkIndex` remain). Default `true` |
 | `experimentId` | string | No | Route the query through this running [experiment](/api/experiments); otherwise the single running experiment (if any) applies |
 | `overrides` | object | No | Per-request settings, see below |
 
 `overrides` fields: `topK`, `fusionStrategy` (`rrf`, `weighted`, `vector_only`,
-`keyword_only`), `systemPrompt`. Precedence is experiment group config, then `overrides`,
-then `topK`, then the runtime settings. `overrides.llmTemperature` and
-`overrides.similarityThreshold` (and the top-level `includeMetadata`) are accepted but
-currently ignored: llm4s 0.6.0 answers `/query` at temperature 0.0
-([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715)).
+`keyword_only`), `systemPrompt`, `similarityThreshold`. Precedence is experiment group config,
+then `overrides`, then `topK`, then the runtime settings.
+
+`similarityThreshold` (0 to 1) drops retrieved chunks whose vector (cosine) similarity is below
+it: they are neither sent to the LLM nor returned. It is compared with each chunk's vector
+similarity, not with `score`, whose scale depends on the fusion strategy (with `rrf` it is a rank
+score of about 1/(k + rank)); chunks found by keyword search only have no similarity and are
+kept. With a threshold, ragbox runs llm4s's retrieval and answer steps itself (same prompt,
+temperature 0.0) so the filter sits between them.
+
+`overrides.llmTemperature` is rejected with `400`: llm4s 0.6.0 answers `/query` at temperature
+0.0 ([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715)); it will be supported once
+ragbox adopts the next llm4s release. The runtime `llmTemperature` applies to chat.
 
 ### Example
 

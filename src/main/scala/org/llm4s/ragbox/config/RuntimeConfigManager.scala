@@ -131,8 +131,11 @@ class RuntimeConfigManager private (
 
   /**
    * Update runtime configuration: record and store the changed settings, then publish them.
+   *
+   * @param changedBy who made the change (the authenticated principal's id, e.g. `user:alice`),
+   *                  recorded in the change history
    */
-  def update(request: RuntimeConfigUpdateRequest): IO[RuntimeConfigUpdateResponse] =
+  def update(request: RuntimeConfigUpdateRequest, changedBy: Option[String] = None): IO[RuntimeConfigUpdateResponse] =
     updateLock.lock.surround {
       for {
         now <- IO.realTimeInstant
@@ -141,7 +144,7 @@ class RuntimeConfigManager private (
         _ <- IO.whenA(changes.nonEmpty)(
           ConnectionPool.withTransaction(dataSource) { connection =>
             changes.foreach { c =>
-              recordChange(connection, c.field, c.oldValue, c.newValue, now)
+              recordChange(connection, c.field, c.oldValue, c.newValue, now, changedBy)
               storeValue(connection, c.field, c.newValue, now)
             }
           } *> IO {
@@ -210,14 +213,22 @@ class RuntimeConfigManager private (
   /**
    * Record a configuration change to the database.
    */
-  private def recordChange(connection: Connection, field: String, oldValue: String, newValue: String, changedAt: Instant): Unit = {
-    val sql = "INSERT INTO config_history (field, old_value, new_value, changed_at) VALUES (?, ?, ?, ?)"
+  private def recordChange(
+    connection: Connection,
+    field: String,
+    oldValue: String,
+    newValue: String,
+    changedAt: Instant,
+    changedBy: Option[String]
+  ): Unit = {
+    val sql = "INSERT INTO config_history (field, old_value, new_value, changed_at, changed_by) VALUES (?, ?, ?, ?, ?)"
     val stmt = connection.prepareStatement(sql)
     try {
       stmt.setString(1, field)
       stmt.setString(2, oldValue)
       stmt.setString(3, newValue)
       stmt.setTimestamp(4, Timestamp.from(changedAt))
+      stmt.setString(5, changedBy.orNull)
       stmt.executeUpdate()
     } finally {
       stmt.close()

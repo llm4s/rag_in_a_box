@@ -45,9 +45,9 @@ docker compose up -d --build
   startup.
 - The schema is created by Flyway migrations on startup.
 
-Compose only passes a fixed list of variables into the container (API keys, `LLM_*`,
-`EMBEDDING_*`, `RAG_*`, `INGEST_*`, `API_KEY`, logging, metrics and hardening settings). To use
-others, e.g. `AUTH_MODE` or `JWT_SECRET`, add them to the `api` service's `environment:`.
+Compose passes every variable in `.env` into the container (`env_file`), with the defaults of
+`application.conf`; only the database connection, the listen address and `INGEST_DIR` (`/data`)
+are fixed by `docker-compose.yml`.
 
 {: .note }
 Compose starts in `open` auth mode: every request is an anonymous administrator. That is fine
@@ -182,7 +182,7 @@ at `/data`):
 | `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | Glob patterns |
 | `INGEST_RECURSIVE` | `true` | Include subdirectories |
 | `INGEST_ON_STARTUP` | `false` | Ingest at startup |
-| `INGEST_SCHEDULE` | | Re-ingest periodically: `hourly`, `daily`, `weekly` or an interval such as `30m`, `1h` |
+| `INGEST_SCHEDULE` | | Re-ingest periodically: a cron expression (`0 2 * * *`), `hourly`, `daily`, `weekly` or an interval such as `30m`, `1h` |
 
 Only new and changed files are re-indexed, and deleted files are removed. Trigger a run with
 `POST /api/v1/ingest/run` (see the [Ingestion API](/api/ingestion)).

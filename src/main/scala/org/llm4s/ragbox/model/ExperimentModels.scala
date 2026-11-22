@@ -103,7 +103,8 @@ object CreateExperimentRequest {
 }
 
 /**
- * Request to update an experiment.
+ * Request to update a draft experiment (`PATCH /api/v1/experiments/{id}`). Each field given
+ * replaces the experiment's; the ones left out are unchanged.
  */
 final case class UpdateExperimentRequest(
   name: Option[String] = None,
