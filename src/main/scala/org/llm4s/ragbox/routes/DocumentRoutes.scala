@@ -32,6 +32,7 @@ object DocumentRoutes {
   // Query param matchers
   object CollectionParam extends OptionalQueryParamDecoderMatcher[String]("collection")
   object SearchParam extends OptionalQueryParamDecoderMatcher[String]("search")
+  object SourceParam extends OptionalQueryParamDecoderMatcher[String]("source")
 
   /** Default and maximum page sizes for GET /api/v1/documents. */
   val DefaultPageSize: Int = 50
@@ -53,6 +54,23 @@ object DocumentRoutes {
     Option.when(!SourcePattern.matches(source))(BadRequest(ErrorResponse.badRequest(
       s"Invalid source '$source'",
       Some("A source is 1-128 characters: letters, digits and . _ : / -, starting with a letter or digit")
+    ).asJson))
+
+  /**
+   * Whether `source` is an ingestion source's name, which an API sync source (`PUT
+   * /documents/{id}` `source`, `POST /sync` `source`) may not use: the API sync and the source's
+   * own runs would prune each other's documents. Reserved are the configured sources'
+   * names (`configured`) and the one-shot ingestion sources, `api:url` and `api:directory:<path>`.
+   */
+  private[routes] def isIngestionSource(configured: Set[String])(source: String): Boolean =
+    configured.contains(source) || source == "api:url" || source.startsWith("api:directory:")
+
+  /** `Some(409)` when `source` is reserved for an ingestion source (see [[isIngestionSource]]). */
+  private def reservedSource(configured: Set[String])(source: String): Option[IO[Response[IO]]] =
+    Option.when(isIngestionSource(configured)(source))(Conflict(ErrorResponse(
+      "conflict",
+      s"Source '$source' is the name of an ingestion source; an API sync source must not share it, " +
+        "or each would prune the other's documents. Use another source name."
     ).asJson))
 
   /** Which documents a `POST /sync` with a body prunes. */
@@ -77,7 +95,7 @@ object DocumentRoutes {
   }
 
   /** The scope a prune request asks for, or the error response (400, or 403 for `all` by a non-admin). */
-  private def syncScope(principal: Principal, request: SyncPruneRequest): Either[IO[Response[IO]], SyncScope] =
+  private def syncScope(principal: Principal, request: SyncPruneRequest, configuredSources: Set[String]): Either[IO[Response[IO]], SyncScope] =
     (request.scope.map(_.trim.toLowerCase), request.source) match {
       case (Some("all"), Some(_)) =>
         Left(BadRequest(ErrorResponse.badRequest("Give either scope=all or a source, not both").asJson))
@@ -86,7 +104,7 @@ object DocumentRoutes {
         else Left(Authz.forbidden("scope=all (pruning every document, whatever its source) is admin-only"))
       case (None | Some("source"), source) =>
         val s = source.getOrElse(DefaultSyncSource)
-        invalidSource(s).toLeft(SyncScope.Source(s))
+        invalidSource(s).orElse(reservedSource(configuredSources)(s)).toLeft(SyncScope.Source(s))
       case (Some(other), _) =>
         Left(BadRequest(ErrorResponse.badRequest(s"Invalid scope '$other'", Some("scope is 'source' (the default) or 'all'")).asJson))
     }
@@ -291,7 +309,8 @@ object DocumentRoutes {
       id = entry.documentId,
       hash = Option.when(includeHash)(entry.contentHash),
       updatedAt = Option.when(includeUpdatedAt)(entry.updatedAt),
-      collection = entry.collection
+      collection = entry.collection,
+      source = entry.sourceId
     )
 
   /**
@@ -303,7 +322,7 @@ object DocumentRoutes {
    * API is for ingesters: access tokens (with the sync scopes) and administrators. Clearing
    * every document is admin-only.
    */
-  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  def routes(ragService: RAGService, ingestionSources: Set[String] = Set.empty): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/collections - Names of the collections that have documents (those the caller may
     // see). This is the one GET /api/v1/collections; the permission-mode collection objects with
@@ -413,7 +432,7 @@ object DocumentRoutes {
           body.metadata.map(InputValidation.validateMetadata(_)).getOrElse(InputValidation.Valid)
         )
         source = body.source.getOrElse(DefaultSyncSource)
-        response <- InputValidation.toResponse(validation).orElse(invalidSource(source)) match {
+        response <- InputValidation.toResponse(validation).orElse(invalidSource(source)).orElse(reservedSource(ingestionSources)(source)) match {
           case Some(errorResponse) => errorResponse
           // The target collection must be allowed, and so must the one an existing document is in
           case None => requireCollectionAccess(ragService, principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
@@ -463,7 +482,7 @@ object DocumentRoutes {
         body <- decodeOptionalBody[SyncPruneRequest](req)
         response <- body match {
           case Left(err) => invalidBody(err)
-          case Right(Some(pruneReq)) => syncScope(principal, pruneReq) match {
+          case Right(Some(pruneReq)) => syncScope(principal, pruneReq, ingestionSources) match {
             case Left(errorResponse) => errorResponse
             case Right(scope) =>
             val isDryRun = pruneReq.dryRun.getOrElse(false)
@@ -506,20 +525,23 @@ object DocumentRoutes {
     //   - include=hash,updatedAt - Include additional fields
     //   - since=2024-01-01T00:00:00Z - Only documents modified since this time
     //   - page (default 1), pageSize (default 1000, max 10000)
+    //   - source=docs-sync - Only the documents that sync source owns
     case GET -> Root / "api" / "v1" / "sync" / "documents"
-        :? IncludeParam(includeOpt) +& Since(sinceOpt) +& Page(pageOpt) +& PageSize(pageSizeOpt) as principal =>
+        :? IncludeParam(includeOpt) +& Since(sinceOpt) +& Page(pageOpt) +& PageSize(pageSizeOpt) +& SourceParam(sourceOpt) as principal =>
       Authz.requireIngester(principal, TokenScope.SyncRead) {
         withValid((opt(sinceOpt), opt(pageOpt), opt(pageSizeOpt)).tupled) { case (since, page, pageSize) =>
-          val paging = Paging(page, pageSize, DefaultSyncPageSize, MaxSyncPageSize)
-          val includeFields = includeOpt.map(_.split(",").map(_.trim.toLowerCase).toSet).getOrElse(Set.empty)
-          ragService.listDocumentEntriesPage(since, principal.collections, paging.offset, paging.pageSize).flatMap { result =>
-            Ok(DocumentSyncListResponse(
-              documents = result.entries.map(e => syncState(e, includeFields.contains("hash"), includeFields.contains("updatedat"))),
-              total = result.total,
-              page = paging.page,
-              pageSize = paging.pageSize,
-              hasMore = paging.offset + result.entries.size < result.total
-            ).asJson)
+          sourceOpt.flatMap(invalidSource).getOrElse {
+            val paging = Paging(page, pageSize, DefaultSyncPageSize, MaxSyncPageSize)
+            val includeFields = includeOpt.map(_.split(",").map(_.trim.toLowerCase).toSet).getOrElse(Set.empty)
+            ragService.listDocumentEntriesPage(since, principal.collections, paging.offset, paging.pageSize, sourceOpt).flatMap { result =>
+              Ok(DocumentSyncListResponse(
+                documents = result.entries.map(e => syncState(e, includeFields.contains("hash"), includeFields.contains("updatedat"))),
+                total = result.total,
+                page = paging.page,
+                pageSize = paging.pageSize,
+                hasMore = paging.offset + result.entries.size < result.total
+              ).asJson)
+            }
           }
         }
       }

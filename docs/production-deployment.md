@@ -155,6 +155,7 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 | `INGEST_RECURSIVE` | `true` | Recurse into subdirectories |
 | `INGEST_ON_STARTUP` | `false` | Ingest when the server starts |
 | `INGEST_SCHEDULE` | - | Schedule for all ingestion sources: five-field cron (`0 2 * * *`), `daily`, or an interval (`6h`); invalid values fail startup |
+| `INGEST_SCHEDULE_TZ` | server time zone | Time zone of a cron `INGEST_SCHEDULE` (`Europe/London`, `UTC`, `+02:00`); invalid values fail startup |
 | `INGEST_ALLOWED_ROOTS` | the configured directory sources | Directories `POST /api/v1/ingest/directory` may read under; with none, that endpoint is disabled |
 | `INGEST_URL_ALLOWED_HOSTS` | - (any public host) | Only hosts URL/web ingestion may fetch (`*.example.com` allowed) |
 | `INGEST_URL_ALLOW_PRIVATE_NETWORKS` | `false` | Allow URLs resolving to loopback/private/link-local addresses |

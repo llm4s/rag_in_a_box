@@ -183,6 +183,7 @@ at `/data`):
 | `INGEST_RECURSIVE` | `true` | Include subdirectories |
 | `INGEST_ON_STARTUP` | `false` | Ingest at startup |
 | `INGEST_SCHEDULE` | | Re-ingest periodically: a cron expression (`0 2 * * *`), `hourly`, `daily`, `weekly` or an interval such as `30m`, `1h` |
+| `INGEST_SCHEDULE_TZ` | server time zone | Time zone of a cron schedule, e.g. `Europe/London` or `UTC` |
 
 Only new and changed files are re-indexed, and deleted files are removed. Trigger a run with
 `POST /api/v1/ingest/run` (see the [Ingestion API](/api/ingestion)).

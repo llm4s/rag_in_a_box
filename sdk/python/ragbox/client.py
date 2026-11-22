@@ -116,6 +116,8 @@ class SyncedDocument:
     hash: Optional[str] = None
     updated_at: Optional[datetime] = None
     collection: Optional[str] = None
+    source: Optional[str] = None
+    """The sync source that owns the document (``api`` by default, ``None`` for uploads)."""
 
 
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
@@ -149,6 +151,7 @@ def _synced(doc: Dict[str, Any]) -> SyncedDocument:
         hash=doc.get("hash"),
         updated_at=_parse_time(doc.get("updatedAt")),
         collection=doc.get("collection"),
+        source=doc.get("source"),
     )
 
 
@@ -635,6 +638,7 @@ class RagBoxClient:
         include_hash: bool = False,
         include_updated_at: bool = False,
         since: Optional[Union[datetime, str]] = None,
+        source: Optional[str] = None,
     ) -> List[SyncedDocument]:
         """
         The server's record of every synced document (``GET /api/v1/sync/documents``).
@@ -647,6 +651,8 @@ class RagBoxClient:
             include_updated_at: Include each document's last update time
             since: Only documents updated since this time (a datetime - naive means UTC - or an
                 ISO-8601 instant string such as ``2026-01-01T00:00:00Z``)
+            source: Only the documents this sync source owns (for an ingester, usually its own
+                ``source``); every source's when ``None``
         """
         params: Dict[str, str] = {}
         include = [name for name, wanted in (("hash", include_hash), ("updatedAt", include_updated_at)) if wanted]
@@ -654,6 +660,8 @@ class RagBoxClient:
             params["include"] = ",".join(include)
         if since is not None:
             params["since"] = _format_instant(since)
+        if source is not None:
+            params["source"] = source
         documents: List[SyncedDocument] = []
         page = 1
         while True:
@@ -664,9 +672,13 @@ class RagBoxClient:
                 return documents
             page += 1
 
-    def list_synced_documents(self, since: Optional[Union[datetime, str]] = None) -> List[str]:
-        """List the IDs of synced documents (optionally only those updated since a time)."""
-        return [doc.id for doc in self.synced_documents(since=since)]
+    def list_synced_documents(
+        self,
+        since: Optional[Union[datetime, str]] = None,
+        source: Optional[str] = None,
+    ) -> List[str]:
+        """List the IDs of synced documents (optionally only those updated since a time, or of one source)."""
+        return [doc.id for doc in self.synced_documents(since=since, source=source)]
 
     def get_synced_document(self, document_id: str) -> SyncedDocument:
         """One document's sync state, with hash and update time (``GET /api/v1/sync/documents/{id}``)."""

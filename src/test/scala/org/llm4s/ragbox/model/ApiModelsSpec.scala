@@ -220,4 +220,40 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
     result.isRight `shouldBe` true
     result.toOption.get.keepDocumentIds `shouldBe` Seq("doc-1", "doc-2")
   }
+
+  // ============================================================
+  // PATCH /experiments: FieldPatch
+  // ============================================================
+
+  "UpdateExperimentRequest" should "tell a missing field (unchanged) from null (clear) for description and collection" in {
+    decode[UpdateExperimentRequest]("""{}""") shouldBe Right(UpdateExperimentRequest())
+    decode[UpdateExperimentRequest]("""{"description": null, "collection": "docs"}""") shouldBe
+      Right(UpdateExperimentRequest(description = FieldPatch.Clear, collection = FieldPatch.Set("docs")))
+    decode[UpdateExperimentRequest]("""{"description": "d", "collection": null, "trafficSplit": 0.4}""") shouldBe
+      Right(UpdateExperimentRequest(description = FieldPatch.Set("d"), collection = FieldPatch.Clear, trafficSplit = Some(0.4)))
+  }
+
+  it should "reject null for the fields that cannot be cleared, and values of the wrong type" in {
+    for (field <- Seq("name", "baselineConfig", "variantConfig", "trafficSplit")) {
+      val result = decode[UpdateExperimentRequest](s"""{"$field": null}""")
+      result.isLeft shouldBe true
+      result.left.toOption.get.getMessage should include(s"$field cannot be cleared")
+    }
+    decode[UpdateExperimentRequest]("""{"description": 3}""").isLeft shouldBe true
+  }
+
+  it should "encode as a client sends it: unchanged fields left out, cleared ones null" in {
+    val request = UpdateExperimentRequest(name = Some("n"), description = FieldPatch.Clear, collection = FieldPatch.Set("docs"))
+    request.asJson.noSpaces shouldBe """{"name":"n","description":null,"collection":"docs"}"""
+    decode[UpdateExperimentRequest](request.asJson.noSpaces) shouldBe Right(request)
+    UpdateExperimentRequest(baselineConfig = Some(ExperimentConfigSnapshot(topK = Some(3))), variantConfig = Some(ExperimentConfigSnapshot()),
+      trafficSplit = Some(0.5)).asJson.hcursor.keys.get.toSet shouldBe Set("baselineConfig", "variantConfig", "trafficSplit")
+  }
+
+  "FieldPatch.applyTo" should "keep, clear or replace the current value" in {
+    FieldPatch.Unchanged.applyTo(Some("a")) shouldBe Some("a")
+    FieldPatch.Clear.applyTo(Some("a")) shouldBe None
+    FieldPatch.Set("b").applyTo(Some("a")) shouldBe Some("b")
+    FieldPatch.Set("b").applyTo(None) shouldBe Some("b")
+  }
 }

@@ -5,7 +5,7 @@ import io.circe.parser._
 import io.circe.syntax._
 import org.llm4s.ragbox.db.ConnectionPool
 
-import java.sql.{ResultSet, Timestamp}
+import java.sql.{PreparedStatement, ResultSet, Timestamp}
 import java.time.Instant
 import javax.sql.DataSource
 
@@ -139,26 +139,33 @@ class PgDocumentRegistry(dataSource: DataSource) extends DocumentRegistry {
     since: Option[Instant],
     collections: Option[Set[String]],
     offset: Int,
-    limit: Int
+    limit: Int,
+    source: Option[String]
   ): IO[DocumentEntryPage] = ConnectionPool.withConnection(dataSource) { connection =>
+    // Each condition with the binder of its one parameter.
     // "default" stands for no collection; a collection includes its sub-collections
-    val conditions = since.map(_ => "updated_at > ?").toList ++ collections.map(_ =>
-      "EXISTS (SELECT 1 FROM unnest(?::text[]) AS a(c) " +
-        "WHERE COALESCE(collection, 'default') = a.c OR left(COALESCE(collection, 'default'), length(a.c) + 1) = a.c || '/')"
-    )
-    val where = if (conditions.isEmpty) "" else conditions.mkString("WHERE ", " AND ", "")
+    val conditions: List[(String, (PreparedStatement, Int) => Unit)] =
+      since.toList.map(s => "updated_at > ?" -> ((st: PreparedStatement, i: Int) => st.setTimestamp(i, Timestamp.from(s)))) ++
+        collections.toList.map(c =>
+          ("EXISTS (SELECT 1 FROM unnest(?::text[]) AS a(c) " +
+            "WHERE COALESCE(collection, 'default') = a.c OR left(COALESCE(collection, 'default'), length(a.c) + 1) = a.c || '/')") ->
+            ((st: PreparedStatement, i: Int) => st.setArray(i, connection.createArrayOf("text", c.toArray[AnyRef])))
+        ) ++
+        source.toList.map(s => "source_id = ?" -> ((st: PreparedStatement, i: Int) => st.setString(i, s)))
+    val where = if (conditions.isEmpty) "" else conditions.map(_._1).mkString("WHERE ", " AND ", "")
+    def bindConditions(st: PreparedStatement): Int = {
+      conditions.zipWithIndex.foreach { case ((_, bind), i) => bind(st, i + 1) }
+      conditions.size
+    }
     val order = if (since.isDefined) "updated_at, document_id" else "indexed_at, document_id"
     val sql =
       s"""SELECT $EntryColumns, COUNT(*) OVER () AS total
         |FROM document_registry $where ORDER BY $order OFFSET ? LIMIT ?""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try {
-      var i = 0
-      def next(): Int = { i += 1; i }
-      since.foreach(s => stmt.setTimestamp(next(), Timestamp.from(s)))
-      collections.foreach(c => stmt.setArray(next(), connection.createArrayOf("text", c.toArray[AnyRef])))
-      stmt.setInt(next(), offset)
-      stmt.setInt(next(), limit)
+      val bound = bindConditions(stmt)
+      stmt.setInt(bound + 1, offset)
+      stmt.setInt(bound + 2, limit)
       val rs = stmt.executeQuery()
       val entries = scala.collection.mutable.ArrayBuffer.empty[DocumentEntry]
       var total = 0
@@ -169,13 +176,9 @@ class PgDocumentRegistry(dataSource: DataSource) extends DocumentRegistry {
       if (entries.nonEmpty || offset == 0) DocumentEntryPage(entries.toSeq, total)
       else {
         // Past the last page: the window total is not available, so count separately
-        val countSql = s"SELECT COUNT(*) FROM document_registry $where"
-        val countStmt = connection.prepareStatement(countSql)
+        val countStmt = connection.prepareStatement(s"SELECT COUNT(*) FROM document_registry $where")
         try {
-          var j = 0
-          def nextCount(): Int = { j += 1; j }
-          since.foreach(s => countStmt.setTimestamp(nextCount(), Timestamp.from(s)))
-          collections.foreach(c => countStmt.setArray(nextCount(), connection.createArrayOf("text", c.toArray[AnyRef])))
+          bindConditions(countStmt)
           val countRs = countStmt.executeQuery()
           DocumentEntryPage(Seq.empty, if (countRs.next()) countRs.getInt(1) else 0)
         } finally {

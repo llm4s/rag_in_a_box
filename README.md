@@ -208,6 +208,7 @@ lists every variable with its default; the
 | `RAG_TOP_K`, `RAG_FUSION_STRATEGY` | `5`, `rrf` | Retrieval |
 | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM` | `none`, `none` | Reranking (`cohere`, `llm`) and query rewriting (`llm-rewrite`) |
 | `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source; cron schedule (`0 2 * * *`, `daily`) or interval (`6h`) for all sources |
+| `INGEST_SCHEDULE_TZ` | server time zone | Time zone of a cron schedule (`Europe/London`, `UTC`) |
 | `ALLOWED_ORIGINS` | - | CORS origins, also allowed to open `/ws` (same-origin only when unset) |
 
 Runtime settings changed through the API or the admin UI are stored in the database and survive

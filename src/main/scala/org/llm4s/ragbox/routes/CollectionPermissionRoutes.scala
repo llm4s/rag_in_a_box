@@ -14,7 +14,7 @@ import org.http4s.dsl.io._
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.service.{ConflictError, InvalidRequestError, RAGService}
+import org.llm4s.ragbox.service.{ConflictError, InvalidRequestError, NotFoundError, RAGService}
 import org.llm4s.types.Result
 
 /**
@@ -101,6 +101,17 @@ object CollectionPermissionRoutes {
       case Left(e) => IO.raiseError(new RuntimeException(e.message))
     }
 
+  /**
+   * The collection at `path`, or a 404 [[NotFoundError]]. The per-collection endpoints check this
+   * first: llm4s reports a missing collection as a generic store error (a 500), or not at all
+   * (deleting one is a no-op, its statistics are zeros).
+   */
+  private def requireCollection(collectionStore: CollectionStore, path: CollectionPath): IO[Collection] =
+    store(collectionStore.get(path)).flatMap {
+      case Some(collection) => IO.pure(collection)
+      case None => IO.raiseError(NotFoundError(s"Collection not found: ${path.value}"))
+    }
+
   private def parsePath(path: String): IO[CollectionPath] =
     IO.fromEither(CollectionPath.create(path).left.map(e => InvalidRequestError(s"Invalid collection path '$path': ${e.message}")))
 
@@ -156,20 +167,23 @@ object CollectionPermissionRoutes {
       for {
         body <- req.as[UpdatePermissionsRequest]
         path <- parsePath(pathStr)
+        _ <- requireCollection(collectionStore, path)
         queryableBy <- RAGService.resolvePrincipals(body.queryableBy, principalStore)
         updated <- store(collectionStore.updatePermissions(path, queryableBy))
         response <- Ok(toResponse(updated).asJson)
       } yield response
 
-    // DELETE /api/v1/collections/{path} - Delete collection
+    // DELETE /api/v1/collections/{path} - Delete collection (404 if it does not exist)
     case DELETE -> "api" /: "v1" /: "collections" /: CollectionRoute.Bare(pathStr) as _ =>
-      parsePath(pathStr).flatMap(path => store(collectionStore.delete(path))) *> NoContent()
+      parsePath(pathStr).flatMap(path => requireCollection(collectionStore, path) *> store(collectionStore.delete(path))) *>
+        NoContent()
 
     // GET /api/v1/collections/{path}/stats - Get collection statistics
     case GET -> "api" /: "v1" /: "collections" /: CollectionRoute.Stats(pathStr) as principal =>
       ifVisible(collectionStore, principalStore, principal, pathStr) {
         for {
           path <- parsePath(pathStr)
+          _ <- requireCollection(collectionStore, path)
           stats <- store(collectionStore.stats(path))
           response <- Ok(CollectionStatsResponse(path = pathStr, documentCount = stats.documentCount, chunkCount = stats.chunkCount).asJson)
         } yield response

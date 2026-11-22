@@ -39,4 +39,25 @@ class DocumentRegistrySpec extends AnyFlatSpec with Matchers {
 
     entry.collection `shouldBe` None
   }
+
+  "DocumentRegistry.listEntriesPage" should "filter by owning source in its default (in-memory) form" in {
+    import cats.effect.unsafe.implicits.global
+    val registry = new org.llm4s.ragbox.testkit.InMemoryDocumentRegistry
+    val now = Instant.now()
+    def entry(id: String, source: Option[String], collection: Option[String] = None) =
+      DocumentEntry(id, s"hash-$id", 1, Map.empty, collection, now, now, sourceId = source)
+    val page = (for {
+      _ <- registry.put(entry("a1", Some("api")))
+      _ <- registry.put(entry("a2", Some("api"), Some("docs")))
+      _ <- registry.put(entry("c1", Some("confluence")))
+      _ <- registry.put(entry("u1", None))
+      api <- registry.listEntriesPage(None, None, 0, 10, Some("api"))
+      apiInDocs <- registry.listEntriesPage(None, Some(Set("docs")), 0, 10, Some("api"))
+      all <- registry.listEntriesPage(None, None, 0, 10)
+    } yield (api, apiInDocs, all)).unsafeRunSync()
+    page._1.entries.map(_.documentId).toSet `shouldBe` Set("a1", "a2")
+    page._1.total `shouldBe` 2
+    page._2.entries.map(_.documentId) `shouldBe` Seq("a2")
+    page._3.total `shouldBe` 4
+  }
 }

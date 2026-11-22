@@ -49,7 +49,8 @@ Check what documents are already indexed:
 curl "http://localhost:8080/api/v1/sync/documents?include=hash,updatedAt"
 ```
 
-`include` takes `hash` and/or `updatedAt`; without it only `id` and `collection` are returned.
+`include` takes `hash` and/or `updatedAt`; without it only `id`, `collection` and `source` are
+returned. Add `source=<your source>` to list only your ingester's documents.
 The list is paged (`page`, `pageSize`: default 1000, max 10000); keep requesting the next
 `page` while `hasMore` is true. A collection-restricted token only sees documents in its
 collections.
@@ -114,7 +115,9 @@ The `contentHash` parameter enables efficient change detection:
   given, so use one format consistently (the examples use `sha256:<hex>`)
 
 `source` names your ingester (default `api`): the prune below only removes documents of that
-source. Use the same `source` on every upsert and on `POST /sync`, and one per ingester.
+source. Use the same `source` on every upsert and on `POST /sync`, and one per ingester. It may
+not be the name of a configured ingestion source (or `api:url` / `api:directory:*`): that is a
+`409` (see [Source names](/api/sync#source-names)).
 
 `collection` (default `default`) and `readableBy` (principal external IDs such as
 `user:alice`, `group:eng`) apply in permission mode; without permission mode the collection is

@@ -57,7 +57,7 @@ GET /api/v1/analytics/queries
       "answerTokens": 120,
       "userRating": 4,
       "experimentId": null,
-      "configSnapshot": { "topK": 5, "fusionStrategy": "rrf", "systemPrompt": "...", "llmTemperature": null },
+      "configSnapshot": { "topK": 5, "fusionStrategy": "rrf", "systemPrompt": "...", "llmTemperature": null, "similarityThreshold": 0.3 },
       "createdAt": "2026-01-15T10:30:00Z",
       "promptTokens": 450,
       "embeddingTokens": 9,

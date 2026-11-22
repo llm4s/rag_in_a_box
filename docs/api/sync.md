@@ -38,8 +38,9 @@ GET /api/v1/sync/documents
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `include` | string | Comma-separated extra fields: `hash`, `updatedAt`. Without it only `id` and `collection` are returned |
+| `include` | string | Comma-separated extra fields: `hash`, `updatedAt`. Without it only `id`, `collection` and `source` are returned |
 | `since` | ISO-8601 | Only documents updated after this instant, e.g. `2024-01-15T00:00:00Z` (a malformed value is a `400`) |
+| `source` | string | Only the documents this [sync source](#prune) owns, e.g. `confluence` (an invalid name is a `400`) |
 | `page` | integer | 1-based page (default 1) |
 | `pageSize` | integer | Documents per page (default 1000, max 10000) |
 
@@ -59,7 +60,13 @@ curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync
 
 # Get documents modified since a timestamp
 curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents?since=2024-01-15T00:00:00Z&include=hash"
+
+# Only one ingester's documents
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents?source=confluence&include=hash"
 ```
+
+Each document's `source` is the sync source that owns it: the `source` it was last written with
+(`api` when none was given), a configured ingestion source's name, or `null` for uploads.
 
 ### Response
 
@@ -70,13 +77,15 @@ curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync
       "id": "doc-001",
       "hash": "sha256:abc123...",
       "updatedAt": "2024-01-15T10:30:00Z",
-      "collection": "docs/guides"
+      "collection": "docs/guides",
+      "source": "api"
     },
     {
       "id": "doc-002",
       "hash": "sha256:def456...",
       "updatedAt": "2024-01-14T09:00:00Z",
-      "collection": "confluence"
+      "collection": "confluence",
+      "source": "confluence"
     }
   ],
   "total": 2,
@@ -115,7 +124,8 @@ curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync
   "id": "doc-001",
   "hash": "sha256:abc123...",
   "updatedAt": "2024-01-15T10:30:00Z",
-  "collection": "docs/guides"
+  "collection": "docs/guides",
+  "source": "api"
 }
 ```
 
@@ -299,8 +309,28 @@ An empty body just marks the sync complete. A body that is present but is not
 valid JSON or does not match the schema (e.g. a misspelled `keepDocumentIds`),
 an unknown `scope`, `scope: all` together with a `source`, or an invalid `source`
 (1-128 letters, digits or `._:/-`) returns `400` with an `ErrorResponse`;
-`scope: all` from a non-admin returns `403`. Nothing is pruned and the sync is
+`scope: all` from a non-admin returns `403`; a `source` that is an ingestion source's name
+returns `409` (see [Source names](#source-names)). Nothing is pruned and the sync is
 not marked complete.
+
+### Source names {#source-names}
+
+An API sync source may not use the name of an **ingestion source**: a configured source
+(`ingestion.sources` in HOCON, or `env-directory` for `INGEST_DIR`), `api:url`, or
+`api:directory:<path>` (the one-shot `POST /api/v1/ingest/url` and `/ingest/directory`). Such
+a source's runs remove the documents it no longer lists, and an API sync of the same name would
+prune the source's documents, so `PUT /api/v1/documents/{id}` and `POST /api/v1/sync` with
+such a `source` answer `409 Conflict`:
+
+```json
+{
+  "error": "conflict",
+  "message": "Source 'wiki' is the name of an ingestion source; an API sync source must not share it, or each would prune the other's documents. Use another source name."
+}
+```
+
+Listing such a source's documents (`GET /sync/documents?source=wiki`) is allowed. Conversely, a
+configured ingestion source may not be named `api` or `api:*` (the server refuses to start).
 
 ### Upgrading: `POST /sync` is scoped by source {#sync-scope-migration}
 
@@ -324,8 +354,9 @@ What this means for an existing ingester:
   `PUT` and on its `POST /sync`, so that one ingester's prune never deletes another's
   documents. The first sync after the switch must re-send *all* of the ingester's documents
   (do not skip unchanged ones that run), so that they move to the new source.
-- Pick source names that differ from the names of configured ingestion sources
-  (`INGEST_SOURCES`): those own their documents under their own names.
+- Pick source names that differ from the names of configured ingestion sources: those own
+  their documents under their own names, and the API refuses them with `409`
+  (see [Source names](#source-names)).
 
 
 ---

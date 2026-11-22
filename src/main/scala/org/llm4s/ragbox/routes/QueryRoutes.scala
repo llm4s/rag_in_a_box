@@ -211,7 +211,8 @@ object QueryRoutes {
           topK = topK.getOrElse(current.topK),
           fusionStrategy = settings.fusionStrategy,
           systemPrompt = Some(settings.systemPrompt),
-          llmTemperature = None
+          llmTemperature = None,
+          similarityThreshold = overrides.similarityThreshold
         )
       }
       QueryPlan(

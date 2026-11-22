@@ -502,6 +502,7 @@ INGEST_ALLOWED_ROOTS=/data/docs
 | `INGEST_RECURSIVE` | `true` | Descend into subdirectories |
 | `INGEST_ON_STARTUP` | `false` | Run every configured source once at startup |
 | `INGEST_SCHEDULE` | - | When to run every configured source (see [Schedules](#schedules)) |
+| `INGEST_SCHEDULE_TZ` | server time zone | Time zone of a cron schedule: an IANA name (`Europe/London`, `UTC`) or an offset (`+02:00`) |
 
 `INGEST_DIR` adds a directory source named `env-directory` to the sources configured in HOCON
 (and enables ingestion). `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and
@@ -512,12 +513,13 @@ INGEST_ALLOWED_ROOTS=/data/docs
 `schedule` / `INGEST_SCHEDULE` is one of:
 
 - a standard five-field **cron expression** (minute, hour, day of month, month, day of week;
-  Sunday is `0` or `7`), evaluated in the server's time zone (set `TZ` to change it), e.g.
+  Sunday is `0` or `7`), evaluated in `INGEST_SCHEDULE_TZ` / `schedule-time-zone` (default:
+  the server's time zone), e.g.
   `0 2 * * *` (02:00 every day), `*/30 * * * *`, `0 6,18 * * 1-5`
 - `hourly`, `daily`, `weekly`: `0 * * * *`, `0 0 * * *` (midnight), `0 0 * * 0` (Sunday midnight)
 - an **interval** between runs, counted from server start: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
 
-An invalid schedule fails startup. A run that is still going when the next one is due delays
+An invalid schedule or time zone fails startup. A run that is still going when the next one is due delays
 nothing: the missed slot is skipped. `GET /api/v1/ingest/status` reports `nextScheduledRun`.
 Runs can always be started with `POST /api/v1/ingest/run`.
 
@@ -530,6 +532,7 @@ ingestion {
   enabled = true
   run-on-startup = false
   schedule = "daily"
+  schedule-time-zone = "Europe/London"  # INGEST_SCHEDULE_TZ; default: the server's
 
   sources = [
     # Directory source

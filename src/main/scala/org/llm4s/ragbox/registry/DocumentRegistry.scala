@@ -101,16 +101,23 @@ trait DocumentRegistry {
   /**
    * A page of entries for the sync API: those updated after `since` (ordered by update time)
    * or all (ordered by indexing time), restricted to `collections` and their sub-collections
-   * when given ("default" is the documents with no collection).
+   * when given ("default" is the documents with no collection), and to the documents sync source
+   * `source` owns when given.
    *
    * The default filters [[listEntries]] in memory; database registries override it with a
    * paged query.
    */
-  def listEntriesPage(since: Option[Instant], collections: Option[Set[String]], offset: Int, limit: Int): IO[DocumentEntryPage] =
+  def listEntriesPage(
+    since: Option[Instant],
+    collections: Option[Set[String]],
+    offset: Int,
+    limit: Int,
+    source: Option[String] = None
+  ): IO[DocumentEntryPage] =
     since.fold(listEntries())(listEntriesSince).map { entries =>
       val visible = collections.fold(entries)(allowed =>
         entries.filter(e => DocumentRegistry.inCollections(e.collection.getOrElse("default"), allowed))
-      )
+      ).filter(e => source.forall(s => e.sourceId.contains(s)))
       DocumentEntryPage(visible.slice(offset, offset + limit), visible.size)
     }
 

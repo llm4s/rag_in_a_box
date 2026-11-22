@@ -60,9 +60,9 @@ collection's `queryableBy`, and (in oauth mode) when users log in.
 | POST | `/api/v1/collections` | Admin | Create a collection |
 | GET | `/api/v1/collections/accessible?pattern=*` | Authenticated (tokens: `admin`) | Collections the caller may query |
 | GET | `/api/v1/collections/{path}` | Authenticated (tokens: `admin`) | One collection; `path` may contain slashes. `404` when it does not exist or the caller may not query it |
-| GET | `/api/v1/collections/{path}/stats` | Authenticated (tokens: `admin`) | Document and chunk counts |
-| PUT | `/api/v1/collections/{path}/permissions` | Admin | Replace `queryableBy` |
-| DELETE | `/api/v1/collections/{path}` | Admin | Delete a collection. `204` |
+| GET | `/api/v1/collections/{path}/stats` | Authenticated (tokens: `admin`) | Document and chunk counts. `404` when it does not exist or the caller may not query it |
+| PUT | `/api/v1/collections/{path}/permissions` | Admin | Replace `queryableBy`. `404` when it does not exist |
+| DELETE | `/api/v1/collections/{path}` | Admin | Delete a collection. `204`; `404` when it does not exist |
 
 `GET /api/v1/collections` itself is the [Documents API](/api/documents#collections) list of
 collection names.

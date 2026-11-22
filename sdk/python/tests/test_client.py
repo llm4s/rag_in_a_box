@@ -245,6 +245,27 @@ def test_synced_documents_include_and_since(client):
 
 
 @responses.activate
+def test_synced_documents_source_filter_and_field(client):
+    responses.get(
+        f"{BASE}/api/v1/sync/documents",
+        json={"documents": [{"id": "c1", "source": "confluence"}, {"id": "u1", "source": None}], "total": 2},
+        match=[matchers.query_param_matcher({"source": "confluence", "page": "1"})],
+    )
+    docs = client.synced_documents(source="confluence")
+    assert [(d.id, d.source) for d in docs] == [("c1", "confluence"), ("u1", None)]
+
+
+@responses.activate
+def test_list_synced_documents_passes_source(client):
+    responses.get(
+        f"{BASE}/api/v1/sync/documents",
+        json={"documents": [{"id": "a", "source": "api"}], "total": 1},
+        match=[matchers.query_param_matcher({"source": "api", "page": "1"})],
+    )
+    assert client.list_synced_documents(source="api") == ["a"]
+
+
+@responses.activate
 def test_check_documents(client):
     responses.post(
         f"{BASE}/api/v1/sync/check",

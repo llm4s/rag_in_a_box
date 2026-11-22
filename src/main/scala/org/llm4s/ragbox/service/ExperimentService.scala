@@ -133,17 +133,19 @@ class ExperimentService(
   /**
    * Update a draft experiment: each field the request gives replaces the experiment's, and the
    * result is validated like a new experiment. Only drafts can change, so a running experiment's
-   * results always belong to one definition.
+   * results always belong to one definition. `description` and `collection` are cleared by a
+   * [[FieldPatch.Clear]] (JSON `null`).
    */
   def updateExperiment(id: String, request: UpdateExperimentRequest): IO[ExperimentOperationResponse] =
     for {
       exp <- requireStatus(id, "update", Set(ExperimentStatus.Draft))
       merged = exp.copy(
         name = request.name.map(_.trim).getOrElse(exp.name),
-        description = request.description.orElse(exp.description),
+        description = request.description.applyTo(exp.description),
         baselineConfig = request.baselineConfig.getOrElse(exp.baselineConfig),
         variantConfig = request.variantConfig.getOrElse(exp.variantConfig),
-        trafficSplit = request.trafficSplit.getOrElse(exp.trafficSplit)
+        trafficSplit = request.trafficSplit.getOrElse(exp.trafficSplit),
+        collection = request.collection.applyTo(exp.collection)
       )
       _ <- ExperimentService.validate(CreateExperimentRequest(
         name = merged.name,
