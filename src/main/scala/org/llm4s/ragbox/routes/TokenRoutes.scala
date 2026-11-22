@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe._
 import io.circe.generic.semiauto._
 import io.circe.syntax._
@@ -100,35 +101,33 @@ object TokenRoutes {
     // POST /api/v1/tokens - Create access token (admin only)
     case (req @ POST -> Root / "api" / "v1" / "tokens") as principal =>
       Authz.requireAdmin(principal) {
-        for {
-          body <- req.as[CreateTokenRequest]
-          expiresAt = body.expiresAt.map(Instant.parse)
-          result <- tokenRegistry.create(
-            name = body.name,
-            scopes = body.scopes.toSet,
-            collections = body.collections.map(_.toSet),
-            createdBy = principal.userId,
-            expiresAt = expiresAt
-          ).attempt
-          response <- result match {
-            case Right((token, fullToken)) =>
-              Created(CreateTokenResponse(
-                id = token.id,
-                name = token.name,
-                token = fullToken,
-                scopes = token.scopes.toSeq,
-                collections = token.collections.map(_.toSeq),
-                expiresAt = token.expiresAt
-              ).asJson)
-            case Left(e: IllegalArgumentException) =>
-              BadRequest(ErrorResponse.badRequest(e.getMessage).asJson)
-            case Left(e) =>
-              InternalServerError(ErrorResponse.internalError(
-                "Failed to create token",
-                Some(e.getMessage)
-              ).asJson)
+        req.as[CreateTokenRequest].flatMap { body =>
+          val invalidScopes = body.scopes.filterNot(TokenScope.validate)
+          val expiresAt = body.expiresAt.traverse(s => Either.catchNonFatal(Instant.parse(s.trim)))
+          (invalidScopes, expiresAt) match {
+            case (invalid, _) if invalid.nonEmpty =>
+              BadRequest(ErrorResponse.badRequest(s"Invalid scopes: ${invalid.mkString(", ")}").asJson)
+            case (_, Left(_)) =>
+              BadRequest(ErrorResponse.badRequest("expiresAt must be an ISO-8601 timestamp, like 2025-01-01T00:00:00Z").asJson)
+            case (_, Right(expires)) =>
+              tokenRegistry.create(
+                name = body.name,
+                scopes = body.scopes.toSet,
+                collections = body.collections.map(_.toSet),
+                createdBy = principal.userId,
+                expiresAt = expires
+              ).flatMap { case (token, fullToken) =>
+                Created(CreateTokenResponse(
+                  id = token.id,
+                  name = token.name,
+                  token = fullToken,
+                  scopes = token.scopes.toSeq,
+                  collections = token.collections.map(_.toSeq),
+                  expiresAt = token.expiresAt
+                ).asJson)
+              }
           }
-        } yield response
+        }
       }
 
     // GET /api/v1/tokens - List all tokens (admin only)
@@ -147,7 +146,7 @@ object TokenRoutes {
     case GET -> Root / "api" / "v1" / "tokens" / id as principal =>
       Authz.requireAdmin(principal) {
         for {
-          tokenOpt <- tokenRegistry.getById(id)
+          tokenOpt <- Params.uuid(id).flatTraverse(uuid => tokenRegistry.getById(uuid.toString))
           response <- tokenOpt match {
             case Some(token) =>
               Ok(TokenInfoResponse.fromAccessToken(token).asJson)
@@ -161,7 +160,7 @@ object TokenRoutes {
     case DELETE -> Root / "api" / "v1" / "tokens" / id as principal =>
       Authz.requireAdmin(principal) {
         for {
-          result <- tokenRegistry.delete(id)
+          result <- Params.uuid(id).fold(IO.pure(false))(uuid => tokenRegistry.delete(uuid.toString))
           response <- if (result) {
             NoContent()
           } else {

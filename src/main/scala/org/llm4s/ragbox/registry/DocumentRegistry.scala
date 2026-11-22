@@ -35,6 +35,11 @@ final case class DocumentEntry(
 )
 
 /**
+ * A page of document entries and how many match in all.
+ */
+final case class DocumentEntryPage(entries: Seq[DocumentEntry], total: Int)
+
+/**
  * Sync status information.
  *
  * @param lastSyncTime When the last sync was completed
@@ -49,6 +54,13 @@ final case class SyncInfo(
  * The document registry tracks which documents have been ingested,
  * their content hashes for change detection, and sync status.
  */
+object DocumentRegistry {
+
+  /** `collection` is one of `allowed` or below one (`a/b` is below `a`). */
+  def inCollections(collection: String, allowed: Set[String]): Boolean =
+    allowed.exists(a => collection == a || collection.startsWith(a + "/"))
+}
+
 trait DocumentRegistry {
 
   /**
@@ -85,6 +97,31 @@ trait DocumentRegistry {
    * List document entries modified since a given time.
    */
   def listEntriesSince(since: Instant): IO[Seq[DocumentEntry]]
+
+  /**
+   * A page of entries for the sync API: those updated after `since` (ordered by update time)
+   * or all (ordered by indexing time), restricted to `collections` and their sub-collections
+   * when given ("default" is the documents with no collection).
+   *
+   * The default filters [[listEntries]] in memory; database registries override it with a
+   * paged query.
+   */
+  def listEntriesPage(since: Option[Instant], collections: Option[Set[String]], offset: Int, limit: Int): IO[DocumentEntryPage] =
+    since.fold(listEntries())(listEntriesSince).map { entries =>
+      val visible = collections.fold(entries)(allowed =>
+        entries.filter(e => DocumentRegistry.inCollections(e.collection.getOrElse("default"), allowed))
+      )
+      DocumentEntryPage(visible.slice(offset, offset + limit), visible.size)
+    }
+
+  /**
+   * When the earliest current document was indexed and the latest one updated (None when there
+   * are none). The default reads [[listEntries]]; database registries override it.
+   */
+  def ingestionTimes(): IO[(Option[Instant], Option[Instant])] =
+    listEntries().map { entries =>
+      (entries.map(_.indexedAt).minOption, entries.map(_.updatedAt).maxOption)
+    }
 
   /**
    * Get multiple document entries by ID (batch lookup).

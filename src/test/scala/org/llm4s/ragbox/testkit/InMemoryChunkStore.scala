@@ -2,7 +2,7 @@ package org.llm4s.ragbox.testkit
 
 import cats.effect.IO
 import org.llm4s.ragbox.model.{ChunkInfo, ChunkListResponse, ChunkSizeDistribution, SizeBucket}
-import org.llm4s.ragbox.store.ChunkStore
+import org.llm4s.ragbox.store.{ChunkStore, CollectionChunkStats}
 import scala.collection.mutable
 
 /**
@@ -75,14 +75,10 @@ class InMemoryChunkStore extends ChunkStore {
   override def count(): IO[Int] =
     IO.pure(chunks.values.flatten.size)
 
-  override def countByCollection(collection: String): IO[Int] = IO {
-    chunks.values.flatten.count(_.metadata.get("collection").contains(collection))
-  }
-
-  override def avgChunkSizeByCollection(collection: String): IO[Double] = IO {
-    val collChunks = chunks.values.flatten.filter(_.metadata.get("collection").contains(collection)).toSeq
-    if (collChunks.isEmpty) 0.0
-    else collChunks.map(_.contentLength).sum.toDouble / collChunks.size
+  override def statsByCollection(): IO[Map[String, CollectionChunkStats]] = IO {
+    chunks.values.flatten.toSeq.groupBy(_.metadata.getOrElse("collection", "default")).map { case (c, cs) =>
+      c -> CollectionChunkStats(cs.size, cs.map(_.contentLength).sum.toDouble / cs.size)
+    }
   }
 
   override def deleteByDocument(documentId: String): IO[Unit] =

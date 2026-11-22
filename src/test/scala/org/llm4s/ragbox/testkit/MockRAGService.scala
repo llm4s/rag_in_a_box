@@ -252,7 +252,7 @@ class MockRAGService(
           chunkingConfig = ChunkConfigSnapshot(
             strategy = config.rag.chunking.strategy,
             targetSize = config.rag.chunking.size,
-            maxSize = (config.rag.chunking.size * 1.5).toInt,
+            maxSize = org.llm4s.ragbox.config.RuntimeSettings.defaultMaxSize(config.rag.chunking.size),
             overlap = config.rag.chunking.overlap
           )
         ))

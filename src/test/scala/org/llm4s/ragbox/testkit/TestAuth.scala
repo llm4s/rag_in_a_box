@@ -4,6 +4,7 @@ import cats.data.Kleisli
 import cats.effect.IO
 import org.http4s.{AuthedRoutes, ContextRequest, HttpRoutes}
 import org.llm4s.ragbox.auth.{AuthMethod, Principal}
+import org.llm4s.ragbox.routes.ErrorHandling
 
 /**
  * Run protected routes in unit tests without the authenticator, as a fixed principal.
@@ -38,8 +39,9 @@ object TestAuth {
       collections = collections
     )
 
+  /** `routes` as `principal`, with the application's error handling (see `ErrorHandling`). */
   def as(principal: Principal)(routes: AuthedRoutes[Principal, IO]): HttpRoutes[IO] =
-    Kleisli(req => routes(ContextRequest(principal, req)))
+    ErrorHandling(Kleisli(req => routes(ContextRequest(principal, req))))
 
   extension (routes: AuthedRoutes[Principal, IO]) {
     def asAdmin: HttpRoutes[IO] = as(Admin)(routes)

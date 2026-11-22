@@ -304,8 +304,8 @@ permission checks on every request made with the SSO session.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/collections` | POST | Create collection |
-| `/api/v1/collections` | GET | List collections |
-| `/api/v1/collections/accessible` | GET | List accessible to current user |
+| `/api/v1/collections` | GET | Names of the collections that have documents |
+| `/api/v1/collections/accessible` | GET | Collections the caller may query, with their permissions (administrators: all) |
 | `/api/v1/collections/:path` | GET | Get collection details |
 | `/api/v1/collections/:path/permissions` | PUT | Update permissions |
 | `/api/v1/collections/:path` | DELETE | Delete collection |

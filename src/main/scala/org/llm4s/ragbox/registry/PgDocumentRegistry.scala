@@ -134,6 +134,70 @@ class PgDocumentRegistry(dataSource: DataSource) extends DocumentRegistry {
     }
   }
 
+  /** One query for the page and its total (`COUNT(*) OVER ()`). */
+  override def listEntriesPage(
+    since: Option[Instant],
+    collections: Option[Set[String]],
+    offset: Int,
+    limit: Int
+  ): IO[DocumentEntryPage] = ConnectionPool.withConnection(dataSource) { connection =>
+    // "default" stands for no collection; a collection includes its sub-collections
+    val conditions = since.map(_ => "updated_at > ?").toList ++ collections.map(_ =>
+      "EXISTS (SELECT 1 FROM unnest(?::text[]) AS a(c) " +
+        "WHERE COALESCE(collection, 'default') = a.c OR left(COALESCE(collection, 'default'), length(a.c) + 1) = a.c || '/')"
+    )
+    val where = if (conditions.isEmpty) "" else conditions.mkString("WHERE ", " AND ", "")
+    val order = if (since.isDefined) "updated_at, document_id" else "indexed_at, document_id"
+    val sql =
+      s"""SELECT $EntryColumns, COUNT(*) OVER () AS total
+        |FROM document_registry $where ORDER BY $order OFFSET ? LIMIT ?""".stripMargin
+    val stmt = connection.prepareStatement(sql)
+    try {
+      var i = 0
+      def next(): Int = { i += 1; i }
+      since.foreach(s => stmt.setTimestamp(next(), Timestamp.from(s)))
+      collections.foreach(c => stmt.setArray(next(), connection.createArrayOf("text", c.toArray[AnyRef])))
+      stmt.setInt(next(), offset)
+      stmt.setInt(next(), limit)
+      val rs = stmt.executeQuery()
+      val entries = scala.collection.mutable.ArrayBuffer.empty[DocumentEntry]
+      var total = 0
+      while (rs.next()) {
+        entries += rowToEntry(rs)
+        total = rs.getInt("total")
+      }
+      if (entries.nonEmpty || offset == 0) DocumentEntryPage(entries.toSeq, total)
+      else {
+        // Past the last page: the window total is not available, so count separately
+        val countSql = s"SELECT COUNT(*) FROM document_registry $where"
+        val countStmt = connection.prepareStatement(countSql)
+        try {
+          var j = 0
+          def nextCount(): Int = { j += 1; j }
+          since.foreach(s => countStmt.setTimestamp(nextCount(), Timestamp.from(s)))
+          collections.foreach(c => countStmt.setArray(nextCount(), connection.createArrayOf("text", c.toArray[AnyRef])))
+          val countRs = countStmt.executeQuery()
+          DocumentEntryPage(Seq.empty, if (countRs.next()) countRs.getInt(1) else 0)
+        } finally {
+          countStmt.close()
+        }
+      }
+    } finally {
+      stmt.close()
+    }
+  }
+
+  override def ingestionTimes(): IO[(Option[Instant], Option[Instant])] = ConnectionPool.withConnection(dataSource) { connection =>
+    val stmt = connection.createStatement()
+    try {
+      val rs = stmt.executeQuery("SELECT MIN(indexed_at), MAX(updated_at) FROM document_registry")
+      if (rs.next()) (Option(rs.getTimestamp(1)).map(_.toInstant), Option(rs.getTimestamp(2)).map(_.toInstant))
+      else (None, None)
+    } finally {
+      stmt.close()
+    }
+  }
+
   override def getMultiple(documentIds: Seq[String]): IO[Seq[DocumentEntry]] = ConnectionPool.withConnection(dataSource) { connection =>
     if (documentIds.isEmpty) {
       Seq.empty

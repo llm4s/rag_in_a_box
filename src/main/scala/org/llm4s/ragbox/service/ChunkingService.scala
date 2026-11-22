@@ -39,7 +39,7 @@ class ChunkingService(config: AppConfig, runtime: RuntimeSettings) {
     // Build chunking config
     val chunkingConfig = ChunkingConfig(
       targetSize = request.targetSize.getOrElse(chunking.size),
-      maxSize = request.maxSize.getOrElse((chunking.size * 1.5).toInt),
+      maxSize = request.maxSize.getOrElse(RuntimeSettings.defaultMaxSize(chunking.size)),
       overlap = request.overlap.getOrElse(chunking.overlap)
     )
 
@@ -87,7 +87,7 @@ class ChunkingService(config: AppConfig, runtime: RuntimeSettings) {
 
     val chunkingConfig = ChunkingConfig(
       targetSize = request.targetSize.getOrElse(chunking.size),
-      maxSize = request.targetSize.map(t => (t * 1.5).toInt).getOrElse((chunking.size * 1.5).toInt),
+      maxSize = request.targetSize.map(RuntimeSettings.defaultMaxSize).getOrElse(RuntimeSettings.defaultMaxSize(chunking.size)),
       overlap = request.overlap.getOrElse(chunking.overlap)
     )
 
@@ -206,7 +206,7 @@ class ChunkingService(config: AppConfig, runtime: RuntimeSettings) {
       displayName = "Current Configuration",
       description = "Currently active chunking configuration",
       targetSize = chunking.size,
-      maxSize = (chunking.size * 1.5).toInt,
+      maxSize = RuntimeSettings.defaultMaxSize(chunking.size),
       overlap = chunking.overlap,
       bestFor = Seq()
     )

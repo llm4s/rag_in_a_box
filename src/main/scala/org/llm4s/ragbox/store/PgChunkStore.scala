@@ -151,79 +151,65 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
     }
   }
 
+  /**
+   * One query: min, max, mean, median and p90 (`percentile_cont`) and the histogram
+   * (`width_bucket` over [[PgChunkStore.BucketBounds]]), the statistics repeated on each bucket's
+   * row. Only non-empty buckets are returned.
+   */
   override def getChunkSizeDistribution(): IO[ChunkSizeDistribution] = ConnectionPool.withConnection(dataSource) { connection =>
+    val bounds = PgChunkStore.BucketBounds
+    val sql =
+      s"""WITH stats AS (
+         |  SELECT COUNT(*) AS n, MIN(content_length) AS min_size, MAX(content_length) AS max_size,
+         |         AVG(content_length) AS avg_size,
+         |         percentile_cont(0.5) WITHIN GROUP (ORDER BY content_length) AS median,
+         |         percentile_cont(0.9) WITHIN GROUP (ORDER BY content_length) AS p90
+         |  FROM chunk_registry
+         |), buckets AS (
+         |  SELECT width_bucket(content_length, ARRAY[${bounds.mkString(",")}]) AS bucket, COUNT(*) AS count
+         |  FROM chunk_registry GROUP BY 1
+         |)
+         |SELECT s.*, b.bucket, b.count FROM stats s LEFT JOIN buckets b ON true ORDER BY b.bucket""".stripMargin
     val stmt = connection.createStatement()
     try {
-      // Get min, max, avg
-      val statsRs = stmt.executeQuery(
-        """SELECT
-          |  MIN(content_length) as min_size,
-          |  MAX(content_length) as max_size,
-          |  AVG(content_length) as avg_size
-          |FROM chunk_registry""".stripMargin
-      )
-
-      val (minSize, maxSize, avgSize) = if (statsRs.next()) {
-        (statsRs.getInt("min_size"), statsRs.getInt("max_size"), statsRs.getDouble("avg_size"))
-      } else {
-        (0, 0, 0.0)
-      }
-
-      // Get median and p90
-      val countRs = stmt.executeQuery("SELECT COUNT(*) FROM chunk_registry")
-      val count = if (countRs.next()) countRs.getInt(1) else 0
-
-      val (median, p90) = if (count > 0) {
-        val medianRs = stmt.executeQuery(
-          s"""SELECT content_length FROM chunk_registry
-             |ORDER BY content_length
-             |LIMIT 1 OFFSET ${count / 2}""".stripMargin
-        )
-        val medianVal = if (medianRs.next()) medianRs.getDouble(1) else 0.0
-
-        val p90Rs = stmt.executeQuery(
-          s"""SELECT content_length FROM chunk_registry
-             |ORDER BY content_length
-             |LIMIT 1 OFFSET ${(count * 0.9).toInt}""".stripMargin
-        )
-        val p90Val = if (p90Rs.next()) p90Rs.getDouble(1) else 0.0
-        (medianVal, p90Val)
-      } else {
-        (0.0, 0.0)
-      }
-
-      // Get histogram buckets (0-200, 200-400, 400-600, 600-800, 800-1000, 1000+)
-      val bucketsRs = stmt.executeQuery(
-        """SELECT
-          |  CASE
-          |    WHEN content_length < 200 THEN 0
-          |    WHEN content_length < 400 THEN 200
-          |    WHEN content_length < 600 THEN 400
-          |    WHEN content_length < 800 THEN 600
-          |    WHEN content_length < 1000 THEN 800
-          |    WHEN content_length < 1500 THEN 1000
-          |    ELSE 1500
-          |  END as bucket_start,
-          |  COUNT(*) as count
-          |FROM chunk_registry
-          |GROUP BY bucket_start
-          |ORDER BY bucket_start""".stripMargin
-      )
+      val rs = stmt.executeQuery(sql)
+      var distribution = ChunkSizeDistribution(0, 0, 0.0, 0.0, 0.0, Seq.empty)
       val buckets = scala.collection.mutable.ArrayBuffer.empty[SizeBucket]
-      while (bucketsRs.next()) {
-        val start = bucketsRs.getInt("bucket_start")
-        val end = if (start == 1500) Int.MaxValue else start + 200
-        buckets += SizeBucket(start, end, bucketsRs.getInt("count"))
+      while (rs.next()) {
+        if (rs.getLong("n") > 0) {
+          distribution = ChunkSizeDistribution(
+            min = rs.getInt("min_size"),
+            max = rs.getInt("max_size"),
+            avg = rs.getDouble("avg_size"),
+            median = rs.getDouble("median"),
+            p90 = rs.getDouble("p90"),
+            buckets = Seq.empty
+          )
+          // width_bucket gives 0 below the first bound, i for [bounds(i-1), bounds(i)), and bounds.size above the last
+          val bucket = rs.getInt("bucket")
+          val start = if (bucket == 0) 0 else bounds(bucket - 1)
+          val end = if (bucket < bounds.size) bounds(bucket) else Int.MaxValue
+          buckets += SizeBucket(start, end, rs.getInt("count"))
+        }
       }
+      distribution.copy(buckets = buckets.toSeq)
+    } finally {
+      stmt.close()
+    }
+  }
 
-      ChunkSizeDistribution(
-        min = minSize,
-        max = maxSize,
-        avg = avgSize,
-        median = median,
-        p90 = p90,
-        buckets = buckets.toSeq
+  /** One `GROUP BY` for every collection. */
+  override def statsByCollection(): IO[Map[String, CollectionChunkStats]] = ConnectionPool.withConnection(dataSource) { connection =>
+    val stmt = connection.createStatement()
+    try {
+      val rs = stmt.executeQuery(
+        "SELECT COALESCE(collection, 'default'), COUNT(*), AVG(content_length) FROM chunk_registry GROUP BY 1"
       )
+      val stats = Map.newBuilder[String, CollectionChunkStats]
+      while (rs.next()) {
+        stats += rs.getString(1) -> CollectionChunkStats(rs.getInt(2), rs.getDouble(3))
+      }
+      stats.result()
     } finally {
       stmt.close()
     }
@@ -234,40 +220,6 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
     try {
       val rs = stmt.executeQuery("SELECT COUNT(*) FROM chunk_registry")
       if (rs.next()) rs.getInt(1) else 0
-    } finally {
-      stmt.close()
-    }
-  }
-
-  override def countByCollection(collection: String): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
-    // Handle "default" as the pseudo-collection for chunks without explicit collection
-    val (sql, useParam) = if (collection == "default") {
-      ("SELECT COUNT(*) FROM chunk_registry WHERE collection IS NULL", false)
-    } else {
-      ("SELECT COUNT(*) FROM chunk_registry WHERE collection = ?", true)
-    }
-    val stmt = connection.prepareStatement(sql)
-    try {
-      if (useParam) stmt.setString(1, collection)
-      val rs = stmt.executeQuery()
-      if (rs.next()) rs.getInt(1) else 0
-    } finally {
-      stmt.close()
-    }
-  }
-
-  override def avgChunkSizeByCollection(collection: String): IO[Double] = ConnectionPool.withConnection(dataSource) { connection =>
-    // Handle "default" as the pseudo-collection for chunks without explicit collection
-    val (sql, useParam) = if (collection == "default") {
-      ("SELECT AVG(content_length) FROM chunk_registry WHERE collection IS NULL", false)
-    } else {
-      ("SELECT AVG(content_length) FROM chunk_registry WHERE collection = ?", true)
-    }
-    val stmt = connection.prepareStatement(sql)
-    try {
-      if (useParam) stmt.setString(1, collection)
-      val rs = stmt.executeQuery()
-      if (rs.next()) rs.getDouble(1) else 0.0
     } finally {
       stmt.close()
     }
@@ -330,6 +282,12 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 }
 
 object PgChunkStore {
+
+  /**
+   * Upper bounds of the chunk size histogram's buckets: [0, 200), [200, 400), ..., [1000, 1500),
+   * [1500, Int.MaxValue).
+   */
+  val BucketBounds: IndexedSeq[Int] = IndexedSeq(200, 400, 600, 800, 1000, 1500)
 
   /**
    * A PostgreSQL chunk store. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.

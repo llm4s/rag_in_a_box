@@ -444,6 +444,16 @@ paths:
             type: string
             format: date-time
             example: "2024-01-01T00:00:00Z"
+        - name: page
+          in: query
+          description: 1-based page (default 1)
+          schema:
+            type: integer
+        - name: pageSize
+          in: query
+          description: Documents per page (default 1000, max 10000)
+          schema:
+            type: integer
       responses:
         '200':
           description: Document states
@@ -1415,6 +1425,13 @@ components:
             $ref: '#/components/schemas/DocumentSyncState'
         total:
           type: integer
+          description: Matching documents across all pages
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
 
     SyncCheckRequest:
       type: object

@@ -77,8 +77,14 @@ All responses are JSON. Successful responses include the requested data. Error r
 
 | Status | Error Type | Description |
 |--------|------------|-------------|
-| 400 | `bad_request` | Invalid request format or parameters |
+| 400 | `bad_request` | Invalid request body (malformed JSON, a missing or mistyped field; `details` names it) or query parameter (`details` names it) |
+| 400 | `configuration_error` | Answer generation requested but no LLM is configured |
 | 401 | `unauthorized` | Missing or invalid authentication |
 | 403 | `forbidden` | Insufficient permissions |
-| 404 | `not_found` | Resource not found |
-| 500 | `internal_error` | Server error |
+| 404 | `not_found` | Resource not found (also for an id that cannot exist, such as a query log id that is not a UUID) |
+| 409 | `conflict` | The request conflicts with the current state (an existing collection, an ingestion already running) |
+| 415 | `unsupported_media_type` | The body is not JSON where JSON is expected |
+| 500 | `internal_error` | Server error. The message is always `Internal server error`; the cause is in the server log, never in the response |
+
+Every error, from every endpoint, has this shape. Paging parameters are clamped rather than
+rejected: `page` below 1 is 1 and `pageSize` is kept between 1 and the endpoint's maximum.

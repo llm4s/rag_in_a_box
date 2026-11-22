@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
 import org.llm4s.ragbox.auth.Principal
@@ -18,8 +19,9 @@ import org.llm4s.ragbox.model._
 object RuntimeConfigRoutes {
 
   // Query parameter extractors
-  object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
-  object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
+  /** Default and maximum page sizes of the change history. */
+  val DefaultPageSize: Int = 50
+  val MaxPageSize: Int = 100
 
   // Changing the runtime configuration (including the system prompt) and its change history are admin-only.
   def routes(configManager: RuntimeConfigManager): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.under("/api/v1/config/runtime")(req) && (Authz.mutating(req) || req.pathInfo.renderString.endsWith("/history")))(AuthedRoutes.of[Principal, IO] {
@@ -58,11 +60,11 @@ object RuntimeConfigRoutes {
 
     // GET /api/v1/config/runtime/history - Get config change history
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "history"
-        :? PageParam(page) +& PageSizeParam(pageSize) as principal =>
-      for {
-        result <- configManager.getHistory(page.getOrElse(1), pageSize.getOrElse(50))
-        response <- Ok(result.asJson)
-      } yield response
+        :? Params.Page(page) +& Params.PageSize(pageSize) as _ =>
+      Params.withValid((Params.opt(page), Params.opt(pageSize)).tupled) { case (page, pageSize) =>
+        val paging = Params.Paging(page, pageSize, DefaultPageSize, MaxPageSize)
+        configManager.getHistory(paging.page, paging.pageSize).flatMap(result => Ok(result.asJson))
+      }
 
     // GET /api/v1/config/runtime/meta - Get metadata about configurable settings
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" as principal =>

@@ -87,11 +87,12 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
   }
 
   // ============================================================
-  // GET /api/v1/collections - List collections
+  // GET /api/v1/collections/accessible - List collections with their permissions
+  // (GET /api/v1/collections itself is DocumentRoutes': collection names)
   // ============================================================
 
-  "GET /api/v1/collections" should "return empty list when no collections" in {
-    val request = Request[IO](Method.GET, uri"/api/v1/collections")
+  "GET /api/v1/collections/accessible" should "return empty list when no collections" in {
+    val request = Request[IO](Method.GET, uri"/api/v1/collections/accessible")
 
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
@@ -106,7 +107,7 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
     createCollection("docs/api")
     createCollection("docs/guides")
 
-    val request = Request[IO](Method.GET, uri"/api/v1/collections")
+    val request = Request[IO](Method.GET, uri"/api/v1/collections/accessible")
 
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
@@ -122,7 +123,7 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
     createCollection("docs/guides")
     createCollection("internal/secrets")
 
-    val request = Request[IO](Method.GET, uri"/api/v1/collections?pattern=docs/*")
+    val request = Request[IO](Method.GET, uri"/api/v1/collections/accessible?pattern=docs/*")
 
     val response = routes.orNotFound.run(request).unsafeRunSync()
 

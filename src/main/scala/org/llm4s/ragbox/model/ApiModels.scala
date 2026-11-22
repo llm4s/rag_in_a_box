@@ -146,11 +146,17 @@ final case class DocumentSyncState(
 ) derives Codec.AsObject
 
 /**
- * Response for listing document sync states.
+ * A page of document sync states.
+ *
+ * @param total   documents matching the request across all pages
+ * @param hasMore whether a later page has more
  */
 final case class DocumentSyncListResponse(
   documents: Seq[DocumentSyncState],
-  total: Int
+  total: Int,
+  page: Int,
+  pageSize: Int,
+  hasMore: Boolean
 ) derives Codec.AsObject
 
 /**
