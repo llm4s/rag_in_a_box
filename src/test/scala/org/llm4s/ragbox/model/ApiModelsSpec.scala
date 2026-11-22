@@ -2,6 +2,7 @@ package org.llm4s.ragbox.model
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import io.circe.Json
 import io.circe.syntax._
 import io.circe.parser._
 import java.time.Instant
@@ -259,8 +260,18 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
 
   "QueryConfigSnapshot" should "decode snapshots logged before rrfK and reranking were recorded" in {
     decode[QueryConfigSnapshot]("""{"topK":5,"fusionStrategy":"rrf","systemPrompt":"Be brief.","llmTemperature":null}""") shouldBe
-      Right(QueryConfigSnapshot(5, "rrf", Some("Be brief.")))
-    val full = QueryConfigSnapshot(5, "rrf", Some("p"), None, Some(0.3), Some(60), Some("cohere"))
+      Right(QueryConfigSnapshot(5, Some("rrf"), Some("Be brief.")))
+    val full = QueryConfigSnapshot(5, Some("rrf"), Some("p"), None, Some(0.3), Some(60), Some("cohere"), Some("hybrid"))
     decode[QueryConfigSnapshot](full.asJson.noSpaces) shouldBe Right(full)
+  }
+
+  it should "decode snapshots logged before the search mode was recorded, and vector-only ones without fusion" in {
+    decode[QueryConfigSnapshot]("""{"topK":5,"fusionStrategy":"rrf","rrfK":60,"reranking":"none"}""") shouldBe
+      Right(QueryConfigSnapshot(5, Some("rrf"), rrfK = Some(60), reranking = Some("none")))
+    val vectorOnly = QueryConfigSnapshot(5, systemPrompt = Some("p"), searchMode = Some(QueryConfigSnapshot.VectorOnlySearch))
+    val json = vectorOnly.asJson
+    json.hcursor.get[String]("searchMode") shouldBe Right("vector-only")
+    Seq("fusionStrategy", "rrfK", "reranking").foreach(k => json.hcursor.downField(k).focus shouldBe Some(Json.Null))
+    decode[QueryConfigSnapshot](json.noSpaces) shouldBe Right(vectorOnly)
   }
 }

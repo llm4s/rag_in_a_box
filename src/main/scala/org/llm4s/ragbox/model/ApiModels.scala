@@ -553,21 +553,40 @@ object ErrorResponse {
 
 /**
  * Configuration snapshot for experiment tracking.
- * Records the effective configuration used for a query.
+ * Records the effective configuration a query ran with - only the settings that applied.
  *
+ * In permission mode llm4s 0.6.0 permission-filtered search is vector-only (llm4s/llm4s#2716),
+ * so fusion, the RRF constant and reranking do not apply: the snapshot records
+ * `searchMode = vector-only` and no `fusionStrategy`, `rrfK` or `reranking`.
+ *
+ * @param fusionStrategy the fusion strategy, in `hybrid` search mode (none in `vector-only` mode)
  * @param similarityThreshold the minimum chunk similarity the query applied (none: no threshold)
  * @param rrfK the RRF constant, with `rrf` fusion (none otherwise, and in entries logged before it was recorded)
- * @param reranking the reranking strategy (`none`, `cohere` or `llm`; none in entries logged before it was recorded)
+ * @param reranking the reranking strategy (`none`, `cohere` or `llm`), in `hybrid` search mode
+ *                  (none in `vector-only` mode, and in entries logged before it was recorded)
+ * @param searchMode how the query searched: `hybrid` (vector + keyword, fused, then reranked) or
+ *                   `vector-only` (permission mode, llm4s/llm4s#2716); none in entries logged
+ *                   before it was recorded
  */
 final case class QueryConfigSnapshot(
   topK: Int,
-  fusionStrategy: String,
+  fusionStrategy: Option[String] = None,
   systemPrompt: Option[String] = None,
   llmTemperature: Option[Double] = None,
   similarityThreshold: Option[Double] = None,
   rrfK: Option[Int] = None,
-  reranking: Option[String] = None
+  reranking: Option[String] = None,
+  searchMode: Option[String] = None
 ) derives Codec.AsObject
+
+object QueryConfigSnapshot {
+
+  /** Vector and keyword search, fused, then reranked: every search setting applies. */
+  val HybridSearch: String = "hybrid"
+
+  /** Permission-mode search: vector-only in llm4s 0.6.0 (llm4s/llm4s#2716). */
+  val VectorOnlySearch: String = "vector-only"
+}
 
 /**
  * A logged query for analytics.

@@ -227,6 +227,36 @@
     },
     "score" : 0.92
   },
+  "CreateExperimentResponse" : {
+    "experiment" : {
+      "baselineConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      },
+      "collection" : "docs",
+      "createdAt" : "2024-01-01T00:00:00Z",
+      "description" : "Shorter answers",
+      "endedAt" : "2024-01-01T00:00:00Z",
+      "id" : "exp-1",
+      "name" : "prompt test",
+      "startedAt" : "2024-01-01T00:00:00Z",
+      "status" : "running",
+      "trafficSplit" : 0.5,
+      "variantConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      }
+    },
+    "message" : "Created"
+  },
   "DetailedCollectionStats" : {
     "avgChunkSize" : 450.0,
     "avgChunksPerDoc" : 3.0,
@@ -370,6 +400,183 @@
     "error" : "validation_failed",
     "message" : "Configuration validation failed"
   },
+  "Experiment" : {
+    "baselineConfig" : {
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.2,
+      "reranking" : "cohere",
+      "rrfK" : 30,
+      "systemPrompt" : "Be brief.",
+      "topK" : 8
+    },
+    "collection" : "docs",
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "description" : "Shorter answers",
+    "endedAt" : "2024-01-01T00:00:00Z",
+    "id" : "exp-1",
+    "name" : "prompt test",
+    "startedAt" : "2024-01-01T00:00:00Z",
+    "status" : "running",
+    "trafficSplit" : 0.5,
+    "variantConfig" : {
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.2,
+      "reranking" : "cohere",
+      "rrfK" : 30,
+      "systemPrompt" : "Be brief.",
+      "topK" : 8
+    }
+  },
+  "ExperimentAnalysis" : {
+    "chunksUsedChange" : "+0.0%",
+    "errorRateChange" : "-50.0%",
+    "latencyChange" : "-8.3%",
+    "ratingChange" : "+4.8%",
+    "tests" : [
+      {
+        "baseline" : 120.0,
+        "metric" : "latencyMs",
+        "pValue" : 0.25,
+        "significant" : false,
+        "statistic" : -1.2,
+        "test" : "welch-t",
+        "variant" : 110.0
+      }
+    ]
+  },
+  "ExperimentConfigSnapshot" : {
+    "fusionStrategy" : "rrf",
+    "llmTemperature" : 0.2,
+    "reranking" : "cohere",
+    "rrfK" : 30,
+    "systemPrompt" : "Be brief.",
+    "topK" : 8
+  },
+  "ExperimentListResponse" : {
+    "experiments" : [
+      {
+        "baselineConfig" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.2,
+          "reranking" : "cohere",
+          "rrfK" : 30,
+          "systemPrompt" : "Be brief.",
+          "topK" : 8
+        },
+        "collection" : "docs",
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "description" : "Shorter answers",
+        "endedAt" : "2024-01-01T00:00:00Z",
+        "id" : "exp-1",
+        "name" : "prompt test",
+        "startedAt" : "2024-01-01T00:00:00Z",
+        "status" : "running",
+        "trafficSplit" : 0.5,
+        "variantConfig" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.2,
+          "reranking" : "cohere",
+          "rrfK" : 30,
+          "systemPrompt" : "Be brief.",
+          "topK" : 8
+        }
+      }
+    ],
+    "total" : 1
+  },
+  "ExperimentOperationResponse" : {
+    "experiment" : {
+      "baselineConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      },
+      "collection" : "docs",
+      "createdAt" : "2024-01-01T00:00:00Z",
+      "description" : "Shorter answers",
+      "endedAt" : "2024-01-01T00:00:00Z",
+      "id" : "exp-1",
+      "name" : "prompt test",
+      "startedAt" : "2024-01-01T00:00:00Z",
+      "status" : "running",
+      "trafficSplit" : 0.5,
+      "variantConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      }
+    },
+    "message" : "Started",
+    "success" : true
+  },
+  "ExperimentResults" : {
+    "analysis" : {
+      "chunksUsedChange" : "+0.0%",
+      "errorRateChange" : "-50.0%",
+      "latencyChange" : "-8.3%",
+      "ratingChange" : "+4.8%",
+      "tests" : [
+        {
+          "baseline" : 120.0,
+          "metric" : "latencyMs",
+          "pValue" : 0.25,
+          "significant" : false,
+          "statistic" : -1.2,
+          "test" : "welch-t",
+          "variant" : 110.0
+        }
+      ]
+    },
+    "baseline" : {
+      "avgChunksRetrieved" : 5.0,
+      "avgChunksUsed" : 3.0,
+      "avgLatencyMs" : 120.0,
+      "avgRating" : 4.2,
+      "errorRate" : 0.1,
+      "failedCount" : 1,
+      "latencyStdDevMs" : 12.5,
+      "positiveCount" : 4,
+      "queryCount" : 10,
+      "ratedCount" : 5,
+      "ratingStdDev" : 0.4
+    },
+    "duration" : "2h 5m",
+    "experimentId" : "exp-1",
+    "experimentName" : "prompt test",
+    "status" : "completed",
+    "variant" : {
+      "avgChunksRetrieved" : 5.0,
+      "avgChunksUsed" : 3.0,
+      "avgLatencyMs" : 120.0,
+      "avgRating" : 4.2,
+      "errorRate" : 0.1,
+      "failedCount" : 1,
+      "latencyStdDevMs" : 12.5,
+      "positiveCount" : 4,
+      "queryCount" : 10,
+      "ratedCount" : 5,
+      "ratingStdDev" : 0.4
+    }
+  },
+  "ExperimentVariantMetrics" : {
+    "avgChunksRetrieved" : 5.0,
+    "avgChunksUsed" : 3.0,
+    "avgLatencyMs" : 120.0,
+    "avgRating" : 4.2,
+    "errorRate" : 0.1,
+    "failedCount" : 1,
+    "latencyStdDevMs" : 12.5,
+    "positiveCount" : 4,
+    "queryCount" : 10,
+    "ratedCount" : 5,
+    "ratingStdDev" : 0.4
+  },
   "LoginResponse" : {
     "expiresIn" : 3600,
     "role" : "admin",
@@ -445,6 +652,7 @@
     "llmTemperature" : 0.1,
     "reranking" : "cohere",
     "rrfK" : 60,
+    "searchMode" : "hybrid",
     "similarityThreshold" : 0.25,
     "systemPrompt" : "You are helpful.",
     "topK" : 5
@@ -459,6 +667,7 @@
       "llmTemperature" : 0.1,
       "reranking" : "cohere",
       "rrfK" : 60,
+      "searchMode" : "hybrid",
       "similarityThreshold" : 0.25,
       "systemPrompt" : "You are helpful.",
       "topK" : 5
@@ -494,6 +703,7 @@
           "llmTemperature" : 0.1,
           "reranking" : "cohere",
           "rrfK" : 60,
+          "searchMode" : "hybrid",
           "similarityThreshold" : 0.25,
           "systemPrompt" : "You are helpful.",
           "topK" : 5
@@ -659,6 +869,15 @@
     "proposedValue" : "500",
     "valid" : false,
     "warning" : "Large topK increases latency"
+  },
+  "SignificanceTest" : {
+    "baseline" : 120.0,
+    "metric" : "latencyMs",
+    "pValue" : 0.25,
+    "significant" : false,
+    "statistic" : -1.2,
+    "test" : "welch-t",
+    "variant" : 110.0
   },
   "SizeBucket" : {
     "count" : 10,

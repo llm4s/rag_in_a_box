@@ -425,32 +425,42 @@ export interface HealthResponse {
  * The effective configuration a logged query ran with. Fields added later are absent from
  * entries logged before them.
  */
+/**
+ * The settings a logged query ran with - only those that applied. In permission mode search is
+ * vector-only (llm4s/llm4s#2716): `searchMode` is `vector-only` and fusion, rrfK and reranking
+ * are null.
+ */
 export interface QueryConfigSnapshot {
   topK: number
-  fusionStrategy: string
+  /** Fusion strategy, in `hybrid` search (null in `vector-only` search). */
+  fusionStrategy?: string | null
   systemPrompt?: string | null
   llmTemperature?: number | null
   /** Minimum chunk similarity the query applied (null: none). */
   similarityThreshold?: number | null
   /** RRF constant, with `rrf` fusion. */
   rrfK?: number | null
-  /** Reranking strategy: `none`, `cohere` or `llm`. */
+  /** Reranking strategy: `none`, `cohere` or `llm` (null in `vector-only` search). */
   reranking?: string | null
+  /** `hybrid` or `vector-only` (permission mode); null in entries logged before it was recorded. */
+  searchMode?: QuerySearchMode | null
 }
+
+export type QuerySearchMode = 'hybrid' | 'vector-only'
 
 export interface QueryLogEntry {
   id: string
   queryText: string
-  collectionPattern?: string
-  userId?: string
-  embeddingLatencyMs?: number
-  searchLatencyMs?: number
-  llmLatencyMs?: number
+  collectionPattern?: string | null
+  userId?: string | null
+  embeddingLatencyMs?: number | null
+  searchLatencyMs?: number | null
+  llmLatencyMs?: number | null
   totalLatencyMs: number
   chunksRetrieved: number
   chunksUsed: number
-  answerTokens?: number
-  userRating?: number
+  answerTokens?: number | null
+  userRating?: number | null
   /** Experiment the query was routed through. */
   experimentId?: string | null
   /** The configuration the query ran with (absent for queries logged without one). */
@@ -520,8 +530,8 @@ export interface ContextItem {
   content: string
   score: number
   metadata: Record<string, string>
-  documentId?: string
-  chunkIndex?: number
+  documentId?: string | null
+  chunkIndex?: number | null
 }
 
 export interface UsageInfo {
@@ -546,7 +556,7 @@ export interface QueryMetrics {
 export interface QueryResponse {
   answer: string
   contexts: ContextItem[]
-  usage?: UsageInfo
+  usage?: UsageInfo | null
   metrics?: QueryMetrics | null
   /** The query-log id, for POST /feedback (only its asker, or an admin, may rate it) */
   queryId?: string | null
@@ -757,28 +767,28 @@ export interface SuggestionsSummary {
 export type ExperimentStatus = 'draft' | 'running' | 'completed' | 'archived'
 
 export interface ExperimentConfigSnapshot {
-  topK?: number
-  fusionStrategy?: string
-  systemPrompt?: string
+  topK?: number | null
+  fusionStrategy?: string | null
+  systemPrompt?: string | null
   /** Recorded only: llm4s 0.6.0 answers /query at temperature 0.0 (llm4s/llm4s#2715). */
-  llmTemperature?: number
-  rrfK?: number
+  llmTemperature?: number | null
+  rrfK?: number | null
   /** `none`, `cohere` or `llm`. */
-  reranking?: string
+  reranking?: string | null
 }
 
 export interface Experiment {
   id: string
   name: string
-  description?: string
+  description?: string | null
   status: ExperimentStatus
   baselineConfig: ExperimentConfigSnapshot
   variantConfig: ExperimentConfigSnapshot
   trafficSplit: number
-  collection?: string
+  collection?: string | null
   createdAt: string
-  startedAt?: string
-  endedAt?: string
+  startedAt?: string | null
+  endedAt?: string | null
 }
 
 export interface CreateExperimentRequest {
@@ -807,7 +817,7 @@ export interface UpdateExperimentRequest {
 export interface ExperimentVariantMetrics {
   queryCount: number
   avgLatencyMs: number
-  avgRating?: number
+  avgRating?: number | null
   ratedCount: number
   avgChunksUsed: number
   avgChunksRetrieved: number
@@ -835,7 +845,7 @@ export interface SignificanceTest {
 
 export interface ExperimentAnalysis {
   latencyChange: string
-  ratingChange?: string
+  ratingChange?: string | null
   chunksUsedChange: string
   errorRateChange?: string
   /** A test per metric with enough data. */
@@ -846,7 +856,7 @@ export interface ExperimentResults {
   experimentId: string
   experimentName: string
   status: ExperimentStatus
-  duration?: string
+  duration?: string | null
   baseline: ExperimentVariantMetrics
   variant: ExperimentVariantMetrics
   analysis: ExperimentAnalysis
@@ -865,7 +875,7 @@ export interface CreateExperimentResponse {
 export interface ExperimentOperationResponse {
   success: boolean
   message: string
-  experiment?: Experiment
+  experiment?: Experiment | null
 }
 
 // Query overrides for experiments

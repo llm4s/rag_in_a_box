@@ -42,6 +42,40 @@ describe('QueryConfigSnapshotView', () => {
     }
   })
 
+  it('shows a vector-only (permission mode) query without fusion or reranking, and says why', () => {
+    const wrapper = mount(QueryConfigSnapshotView, {
+      props: {
+        snapshot: {
+          topK: 5,
+          searchMode: 'vector-only',
+          fusionStrategy: null,
+          rrfK: null,
+          reranking: null,
+          systemPrompt: 'Be brief.',
+          llmTemperature: null,
+          similarityThreshold: null
+        }
+      }
+    })
+
+    expect(row(wrapper, 'searchMode').text()).toContain('vector-only (permission mode)')
+    for (const key of ['fusionStrategy', 'rrfK', 'reranking']) {
+      expect(row(wrapper, key).exists(), key).toBe(false)
+    }
+    expect(wrapper.find('[data-test="snapshot-vector-only-note"]').text()).toContain('did not apply')
+  })
+
+  it('shows hybrid search with its fusion, and no vector-only note', () => {
+    const wrapper = mount(QueryConfigSnapshotView, {
+      props: { snapshot: { topK: 5, searchMode: 'hybrid', fusionStrategy: 'rrf', rrfK: 60, reranking: 'none' } }
+    })
+
+    expect(row(wrapper, 'searchMode').text()).toContain('hybrid')
+    expect(row(wrapper, 'fusionStrategy').text()).toContain('rrf')
+    expect(row(wrapper, 'rrfK').text()).toContain('60')
+    expect(wrapper.find('[data-test="snapshot-vector-only-note"]').exists()).toBe(false)
+  })
+
   it('shows a similarity threshold of 0', () => {
     const wrapper = mount(QueryConfigSnapshotView, {
       props: { snapshot: { topK: 5, fusionStrategy: 'rrf', similarityThreshold: 0 } }
@@ -107,5 +141,35 @@ describe('QueryLogDetail', () => {
 
     expect(wrapper.find('[data-test="query-error"]').text()).toContain('LLM timed out')
     expect(wrapper.find('[data-test="snapshot-none"]').exists()).toBe(true)
+  })
+
+  it('renders an entry whose optional fields are all null, as the backend sends them', () => {
+    const wrapper = mount(QueryLogDetail, {
+      props: {
+        entry: {
+          ...entry,
+          collectionPattern: null,
+          userId: null,
+          embeddingLatencyMs: null,
+          searchLatencyMs: null,
+          llmLatencyMs: null,
+          answerTokens: null,
+          userRating: null,
+          experimentId: null,
+          configSnapshot: null,
+          promptTokens: null,
+          embeddingTokens: null,
+          costUsd: null,
+          variant: null,
+          errorMessage: null
+        }
+      }
+    })
+    const text = wrapper.text()
+
+    expect(text).toContain('*')
+    expect(text).toContain('embedding -')
+    expect(text).not.toContain('null')
+    expect(text).not.toContain('Experiment')
   })
 })

@@ -8,13 +8,18 @@
  *
  *   1. declares exactly the same top-level keys as the JSON the backend sends, and
  *   2. accepts the sample values (string-literal unions are widened to `string`,
- *      since JSON imports are typed as plain strings).
+ *      since JSON imports are typed as plain strings), and
+ *   3. accepts the same sample with every `Option` field `null`
+ *      (`api-contract-nulls.json`): the backend sends `null` for `None`, so a
+ *      field typed `foo?: string` that the backend can send as `null` fails
+ *      here and must be `foo?: string | null` (#64).
  *
  * Nested models are listed individually, so each level gets an exact key check.
  * Nothing here runs at runtime; `vue-tsc --noEmit` (CI) reports any drift with
  * the offending keys in the error message.
  */
 import contract from './api-contract.json'
+import nulls from './api-contract-nulls.json'
 import type * as Api from '@/types/api'
 
 type Widen<T> = T extends string
@@ -42,76 +47,92 @@ type SameKeys<TsType, Fixture> = [
     }
 
 /**
- * `conforms<TsType>()(fixture, true)` fails to compile if the fixture is not
- * assignable to `TsType` or the key sets differ.
+ * `conforms<TsType>()(fixture, withNulls, true)` fails to compile if either
+ * sample is not assignable to `TsType` or the fixture's key set differs.
  */
 function conforms<TsType>() {
-  return <Fixture extends Widen<TsType>>(fixture: Fixture, sameKeys: SameKeys<TsType, Fixture>): void => {
+  return <Fixture extends Widen<TsType>, WithNulls extends Widen<TsType>>(
+    fixture: Fixture,
+    withNulls: WithNulls,
+    sameKeys: SameKeys<TsType, Fixture>
+  ): void => {
     void fixture
+    void withNulls
     void sameKeys
   }
 }
 
 // Runtime config
-conforms<Api.RuntimeConfig>()(contract.RuntimeConfig, true)
-conforms<Api.RuntimeConfigResponse>()(contract.RuntimeConfigResponse, true)
-conforms<Api.SettingUpdateResult>()(contract.SettingUpdateResult, true)
-conforms<Api.RuntimeConfigUpdateResponse>()(contract.RuntimeConfigUpdateResponse, true)
-conforms<Api.SettingValidation>()(contract.SettingValidation, true)
-conforms<Api.RuntimeConfigValidateResponse>()(contract.RuntimeConfigValidateResponse, true)
-conforms<Api.ConfigChange>()(contract.ConfigChange, true)
-conforms<Api.ConfigHistoryResponse>()(contract.ConfigHistoryResponse, true)
-conforms<Api.ConfigMeta>()(contract.ConfigMetaItem, true)
+conforms<Api.RuntimeConfig>()(contract.RuntimeConfig, nulls.RuntimeConfig, true)
+conforms<Api.RuntimeConfigResponse>()(contract.RuntimeConfigResponse, nulls.RuntimeConfigResponse, true)
+conforms<Api.SettingUpdateResult>()(contract.SettingUpdateResult, nulls.SettingUpdateResult, true)
+conforms<Api.RuntimeConfigUpdateResponse>()(contract.RuntimeConfigUpdateResponse, nulls.RuntimeConfigUpdateResponse, true)
+conforms<Api.SettingValidation>()(contract.SettingValidation, nulls.SettingValidation, true)
+conforms<Api.RuntimeConfigValidateResponse>()(contract.RuntimeConfigValidateResponse, nulls.RuntimeConfigValidateResponse, true)
+conforms<Api.ConfigChange>()(contract.ConfigChange, nulls.ConfigChange, true)
+conforms<Api.ConfigHistoryResponse>()(contract.ConfigHistoryResponse, nulls.ConfigHistoryResponse, true)
+conforms<Api.ConfigMeta>()(contract.ConfigMetaItem, nulls.ConfigMetaItem, true)
 
 // Collection config
-conforms<Api.CollectionChunkingConfig>()(contract.CollectionChunkingConfig, true)
-conforms<Api.EffectiveCollectionConfig>()(contract.EffectiveCollectionConfig, true)
-conforms<Api.CollectionConfigResponse>()(contract.CollectionConfigResponse, true)
-conforms<Api.AllCollectionConfigsResponse>()(contract.AllCollectionConfigsResponse, true)
-conforms<Api.CollectionConfigUpdateResponse>()(contract.CollectionConfigUpdateResponse, true)
-conforms<Api.EffectiveConfigPreviewResponse>()(contract.EffectiveConfigPreviewResponse, true)
+conforms<Api.CollectionChunkingConfig>()(contract.CollectionChunkingConfig, nulls.CollectionChunkingConfig, true)
+conforms<Api.EffectiveCollectionConfig>()(contract.EffectiveCollectionConfig, nulls.EffectiveCollectionConfig, true)
+conforms<Api.CollectionConfigResponse>()(contract.CollectionConfigResponse, nulls.CollectionConfigResponse, true)
+conforms<Api.AllCollectionConfigsResponse>()(contract.AllCollectionConfigsResponse, nulls.AllCollectionConfigsResponse, true)
+conforms<Api.CollectionConfigUpdateResponse>()(contract.CollectionConfigUpdateResponse, nulls.CollectionConfigUpdateResponse, true)
+conforms<Api.EffectiveConfigPreviewResponse>()(contract.EffectiveConfigPreviewResponse, nulls.EffectiveConfigPreviewResponse, true)
 
 // Chunking
-conforms<Api.ChunkingStrategy>()(contract.StrategyInfo, true)
-conforms<Api.StrategiesResponse>()(contract.StrategiesResponse, true)
-conforms<Api.ChunkingPreset>()(contract.PresetInfo, true)
-conforms<Api.PresetsResponse>()(contract.PresetsResponse, true)
-conforms<Api.ComparePreviewChunk>()(contract.PreviewChunk, true)
-conforms<Api.ChunkingStats>()(contract.ChunkingStats, true)
-conforms<Api.ChunkingWarning>()(contract.ChunkingWarning, true)
-conforms<Api.StrategyResult>()(contract.StrategyResult, true)
-conforms<Api.ChunkingCompareResult>()(contract.ChunkingCompareResponse, true)
+conforms<Api.ChunkingStrategy>()(contract.StrategyInfo, nulls.StrategyInfo, true)
+conforms<Api.StrategiesResponse>()(contract.StrategiesResponse, nulls.StrategiesResponse, true)
+conforms<Api.ChunkingPreset>()(contract.PresetInfo, nulls.PresetInfo, true)
+conforms<Api.PresetsResponse>()(contract.PresetsResponse, nulls.PresetsResponse, true)
+conforms<Api.ComparePreviewChunk>()(contract.PreviewChunk, nulls.PreviewChunk, true)
+conforms<Api.ChunkingStats>()(contract.ChunkingStats, nulls.ChunkingStats, true)
+conforms<Api.ChunkingWarning>()(contract.ChunkingWarning, nulls.ChunkingWarning, true)
+conforms<Api.StrategyResult>()(contract.StrategyResult, nulls.StrategyResult, true)
+conforms<Api.ChunkingCompareResult>()(contract.ChunkingCompareResponse, nulls.ChunkingCompareResponse, true)
 
 // Documents and chunks
-conforms<Api.Document>()(contract.DocumentInfo, true)
-conforms<Api.DocumentListResponse>()(contract.DocumentListResponse, true)
-conforms<Api.DocumentUploadResponse>()(contract.DocumentUploadResponse, true)
-conforms<Api.ChunkMetadataInfo>()(contract.ChunkMetadataInfo, true)
-conforms<Api.Chunk>()(contract.ChunkInfo, true)
-conforms<Api.DocumentChunksResponse>()(contract.DocumentChunksResponse, true)
+conforms<Api.Document>()(contract.DocumentInfo, nulls.DocumentInfo, true)
+conforms<Api.DocumentListResponse>()(contract.DocumentListResponse, nulls.DocumentListResponse, true)
+conforms<Api.DocumentUploadResponse>()(contract.DocumentUploadResponse, nulls.DocumentUploadResponse, true)
+conforms<Api.ChunkMetadataInfo>()(contract.ChunkMetadataInfo, nulls.ChunkMetadataInfo, true)
+conforms<Api.Chunk>()(contract.ChunkInfo, nulls.ChunkInfo, true)
+conforms<Api.DocumentChunksResponse>()(contract.DocumentChunksResponse, nulls.DocumentChunksResponse, true)
 
 // Stats
-conforms<Api.SizeBucket>()(contract.SizeBucket, true)
-conforms<Api.ChunkSizeDistribution>()(contract.ChunkSizeDistribution, true)
-conforms<Api.DetailedCollectionStats>()(contract.DetailedCollectionStats, true)
-conforms<Api.VisibilityStats>()(contract.DetailedStatsResponse, true)
+conforms<Api.SizeBucket>()(contract.SizeBucket, nulls.SizeBucket, true)
+conforms<Api.ChunkSizeDistribution>()(contract.ChunkSizeDistribution, nulls.ChunkSizeDistribution, true)
+conforms<Api.DetailedCollectionStats>()(contract.DetailedCollectionStats, nulls.DetailedCollectionStats, true)
+conforms<Api.VisibilityStats>()(contract.DetailedStatsResponse, nulls.DetailedStatsResponse, true)
 
 // Pipeline config and query metrics
-conforms<Api.RAGConfigInfo>()(contract.RAGConfigInfo, true)
-conforms<Api.QueryMetrics>()(contract.QueryMetrics, true)
-conforms<Api.ContextItem>()(contract.ContextItem, true)
-conforms<Api.UsageInfo>()(contract.UsageInfo, true)
-conforms<Api.QueryResponse>()(contract.QueryResponse, true)
+conforms<Api.RAGConfigInfo>()(contract.RAGConfigInfo, nulls.RAGConfigInfo, true)
+conforms<Api.QueryMetrics>()(contract.QueryMetrics, nulls.QueryMetrics, true)
+conforms<Api.ContextItem>()(contract.ContextItem, nulls.ContextItem, true)
+conforms<Api.UsageInfo>()(contract.UsageInfo, nulls.UsageInfo, true)
+conforms<Api.QueryResponse>()(contract.QueryResponse, nulls.QueryResponse, true)
 
 // Analytics (query log)
-conforms<Api.QueryConfigSnapshot>()(contract.QueryConfigSnapshot, true)
-conforms<Api.QueryLogEntry>()(contract.QueryLogEntry, true)
-conforms<Api.QueryLogListResponse>()(contract.QueryLogListResponse, true)
+conforms<Api.QueryConfigSnapshot>()(contract.QueryConfigSnapshot, nulls.QueryConfigSnapshot, true)
+conforms<Api.QueryLogEntry>()(contract.QueryLogEntry, nulls.QueryLogEntry, true)
+conforms<Api.QueryLogListResponse>()(contract.QueryLogListResponse, nulls.QueryLogListResponse, true)
 
 // Authentication
-conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, true)
-conforms<Api.LoginResponse>()(contract.LoginResponse, true)
-conforms<Api.AuthMe>()(contract.PrincipalResponse, true)
+conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, nulls.AuthModeResponse, true)
+conforms<Api.LoginResponse>()(contract.LoginResponse, nulls.LoginResponse, true)
+conforms<Api.AuthMe>()(contract.PrincipalResponse, nulls.PrincipalResponse, true)
 
 // Errors
-conforms<Api.ApiErrorBody>()(contract.ErrorResponse, true)
+conforms<Api.ApiErrorBody>()(contract.ErrorResponse, nulls.ErrorResponse, true)
+
+// Experiments
+conforms<Api.ExperimentConfigSnapshot>()(contract.ExperimentConfigSnapshot, nulls.ExperimentConfigSnapshot, true)
+conforms<Api.Experiment>()(contract.Experiment, nulls.Experiment, true)
+conforms<Api.ExperimentListResponse>()(contract.ExperimentListResponse, nulls.ExperimentListResponse, true)
+conforms<Api.CreateExperimentResponse>()(contract.CreateExperimentResponse, nulls.CreateExperimentResponse, true)
+conforms<Api.ExperimentOperationResponse>()(contract.ExperimentOperationResponse, nulls.ExperimentOperationResponse, true)
+conforms<Api.ExperimentVariantMetrics>()(contract.ExperimentVariantMetrics, nulls.ExperimentVariantMetrics, true)
+conforms<Api.SignificanceTest>()(contract.SignificanceTest, nulls.SignificanceTest, true)
+conforms<Api.ExperimentAnalysis>()(contract.ExperimentAnalysis, nulls.ExperimentAnalysis, true)
+conforms<Api.ExperimentResults>()(contract.ExperimentResults, nulls.ExperimentResults, true)

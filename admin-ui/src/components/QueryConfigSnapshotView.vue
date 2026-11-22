@@ -24,10 +24,15 @@ const isSet = <T,>(value: T | null | undefined): value is T => value !== null &&
 const rows = computed<Row[]>(() => {
   const s = props.snapshot
   if (!s) return []
-  const result: Row[] = [
-    { key: 'topK', label: 'Top K', value: String(s.topK) },
-    { key: 'fusionStrategy', label: 'Fusion', value: s.fusionStrategy }
-  ]
+  const result: Row[] = [{ key: 'topK', label: 'Top K', value: String(s.topK) }]
+  if (isSet(s.searchMode)) {
+    result.push({
+      key: 'searchMode',
+      label: 'Search',
+      value: s.searchMode === 'vector-only' ? 'vector-only (permission mode)' : s.searchMode
+    })
+  }
+  if (isSet(s.fusionStrategy)) result.push({ key: 'fusionStrategy', label: 'Fusion', value: s.fusionStrategy })
   if (isSet(s.rrfK)) result.push({ key: 'rrfK', label: 'RRF k', value: String(s.rrfK) })
   if (isSet(s.reranking)) result.push({ key: 'reranking', label: 'Reranking', value: s.reranking })
   if (isSet(s.similarityThreshold)) {
@@ -48,6 +53,9 @@ const rows = computed<Row[]>(() => {
   }
   return result
 })
+
+/** Permission-mode search is vector-only, so the query ran without fusion or reranking. */
+const vectorOnly = computed(() => props.snapshot?.searchMode === 'vector-only')
 </script>
 
 <template>
@@ -66,7 +74,11 @@ const rows = computed<Row[]>(() => {
         </tr>
       </tbody>
     </v-table>
-    <div v-else class="text-grey text-body-2" data-test="snapshot-none">
+    <div v-if="vectorOnly" class="text-caption text-medium-emphasis mt-1" data-test="snapshot-vector-only-note">
+      Fusion, RRF k and reranking did not apply: permission-mode search is vector-only
+      (llm4s/llm4s#2716).
+    </div>
+    <div v-if="!rows.length" class="text-grey text-body-2" data-test="snapshot-none">
       No configuration was recorded for this query.
     </div>
   </div>

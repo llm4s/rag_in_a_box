@@ -2,6 +2,7 @@
 import { onMounted, computed, ref } from 'vue'
 import { useExperimentsStore } from '@/stores/experiments'
 import type { ExperimentStatus, CreateExperimentRequest, ExperimentConfigSnapshot, Experiment } from '@/types/api'
+import { getPipelineConfig } from '@/api/config'
 
 const experimentsStore = useExperimentsStore()
 
@@ -52,7 +53,11 @@ const statusIcons: Record<ExperimentStatus, string> = {
   archived: 'mdi-archive'
 }
 
-function formatDate(dateStr?: string): string {
+// In permission mode search is vector-only (llm4s/llm4s#2716): fusion, rrfK and reranking do not
+// apply, so a group's values for them are shown as not applied
+const fusionApplies = ref(true)
+
+function formatDate(dateStr?: string | null): string {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleDateString('en-US', {
     month: 'short',
@@ -69,16 +74,20 @@ function formatTrafficSplit(split: number): string {
 
 function formatConfigSnapshot(config: ExperimentConfigSnapshot): string {
   const parts: string[] = []
-  if (config.topK !== undefined) parts.push(`topK: ${config.topK}`)
-  if (config.fusionStrategy) parts.push(`fusion: ${config.fusionStrategy}`)
-  if (config.rrfK !== undefined) parts.push(`rrfK: ${config.rrfK}`)
-  if (config.reranking) parts.push(`reranking: ${config.reranking}`)
+  const search = (part: string) => fusionApplies.value ? part : `${part} (not applied: vector-only search)`
+  if (config.topK != null) parts.push(`topK: ${config.topK}`)
+  if (config.fusionStrategy) parts.push(search(`fusion: ${config.fusionStrategy}`))
+  if (config.rrfK != null) parts.push(search(`rrfK: ${config.rrfK}`))
+  if (config.reranking) parts.push(search(`reranking: ${config.reranking}`))
   if (config.systemPrompt) parts.push(`prompt: "${config.systemPrompt.slice(0, 40)}${config.systemPrompt.length > 40 ? '...' : ''}"`)
-  if (config.llmTemperature !== undefined) parts.push(`temp: ${config.llmTemperature} (chat only)`)
+  if (config.llmTemperature != null) parts.push(`temp: ${config.llmTemperature} (chat only)`)
   return parts.length > 0 ? parts.join(', ') : 'Default'
 }
 
 async function loadData() {
+  getPipelineConfig()
+    .then(p => { fusionApplies.value = p.rag.fusionApplies })
+    .catch(() => { fusionApplies.value = true })
   await Promise.all([
     experimentsStore.fetchExperiments(),
     experimentsStore.fetchRunningExperiment()

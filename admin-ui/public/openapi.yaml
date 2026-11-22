@@ -4288,6 +4288,8 @@ components:
               type: integer
             fusionStrategy:
               type: string
+              nullable: true
+              description: The fusion strategy, in hybrid search (null in vector-only search, where fusion does not apply)
             systemPrompt:
               type: string
             llmTemperature:
@@ -4303,7 +4305,15 @@ components:
             reranking:
               type: string
               nullable: true
-              description: The reranking strategy (none, cohere or llm; absent in queries logged before it was recorded)
+              description: The reranking strategy (none, cohere or llm), in hybrid search (null in vector-only search; absent in queries logged before it was recorded)
+            searchMode:
+              type: string
+              enum: [hybrid, vector-only]
+              nullable: true
+              description: >-
+                How the query searched: hybrid, or vector-only in permission mode, where llm4s search
+                is vector-only (llm4s/llm4s#2716) and fusionStrategy, rrfK and reranking are null.
+                Absent in queries logged before it was recorded.
         createdAt:
           type: string
           format: date-time
