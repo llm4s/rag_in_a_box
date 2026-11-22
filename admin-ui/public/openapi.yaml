@@ -1640,19 +1640,6 @@ paths:
                 $ref: '#/components/schemas/ConfigResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-    put:
-      tags: [Configuration]
-      summary: Not supported
-      description: |
-        Auth: admin. Always answers 400: static configuration comes from the environment and
-        needs a restart. Change the runtime settings with `PUT /api/v1/config/runtime`.
-      responses:
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
 
   /api/v1/config/providers:
     get:
@@ -3223,8 +3210,6 @@ components:
           type: integer
         chunkCount:
           type: integer
-        pendingDeletes:
-          type: integer
     SyncPruneRequest:
       type: object
       required: [keepDocumentIds]
@@ -3889,6 +3874,10 @@ components:
                 format: date-time
               changedBy:
                 type: string
+                nullable: true
+                description: |
+                  Id of the principal that made the change (`user:alice`, `oidc:<sub>`,
+                  `token:<id>`, `api-key`, `anonymous`); null for older entries
         total:
           type: integer
         page:

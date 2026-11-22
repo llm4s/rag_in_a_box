@@ -33,7 +33,7 @@ final class StatsService(pipelines: RagPipelines, documentRegistry: DocumentRegi
   /** Sync status, from the registry and `stats`. */
   def syncStatus(stats: StatsResponse): IO[SyncStatusResponse] =
     (documentRegistry.getSyncInfo(), documentRegistry.count()).mapN { (syncInfo, docCount) =>
-      SyncStatusResponse(lastSyncTime = syncInfo.lastSyncTime, documentCount = docCount, chunkCount = stats.chunkCount, pendingDeletes = 0)
+      SyncStatusResponse(lastSyncTime = syncInfo.lastSyncTime, documentCount = docCount, chunkCount = stats.chunkCount)
     }
 
   /**

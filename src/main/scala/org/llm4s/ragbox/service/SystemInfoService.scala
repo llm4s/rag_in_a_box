@@ -200,7 +200,7 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
     val freePercent = if (maxMemory > 0) ((maxMemory - usedMemory) * 100 / maxMemory).toInt else 0
     HealthResponse(
       status = "healthy",
-      version = "0.1.0",
+      version = org.llm4s.ragbox.BuildInfo.version,
       uptime = System.currentTimeMillis() - startTime,
       system = Some(SystemInfo(
         memoryUsedMb = usedMemory,

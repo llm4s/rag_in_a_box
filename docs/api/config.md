@@ -62,8 +62,8 @@ llm4s search is vector-only ([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/i
 `fusionApplies` says whether `fusionStrategy`/`rrfK` have any effect, and `limitations` lists
 settings that do not take effect and why.
 
-`PUT /api/v1/config` exists but always answers `400`: static settings need a restart with new
-environment variables. Use the [runtime settings](#runtime) for live changes.
+These settings are static: they change only with a restart with new environment variables. Use
+the [runtime settings](#runtime) for live changes.
 
 ---
 
@@ -175,7 +175,7 @@ GET /api/v1/config/runtime/history?page=1&pageSize=50
 ```json
 {
   "changes": [
-    { "id": 12, "field": "topK", "oldValue": "5", "newValue": "8", "changedAt": "2026-01-15T10:30:00Z", "changedBy": null }
+    { "id": 12, "field": "topK", "oldValue": "5", "newValue": "8", "changedAt": "2026-01-15T10:30:00Z", "changedBy": "user:alice" }
   ],
   "total": 12,
   "page": 1,
@@ -183,6 +183,10 @@ GET /api/v1/config/runtime/history?page=1&pageSize=50
   "hasMore": false
 }
 ```
+
+`changedBy` is the id of the principal that made the change: `user:<name>` (password login),
+`oidc:<subject>`, `token:<id>` (access token), `api-key` (the static `API_KEY`) or `anonymous`
+(open mode). It is `null` for changes recorded before ragbox recorded it.
 
 ### Metadata {#runtime-meta}
 

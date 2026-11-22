@@ -2,6 +2,7 @@ package org.llm4s.ragbox.integration
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
+import cats.syntax.all._
 import org.llm4s.llmconnect.model.{AssistantMessage, SystemMessage, UserMessage}
 import org.llm4s.ragbox.config.{AppConfig, DatabaseConfig}
 import org.llm4s.ragbox.model.{QueryMetrics, QueryResponse}
@@ -241,6 +242,39 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     })
     search.results.flatMap(_.documentId) shouldBe Seq("zebra")
     answer.left.map(_.getMessage).left.getOrElse("") should include("LLM client required")
+  }
+
+  "Per-collection query metrics" should "count zero-result queries and compute real p95s in SQL" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    def logged(registry: QueryLogRegistry, collection: Option[String], chunks: Int, totalMs: Int, llmMs: Option[Int], failed: Boolean = false) =
+      registry.logQuery("q", collection, None, None, None, llmMs, totalMs, chunks, chunks, None, failed = failed)
+    val metrics = run(pool(db).use { ds =>
+      for {
+        registry <- QueryLogRegistry(ds)
+        _ <- (1 to 17).toList.traverse_(_ => logged(registry, Some("slow"), 5, 1100, Some(1000)))
+        _ <- (1 to 3).toList.traverse_(_ => logged(registry, Some("slow"), 0, 3000, Some(1000)))
+        _ <- (1 to 3).toList.traverse_(_ => logged(registry, Some("slow"), 0, 9000, None, failed = true))
+        _ <- (1 to 4).toList.traverse_(_ => logged(registry, None, 3, 200, None))
+        now = java.time.Instant.now()
+        metrics <- registry.getCollectionMetrics(now.minusSeconds(3600), now.plusSeconds(60))
+        viaSuggestions <- SuggestionService(registry, testConfig(db)).generateSuggestions(Some(now.minusSeconds(3600)), Some(now.plusSeconds(60)))
+      } yield (metrics, viaSuggestions.suggestions.map(_.title))
+    })
+    val (byCollection, titles) = metrics
+    byCollection.map(_.collection) shouldBe Seq("slow", "*")
+    val slow = byCollection.head
+    (slow.queryCount, slow.zeroResultQueries) shouldBe (20, 3) // failed queries are not counted
+    slow.p95RetrievalLatencyMs shouldBe Some(2000)
+    slow.p95LatencyMs shouldBe 3000
+    slow.avgChunksRetrieved shouldBe 4.25
+    byCollection(1).p95RetrievalLatencyMs shouldBe None
+    titles should contain allOf ("High Latency for 'slow'", "High Zero-Result Rate for 'slow'")
+  }
+
+  "The health check" should "report the build's version (sbt-dynver, through BuildInfo)" in withContainers { pg =>
+    val health = run(plainService(freshDatabase(pg)).use(_.healthCheck))
+    health.version shouldBe org.llm4s.ragbox.BuildInfo.version
+    health.version should not be empty
   }
 
   "A similarity threshold" should "keep chunks below it from the answer LLM and the response" in withContainers { pg =>

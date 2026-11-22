@@ -79,7 +79,7 @@ class ConfigRoutesSpec extends AnyFlatSpec with Matchers {
   // PUT /api/v1/config
   // ============================================================
 
-  "PUT /api/v1/config" should "return bad request" in {
+  "PUT /api/v1/config" should "not exist (runtime settings are changed at /api/v1/config/runtime)" in {
     val routes = createRoutes()
 
     val requestBody = """{"embedding": {"model": "new-model"}}"""
@@ -87,11 +87,7 @@ class ConfigRoutesSpec extends AnyFlatSpec with Matchers {
       .withEntity(requestBody)
       .withContentType(headers.`Content-Type`(MediaType.application.json))
 
-    val response = routes.orNotFound.run(request).unsafeRunSync()
-
-    response.status shouldBe Status.BadRequest
-    val body = response.as[String].unsafeRunSync()
-    body should include("Runtime configuration updates not supported")
+    routes.orNotFound.run(request).unsafeRunSync().status shouldBe Status.NotFound
   }
 
   // ============================================================

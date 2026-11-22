@@ -197,13 +197,12 @@ final case class BatchDeleteResponse(
 ) derives Codec.AsObject
 
 /**
- * Sync status response.
+ * Sync status response. (Deletes are applied as they are requested, so nothing is ever pending.)
  */
 final case class SyncStatusResponse(
   lastSyncTime: Option[Instant],
   documentCount: Int,
-  chunkCount: Int,
-  pendingDeletes: Int
+  chunkCount: Int
 ) derives Codec.AsObject
 
 // ============================================================

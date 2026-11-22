@@ -265,7 +265,7 @@ def test_sync_prunes_and_status(client):
     )
     responses.get(
         f"{BASE}/api/v1/sync/status",
-        json={"lastSyncTime": "2026-01-01T00:00:00Z", "documentCount": 1, "chunkCount": 4, "pendingDeletes": 0},
+        json={"lastSyncTime": "2026-01-01T00:00:00Z", "documentCount": 1, "chunkCount": 4},
     )
     assert client.sync(keep_ids=["a"])["prunedCount"] == 1
     status = client.sync_status()

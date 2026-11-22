@@ -13,14 +13,23 @@ ThisBuild / coverageEnabled := false
 ThisBuild / coverageMinimumStmtTotal := 20  // Minimum 20% statement coverage (baseline)
 ThisBuild / coverageFailOnMinimum := true   // Fail build if below minimum
 ThisBuild / coverageHighlighting := true
-ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*"
+ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*;.*BuildInfo.*"
 
 lazy val root = (project in file("."))
+  .enablePlugins(BuildInfoPlugin)
   .settings(
     name := "rag-in-a-box",
     organization := "org.llm4s",
     // version is derived from git tags by sbt-dynver (tag v0.2.0 -> 0.2.0)
     scalaVersion := "3.7.1",
+
+    // A build without git metadata (the Docker image build: .git is not in the context) gets its
+    // version from RAGBOX_VERSION, which the release workflow passes as a build argument
+    version := sys.env.get("RAGBOX_VERSION").map(_.trim).filter(_.nonEmpty).getOrElse(version.value),
+
+    // org.llm4s.ragbox.BuildInfo.version: the version reported by /health and /metrics
+    buildInfoKeys := Seq[BuildInfoKey](name, version),
+    buildInfoPackage := "org.llm4s.ragbox",
 
     // Compiler options for Scala 3
     scalacOptions ++= Seq(

@@ -161,7 +161,6 @@ in those collections (and their descendants), and may only query patterns inside
 | DELETE | [`/api/v1/experiments/{id}`](/api/experiments#lifecycle) | Admin | Delete a draft |
 | GET | [`/api/v1/experiments/{id}/results`](/api/experiments#results) | Admin | Results with significance tests |
 | GET | [`/api/v1/config`](/api/config#get) | Authenticated | Static configuration |
-| PUT | [`/api/v1/config`](/api/config#get) | Admin | Not supported (always `400`) |
 | GET | [`/api/v1/config/providers`](/api/config#providers) | Authenticated | Providers and strategies |
 | GET | [`/api/v1/config/runtime`](/api/config#runtime) | Authenticated | Runtime settings |
 | PUT | [`/api/v1/config/runtime`](/api/config#runtime-update) | Admin | Change runtime settings |

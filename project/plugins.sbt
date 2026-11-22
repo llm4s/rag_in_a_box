@@ -7,5 +7,8 @@ addSbtPlugin("io.spray" % "sbt-revolver" % "0.10.0")
 // Derive the project version from git tags (v1.2.3 -> 1.2.3)
 addSbtPlugin("com.github.sbt" % "sbt-dynver" % "5.1.1")
 
+// Generate org.llm4s.ragbox.BuildInfo (the dynver version) for /health and /metrics
+addSbtPlugin("com.eed3si9n" % "sbt-buildinfo" % "0.13.1")
+
 // Code coverage with scoverage
 addSbtPlugin("org.scoverage" % "sbt-scoverage" % "2.0.12")

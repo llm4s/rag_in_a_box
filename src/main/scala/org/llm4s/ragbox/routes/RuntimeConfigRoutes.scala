@@ -40,7 +40,7 @@ object RuntimeConfigRoutes {
         // First validate
         validation <- configManager.validate(request)
         response <- if (validation.valid) {
-          configManager.update(request).flatMap(result => Ok(result.asJson))
+          configManager.update(request, changedBy = Some(principal.id)).flatMap(result => Ok(result.asJson))
         } else {
           BadRequest(ErrorResponse(
             error = "validation_failed",

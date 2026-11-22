@@ -10,7 +10,9 @@ import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.service.RAGService
 
 /**
- * HTTP routes for configuration management.
+ * HTTP routes for the effective (static) configuration. It comes from application.conf and the
+ * environment and changes only with a restart; what can change at runtime is served by
+ * [[RuntimeConfigRoutes]] (`/api/v1/config/runtime`).
  */
 object ConfigRoutes {
 
@@ -23,14 +25,6 @@ object ConfigRoutes {
         config <- ragService.getConfigInfo
         response <- Ok(config.asJson)
       } yield response
-
-    // PUT /api/v1/config - Update configuration (limited)
-    case (req @ PUT -> Root / "api" / "v1" / "config") as principal =>
-      // Note: Runtime configuration updates are limited
-      // Most settings require restart
-      BadRequest(ErrorResponse.badRequest(
-        "Runtime configuration updates not supported. Restart with new environment variables."
-      ).asJson)
 
     // GET /api/v1/config/providers - List available providers
     case GET -> Root / "api" / "v1" / "config" / "providers" as principal =>

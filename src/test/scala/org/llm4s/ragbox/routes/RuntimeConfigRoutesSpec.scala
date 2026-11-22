@@ -59,6 +59,17 @@ class RuntimeConfigRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFix
     history should (include("\"field\":\"topK\"") and include("\"total\":1"))
   }
 
+  it should "record the authenticated principal as changedBy in the history" in {
+    val alice = Principal(id = "user:alice", name = "alice", method = org.llm4s.ragbox.auth.AuthMethod.Password, isAdmin = true)
+    val (_, history) = withRoutes(alice) { app =>
+      call(app, json(Method.PUT, uri"/api/v1/config/runtime", """{"topK": 7, "rrfK": 30}""")) *>
+        get(app, uri"/api/v1/config/runtime/history")
+    }
+    val changes = io.circe.parser.parse(history).toOption.get.hcursor.downField("changes").values.get.toSeq
+    changes.flatMap(_.hcursor.get[String]("field").toOption).toSet shouldBe Set("topK", "rrfK")
+    changes.map(_.hcursor.get[String]("changedBy")) shouldBe Seq(Right("user:alice"), Right("user:alice"))
+  }
+
   it should "reject an invalid topK" in {
     val (status, body) = withRoutes()(call(_, json(Method.PUT, uri"/api/v1/config/runtime", """{"topK": 0}""")))
     status shouldBe Status.BadRequest

@@ -105,7 +105,6 @@ class SyncStatus:
     last_sync_time: Optional[datetime]
     document_count: int
     chunk_count: int
-    pending_deletes: int
 
 
 @dataclass
@@ -572,8 +571,7 @@ class RagBoxClient:
         return SyncStatus(
             last_sync_time=_parse_time(result.get("lastSyncTime")),
             document_count=result["documentCount"],
-            chunk_count=result["chunkCount"],
-            pending_deletes=result.get("pendingDeletes", 0)
+            chunk_count=result["chunkCount"]
         )
 
     def synced_documents(
