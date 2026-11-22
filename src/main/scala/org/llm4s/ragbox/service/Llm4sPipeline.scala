@@ -15,7 +15,7 @@ import org.llm4s.reranker.{CohereReranker, RerankProviderConfig}
 import org.llm4s.trace.Tracing
 import org.llm4s.types.ProviderModelTypes.{ApiKey, BaseUrl, ModelName}
 import org.llm4s.types.Result
-import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.config.{AppConfig, QueryTransformSettings, RerankingSettings}
 
 /**
  * How ragbox assembles its llm4s pipeline from [[AppConfig]]: every provider is resolved through
@@ -136,25 +136,94 @@ object Llm4sPipeline {
   }
 
   /**
-   * The chunker the pipeline chunks with, built the way llm4s's `RAG` builds its own: the
-   * semantic chunker embeds sentences with the configured embedding provider, every other
-   * strategy is `ChunkerFactory.create`. ragbox chunks each document once with it and hands the
-   * chunks to llm4s, so the chunk store holds exactly what was indexed.
+   * The embedding client and model ragbox embeds with outside a pipeline: for the semantic
+   * chunker, and for permission-mode ingest (see `RAGService`), which hands llm4s's
+   * `SearchIndex` chunks it has already chunked and embedded. Built the way llm4s's `RAG` builds
+   * its own, so the vectors are the ones the pipeline would have written.
    */
-  def chunker(config: AppConfig, registry: ProviderRegistry)(using ModelRegistryService): Result[DocumentChunker] =
-    config.rag.chunking.toChunkerStrategy match {
+  def embedder(config: AppConfig, registry: ProviderRegistry)(using ModelRegistryService): Result[(EmbeddingClient, EmbeddingModelConfig)] = {
+    val id = registry.canonicalEmbeddingId(config.embedding.providerId)
+    for {
+      descriptor <- registry.resolveEmbedding(id)
+      providerConfig <- embeddingProviderConfig(config, registry)(id.asString)
+      provider <- descriptor.build(providerConfig)
+    } yield {
+      val dims = config.embedding.dimensions.orElse(descriptor.dimensionsOf(providerConfig.model)).getOrElse(1536)
+      (new EmbeddingClient(provider, providerId = Some(id)), EmbeddingModelConfig(providerConfig.model, dims))
+    }
+  }
+
+  /**
+   * A chunker for `strategy`, built the way llm4s's `RAG` builds its own: the semantic chunker
+   * embeds sentences with the configured embedding provider, every other strategy is
+   * `ChunkerFactory.create`. ragbox chunks each document once - with the strategy its collection
+   * and the runtime settings resolve to - and hands the chunks to llm4s, so the chunk store holds
+   * exactly what was indexed.
+   */
+  def chunker(strategy: ChunkerFactory.Strategy, config: AppConfig, registry: ProviderRegistry)(using ModelRegistryService): Result[DocumentChunker] =
+    strategy match {
       case ChunkerFactory.Strategy.Semantic =>
-        val id = registry.canonicalEmbeddingId(config.embedding.providerId)
-        for {
-          descriptor <- registry.resolveEmbedding(id)
-          providerConfig <- embeddingProviderConfig(config, registry)(id.asString)
-          provider <- descriptor.build(providerConfig)
-        } yield {
-          val dims = config.embedding.dimensions.orElse(descriptor.dimensionsOf(providerConfig.model)).getOrElse(1536)
-          ChunkerFactory.semantic(new EmbeddingClient(provider, providerId = Some(id)), EmbeddingModelConfig(providerConfig.model, dims))
-        }
+        embedder(config, registry).map { case (client, model) => ChunkerFactory.semantic(client, model) }
       case other => Right(ChunkerFactory.create(other))
     }
+
+  /** The chunker for the configuration file's chunking strategy. */
+  def chunker(config: AppConfig, registry: ProviderRegistry)(using ModelRegistryService): Result[DocumentChunker] =
+    chunker(config.rag.chunking.toChunkerStrategy, config, registry)
+
+  /** The llm4s chunking strategy named `name` (`simple`, `sentence`, `markdown` or `semantic`). */
+  def chunkerStrategy(name: String): Result[ChunkerFactory.Strategy] =
+    ChunkerFactory.Strategy.fromString(name).toRight(ConfigurationError(s"Unknown chunking strategy: $name"))
+
+  /**
+   * The settings an llm4s `RAG` instance bakes in when it is built, so the key it is kept by (see
+   * [[PipelinePool]]): equal settings share an instance, and changing any of them - at runtime,
+   * or for an experiment variant - needs another. topK is not part of it: every call passes it.
+   *
+   * In permission mode, llm4s's permission-filtered search is vector-only (llm4s/llm4s#2716):
+   * fusion, reranking and query transforms do not apply, so [[PipelineSettings.forMode]] leaves
+   * them at the configuration file's values and changing them builds nothing.
+   */
+  final case class PipelineSettings(
+    fusionStrategy: String,
+    rrfK: Int,
+    systemPrompt: String,
+    reranking: RerankingSettings,
+    queryTransform: QueryTransformSettings
+  ) {
+
+    /** `config` with these settings, for [[ragConfig]] and [[rerankerConfig]]. */
+    def applyTo(config: AppConfig): AppConfig =
+      config.copy(rag = config.rag.copy(
+        search = config.rag.search.copy(fusionStrategy = fusionStrategy, rrfK = rrfK),
+        systemPrompt = systemPrompt,
+        reranking = reranking,
+        queryTransform = queryTransform
+      ))
+
+    /** These settings as they matter in permission mode or not (see the class description). */
+    def forMode(config: AppConfig, permissionMode: Boolean): PipelineSettings =
+      if (!permissionMode) this
+      else copy(
+        fusionStrategy = config.rag.search.fusionStrategy,
+        rrfK = config.rag.search.rrfK,
+        reranking = config.rag.reranking,
+        queryTransform = config.rag.queryTransform
+      )
+  }
+
+  object PipelineSettings {
+
+    /** The configuration file's pipeline settings. */
+    def from(config: AppConfig): PipelineSettings =
+      PipelineSettings(
+        fusionStrategy = config.rag.search.fusionStrategy,
+        rrfK = config.rag.search.rrfK,
+        systemPrompt = config.rag.systemPrompt,
+        reranking = config.rag.reranking,
+        queryTransform = config.rag.queryTransform
+      )
+  }
 
   /** One earlier message of a chat session. */
   final case class ChatTurn(role: String, content: String)

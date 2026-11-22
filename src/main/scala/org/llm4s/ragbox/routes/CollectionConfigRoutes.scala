@@ -8,7 +8,7 @@ import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.dsl.io._
-import org.llm4s.ragbox.config.RuntimeConfigManager
+import org.llm4s.ragbox.config.{RuntimeConfigManager, RuntimeSettings}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{CollectionConfigRegistry, DocumentRegistry}
@@ -40,7 +40,7 @@ object CollectionConfigRoutes {
           filename = None,
           defaultStrategy = runtimeConfig.config.chunkingStrategy,
           defaultTargetSize = runtimeConfig.config.chunkSize,
-          defaultMaxSize = runtimeConfig.config.chunkSize * 2,
+          defaultMaxSize = RuntimeSettings.defaultMaxSize(runtimeConfig.config.chunkSize),
           defaultOverlap = runtimeConfig.config.chunkOverlap
         )
 
@@ -57,9 +57,10 @@ object CollectionConfigRoutes {
     case (req @ PUT -> Root / "api" / "v1" / "collections" / collection / "config") as principal =>
       for {
         request <- req.as[CollectionConfigUpdateRequest]
+        runtimeConfig <- runtimeConfigManager.get
 
-        // Validate the settings
-        validationErrors = validateConfigRequest(request)
+        // Validate the settings, as they will combine with the runtime defaults
+        validationErrors = validateConfigRequest(request, runtimeConfig.config)
         response <- if (validationErrors.nonEmpty) {
           BadRequest(ErrorResponse(
             error = "validation_failed",
@@ -73,7 +74,7 @@ object CollectionConfigRoutes {
             targetSize = request.targetSize,
             maxSize = request.maxSize,
             overlap = request.overlap,
-            fileTypeStrategies = request.fileTypeStrategies.getOrElse(Map.empty)
+            fileTypeStrategies = normalizeFileTypes(request.fileTypeStrategies.getOrElse(Map.empty))
           )
           for {
             _ <- collectionConfigRegistry.put(config)
@@ -115,7 +116,7 @@ object CollectionConfigRoutes {
         defaultEffective = EffectiveCollectionConfig(
           strategy = runtimeConfig.config.chunkingStrategy,
           targetSize = runtimeConfig.config.chunkSize,
-          maxSize = runtimeConfig.config.chunkSize * 2,
+          maxSize = RuntimeSettings.defaultMaxSize(runtimeConfig.config.chunkSize),
           overlap = runtimeConfig.config.chunkOverlap,
           source = "default"
         )
@@ -133,7 +134,7 @@ object CollectionConfigRoutes {
               filename = None,
               defaultStrategy = runtimeConfig.config.chunkingStrategy,
               defaultTargetSize = runtimeConfig.config.chunkSize,
-              defaultMaxSize = runtimeConfig.config.chunkSize * 2,
+              defaultMaxSize = RuntimeSettings.defaultMaxSize(runtimeConfig.config.chunkSize),
               defaultOverlap = runtimeConfig.config.chunkOverlap
             ),
             documentCount = docCounts.getOrElse(coll, 0)
@@ -157,7 +158,7 @@ object CollectionConfigRoutes {
           filename = request.filename,
           defaultStrategy = runtimeConfig.config.chunkingStrategy,
           defaultTargetSize = runtimeConfig.config.chunkSize,
-          defaultMaxSize = runtimeConfig.config.chunkSize * 2,
+          defaultMaxSize = RuntimeSettings.defaultMaxSize(runtimeConfig.config.chunkSize),
           defaultOverlap = runtimeConfig.config.chunkOverlap
         )
 
@@ -174,8 +175,23 @@ object CollectionConfigRoutes {
 
   private val validStrategies = Set("simple", "sentence", "markdown", "semantic")
 
-  private def validateConfigRequest(request: CollectionConfigUpdateRequest): Seq[String] = {
+  /**
+   * File-type override keys as they are matched: extensions are compared lower-cased, so `.MD`
+   * is stored (and matches) as `.md`.
+   */
+  private def normalizeFileTypes(strategies: Map[String, String]): Map[String, String] =
+    strategies.map { case (ext, strategy) => ext.trim.toLowerCase -> strategy }
+
+  /**
+   * Validate a config as it will be used: each size the request leaves out comes from the
+   * runtime settings (`maxSize` from the effective target size), and the effective values must
+   * fit together - overlap below the target size, max size at least the target size.
+   */
+  private def validateConfigRequest(request: CollectionConfigUpdateRequest, defaults: RuntimeConfig): Seq[String] = {
     val errors = scala.collection.mutable.ArrayBuffer.empty[String]
+    val targetSize = request.targetSize.getOrElse(defaults.chunkSize)
+    val maxSize = request.maxSize.getOrElse(RuntimeSettings.defaultMaxSize(targetSize))
+    val overlap = request.overlap.getOrElse(defaults.chunkOverlap)
 
     request.strategy.foreach { s =>
       if (!validStrategies.contains(s)) {
@@ -193,13 +209,18 @@ object CollectionConfigRoutes {
       if (size > 20000) errors += "maxSize must be at most 20000"
     }
 
-    request.overlap.foreach { overlap =>
-      if (overlap < 0) errors += "overlap must be non-negative"
-      val targetSize = request.targetSize.getOrElse(1000)
-      if (overlap >= targetSize) errors += "overlap must be less than targetSize"
-    }
+    if (overlap < 0) errors += "overlap must be non-negative"
+    else if (overlap >= targetSize)
+      errors += s"overlap ($overlap) must be less than targetSize ($targetSize)"
+
+    if (maxSize < targetSize)
+      errors += s"maxSize ($maxSize) must be at least targetSize ($targetSize)"
 
     request.fileTypeStrategies.foreach { strategies =>
+      strategies.groupBy(_._1.trim.toLowerCase).foreach { case (ext, entries) =>
+        if (entries.values.toSet.size > 1)
+          errors += s"File extension '$ext' is given more than once with different strategies (extensions are case-insensitive)"
+      }
       strategies.foreach { case (ext, strategy) =>
         if (!ext.startsWith(".")) {
           errors += s"File extension '$ext' must start with a dot (e.g., '.md')"

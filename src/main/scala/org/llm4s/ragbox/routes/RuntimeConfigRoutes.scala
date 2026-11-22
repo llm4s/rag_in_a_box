@@ -78,15 +78,17 @@ object RuntimeConfigRoutes {
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" as principal =>
       for {
         current <- configManager.get
+        // Each description ends with where the setting does not apply, when there is such a case
+        described = (key: String, text: String) => (text +: configManager.noteFor(key).toSeq).mkString(". ")
         meta: Seq[ConfigMetaItem] = Seq(
-          ConfigMetaItem("topK", current.config.topK.toString, "hot", "Number of chunks to retrieve for context", requiresRestart = false),
-          ConfigMetaItem("fusionStrategy", current.config.fusionStrategy, "hot", "Strategy for combining search results (rrf, simple)", requiresRestart = false),
-          ConfigMetaItem("rrfK", current.config.rrfK.toString, "hot", "RRF constant for ranking fusion", requiresRestart = false),
-          ConfigMetaItem("systemPrompt", current.config.systemPrompt, "hot", "Custom system prompt for LLM", requiresRestart = false),
-          ConfigMetaItem("llmTemperature", current.config.llmTemperature.toString, "hot", "LLM temperature (0.0-1.0)", requiresRestart = false),
-          ConfigMetaItem("chunkingStrategy", current.config.chunkingStrategy, "warm", "Strategy for splitting documents (sentence, paragraph, fixed)", requiresRestart = false),
-          ConfigMetaItem("chunkSize", current.config.chunkSize.toString, "warm", "Target chunk size in characters", requiresRestart = false),
-          ConfigMetaItem("chunkOverlap", current.config.chunkOverlap.toString, "warm", "Overlap between chunks in characters", requiresRestart = false)
+          ConfigMetaItem("topK", current.config.topK.toString, "hot", described("topK", "Number of chunks to retrieve for context (a request's topK takes precedence)"), requiresRestart = false),
+          ConfigMetaItem("fusionStrategy", current.config.fusionStrategy, "hot", described("fusionStrategy", "Strategy for combining vector and keyword results (rrf, weighted, vector_only, keyword_only)"), requiresRestart = false),
+          ConfigMetaItem("rrfK", current.config.rrfK.toString, "hot", described("rrfK", "RRF constant for ranking fusion"), requiresRestart = false),
+          ConfigMetaItem("systemPrompt", current.config.systemPrompt, "hot", described("systemPrompt", "System prompt for answers"), requiresRestart = false),
+          ConfigMetaItem("llmTemperature", current.config.llmTemperature.toString, "hot", described("llmTemperature", "LLM temperature (0.0-2.0)"), requiresRestart = false),
+          ConfigMetaItem("chunkingStrategy", current.config.chunkingStrategy, "warm", described("chunkingStrategy", "Strategy for splitting documents (simple, sentence, markdown, semantic)"), requiresRestart = false),
+          ConfigMetaItem("chunkSize", current.config.chunkSize.toString, "warm", described("chunkSize", "Target chunk size in characters"), requiresRestart = false),
+          ConfigMetaItem("chunkOverlap", current.config.chunkOverlap.toString, "warm", described("chunkOverlap", "Overlap between chunks in characters"), requiresRestart = false)
         )
         response <- Ok(meta.asJson)
       } yield response

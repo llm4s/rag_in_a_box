@@ -168,6 +168,8 @@ export interface SettingUpdateResult {
   newValue: string
   changeability: string
   effectiveImmediately: boolean
+  /** Where the setting does not apply (null when it applies everywhere). */
+  note?: string | null
 }
 
 /** Scala `RuntimeConfigUpdateResponse` (PUT /config/runtime). */

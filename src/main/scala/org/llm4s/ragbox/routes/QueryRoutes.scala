@@ -65,7 +65,7 @@ object QueryRoutes {
                 .orElse(body.topK)
 
               // Build config snapshot for experiment tracking
-              configSnapshot = buildConfigSnapshot(config, effectiveTopK, variantConfig, body.overrides)
+              configSnapshot = buildConfigSnapshot(ragService.currentSettings, effectiveTopK, variantConfig, body.overrides)
 
               result <- ((ragService.hasPermissions, ragService.principals) match {
                 // Permission-aware query when SearchIndex is available
@@ -188,7 +188,7 @@ object QueryRoutes {
               val effectiveTopK = variantConfig.flatMap(_.topK)
                 .orElse(body.overrides.flatMap(_.topK))
                 .orElse(body.topK)
-              val configSnapshot = buildConfigSnapshot(config, effectiveTopK, variantConfig, body.overrides)
+              val configSnapshot = buildConfigSnapshot(ragService.currentSettings, effectiveTopK, variantConfig, body.overrides)
 
               Stream.eval(IO.realTimeInstant).flatMap { startTime =>
               // Start event
@@ -302,28 +302,26 @@ object QueryRoutes {
 
   /**
    * Build the effective config snapshot recorded against a query, layering
-   * experiment variant config over explicit request overrides over defaults.
+   * experiment variant config over explicit request overrides over the runtime settings.
    */
   private def buildConfigSnapshot(
-    config: Option[AppConfig],
+    current: RuntimeConfig,
     effectiveTopK: Option[Int],
     variantConfig: Option[ExperimentConfigSnapshot],
     overrides: Option[QueryOverrides]
   ): Option[QueryConfigSnapshot] =
-    config.map { c =>
-      QueryConfigSnapshot(
-        topK = effectiveTopK.getOrElse(c.rag.search.topK),
-        fusionStrategy = variantConfig.flatMap(_.fusionStrategy)
-          .orElse(overrides.flatMap(_.fusionStrategy))
-          .getOrElse(c.rag.search.fusionStrategy),
-        systemPrompt = variantConfig.flatMap(_.systemPrompt)
-          .orElse(overrides.flatMap(_.systemPrompt))
-          .orElse(Some(c.rag.systemPrompt)),
-        llmTemperature = variantConfig.flatMap(_.llmTemperature)
-          .orElse(overrides.flatMap(_.llmTemperature))
-          .orElse(Some(c.llm.temperature))
-      )
-    }
+    Some(QueryConfigSnapshot(
+      topK = effectiveTopK.getOrElse(current.topK),
+      fusionStrategy = variantConfig.flatMap(_.fusionStrategy)
+        .orElse(overrides.flatMap(_.fusionStrategy))
+        .getOrElse(current.fusionStrategy),
+      systemPrompt = variantConfig.flatMap(_.systemPrompt)
+        .orElse(overrides.flatMap(_.systemPrompt))
+        .orElse(Some(current.systemPrompt)),
+      llmTemperature = variantConfig.flatMap(_.llmTemperature)
+        .orElse(overrides.flatMap(_.llmTemperature))
+        .orElse(Some(current.llmTemperature))
+    ))
 
   /**
    * Format a message as a Server-Sent Event.

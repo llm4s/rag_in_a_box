@@ -1,7 +1,7 @@
 package org.llm4s.ragbox.service
 
 import cats.effect.IO
-import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.config.{AppConfig, RuntimeSettings}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.QueryLogRegistry
 
@@ -16,7 +16,8 @@ import java.util.UUID
  */
 class SuggestionService(
   queryLogRegistry: QueryLogRegistry,
-  config: AppConfig
+  config: AppConfig,
+  runtime: RuntimeSettings
 ) {
 
   // Thresholds for triggering suggestions
@@ -431,12 +432,14 @@ class SuggestionService(
   // Helper Methods
   // ============================================================
 
+  /** The settings in effect now: the runtime settings, and the embedding model from the configuration. */
   private def getCurrentConfig: ConfigSnapshot = {
+    val current = runtime.current
     ConfigSnapshot(
-      chunkingStrategy = config.rag.chunking.strategy,
-      chunkSize = config.rag.chunking.size,
-      chunkOverlap = config.rag.chunking.overlap,
-      topK = config.rag.search.topK,
+      chunkingStrategy = current.chunkingStrategy,
+      chunkSize = current.chunkSize,
+      chunkOverlap = current.chunkOverlap,
+      topK = current.topK,
       embeddingProvider = config.embedding.provider,
       embeddingModel = config.embedding.model
     )
@@ -506,8 +509,12 @@ object SuggestionService {
    */
   def apply(
     queryLogRegistry: QueryLogRegistry,
-    config: AppConfig
-  ): SuggestionService = {
-    new SuggestionService(queryLogRegistry, config)
-  }
+    config: AppConfig,
+    runtime: RuntimeSettings
+  ): SuggestionService =
+    new SuggestionService(queryLogRegistry, config, runtime)
+
+  /** A service that judges the configuration file's settings. */
+  def apply(queryLogRegistry: QueryLogRegistry, config: AppConfig): SuggestionService =
+    new SuggestionService(queryLogRegistry, config, RuntimeSettings.fixed(config))
 }

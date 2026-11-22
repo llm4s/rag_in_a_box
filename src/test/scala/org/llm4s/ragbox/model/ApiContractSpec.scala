@@ -44,7 +44,7 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     topK = 5, fusionStrategy = "rrf", rrfK = 60, systemPrompt = "You are helpful.",
     llmTemperature = 0.1, chunkingStrategy = "sentence", chunkSize = 800, chunkOverlap = 150
   )
-  private val settingUpdate = SettingUpdateResult("topK", "5", "8", "hot", effectiveImmediately = true)
+  private val settingUpdate = SettingUpdateResult("llmTemperature", "0.7", "0.2", "hot", effectiveImmediately = true, note = Some("Applies to chat answers."))
   private val settingValidation = SettingValidation(
     field = "topK", valid = false, currentValue = "5", proposedValue = "500",
     error = Some("topK must be between 1 and 100"), warning = Some("Large topK increases latency")

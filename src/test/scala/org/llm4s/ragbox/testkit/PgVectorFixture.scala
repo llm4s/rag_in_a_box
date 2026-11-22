@@ -5,7 +5,8 @@ import com.dimafeng.testcontainers.GenericContainer
 import com.dimafeng.testcontainers.scalatest.TestContainerForAll
 import org.llm4s.rag.permissions.pg.PgSearchIndex
 import com.zaxxer.hikari.HikariDataSource
-import org.llm4s.ragbox.config.{ApiKeysConfig, AppConfig, DatabaseConfig, EmbeddingConfig}
+import org.llm4s.ragbox.config.{ApiKeysConfig, AppConfig, DatabaseConfig, EmbeddingConfig, RuntimeConfigManager}
+import org.llm4s.ragbox.registry.PgCollectionConfigRegistry
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.llmconnect.spi.ProviderRegistry
@@ -152,4 +153,45 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     pool(db).flatMap(ds =>
       Resource.make(RAGService.create(configure(testConfig(db, llm)), ds, registryFor(embeddings, llm)))(_.close())
     )
+
+  /**
+   * A RAGService wired as `Main` wires it: over a [[RuntimeConfigManager]] (runtime settings
+   * restored from `db`) and a [[PgCollectionConfigRegistry]], with or without permissions.
+   */
+  def liveService(
+    db: DatabaseConfig,
+    permissions: Boolean,
+    embeddings: FakeEmbeddings = FakeEmbeddings(),
+    llm: Option[FakeLLM] = None,
+    configure: AppConfig => AppConfig = identity
+  ): Resource[IO, LiveService] = {
+    val config = configure(testConfig(db, llm))
+    for {
+      ds <- pool(db)
+      runtime <- Resource.eval(RuntimeConfigManager(config, ds, permissionMode = permissions))
+      collections <- Resource.eval(PgCollectionConfigRegistry(ds))
+      index <-
+        if (!permissions) Resource.pure[IO, Option[PgSearchIndex]](None)
+        else
+          Resource.make(IO.blocking {
+            val si = PgSearchIndex.fromDataSource(ds, db.tableName).fold(e => throw new IllegalStateException(e.message), identity)
+            si.initializeSchema().fold(e => throw new IllegalStateException(e.message), identity)
+            Option(si)
+          })(si => IO.blocking(si.foreach(_.close())))
+      service <- Resource.make(index match {
+        case Some(si) =>
+          RAGService.createWithPermissions(config, ds, si, registryFor(embeddings, llm), Some(runtime), Some(collections))
+        case None =>
+          RAGService.create(config, ds, registryFor(embeddings, llm), Some(runtime), Some(collections))
+      })(_.close())
+    } yield LiveService(service, runtime, collections, ds)
+  }
 }
+
+/** A [[PgVectorFixture.liveService]]: the service and the runtime config it reads. */
+final case class LiveService(
+  service: RAGService,
+  runtime: RuntimeConfigManager,
+  collectionConfigs: PgCollectionConfigRegistry,
+  dataSource: javax.sql.DataSource
+)
