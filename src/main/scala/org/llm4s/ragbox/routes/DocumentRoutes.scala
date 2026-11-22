@@ -2,6 +2,7 @@ package org.llm4s.ragbox.routes
 
 import cats.effect.IO
 import cats.syntax.all._
+import io.circe.Decoder
 import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
@@ -44,6 +45,70 @@ object DocumentRoutes {
     }
 
   object SinceParam extends OptionalQueryParamDecoderMatcher[Instant]("since")
+
+  // Explicit opt-in for clearing every document: DELETE /api/v1/documents?all=true
+  object AllParam extends OptionalValidatingQueryParamDecoderMatcher[Boolean]("all")
+
+  /**
+   * Decode an optional JSON body.
+   *
+   * Returns Right(None) for an empty (or whitespace-only) body, Right(Some(a)) when the
+   * body decodes, and Left(error) when a body is present but cannot be decoded. This lets
+   * callers distinguish "no body" from "malformed body" instead of treating any decode
+   * failure as "no body".
+   */
+  private def decodeOptionalBody[A: Decoder](req: Request[IO]): IO[Either[String, Option[A]]] =
+    req.bodyText.compile.string.map { raw =>
+      if (raw.trim.isEmpty) Right(None)
+      else io.circe.parser.decode[A](raw).map(Some(_)).left.map(_.getMessage)
+    }
+
+  private def invalidBody(details: String): IO[Response[IO]] =
+    BadRequest(ErrorResponse.badRequest("Invalid request body", Some(details)).asJson)
+
+  private def batchDelete(ragService: RAGService, batchReq: BatchDeleteRequest): IO[Response[IO]] =
+    if (batchReq.dryRun.getOrElse(false)) {
+      // Dry run - check which documents exist
+      for {
+        entries <- ragService.getDocumentEntries(batchReq.documentIds)
+        existingIds = entries.map(_.documentId)
+        missingIds = batchReq.documentIds.filterNot(existingIds.contains)
+        resp <- Ok(BatchDeleteResponse(
+          message = s"Dry run: would delete ${existingIds.size} documents",
+          deletedCount = existingIds.size,
+          deletedIds = Some(existingIds),
+          failedIds = if (missingIds.nonEmpty) Some(missingIds) else None,
+          dryRun = true
+        ).asJson)
+      } yield resp
+    } else {
+      // Actually delete the documents
+      for {
+        results <- batchReq.documentIds.toList.traverse { id =>
+          ragService.deleteDocument(id).attempt.map(r => id -> r.isRight)
+        }
+        deleted = results.filter(_._2).map(_._1)
+        failed = results.filterNot(_._2).map(_._1)
+        resp <- Ok(BatchDeleteResponse(
+          message = s"Deleted ${deleted.size} documents",
+          deletedCount = deleted.size,
+          deletedIds = Some(deleted),
+          failedIds = if (failed.nonEmpty) Some(failed) else None,
+          dryRun = false
+        ).asJson)
+      } yield resp
+    }
+
+  private def clearAllDocuments(ragService: RAGService): IO[Response[IO]] =
+    ragService.clearAll.attempt.flatMap {
+      case Right(_) =>
+        Ok(Map("message" -> "All documents cleared").asJson)
+      case Left(e) =>
+        InternalServerError(ErrorResponse.internalError(
+          "Failed to clear documents",
+          Some(e.getMessage)
+        ).asJson)
+    }
 
   /**
    * Resolve external principal IDs to PrincipalIds.
@@ -257,11 +322,12 @@ object DocumentRoutes {
     // Supports dryRun to preview what would be deleted
     case req @ POST -> Root / "api" / "v1" / "sync" =>
       for {
-        body <- req.attemptAs[SyncPruneRequest].value
-        result <- body match {
-          case Right(pruneReq) =>
+        body <- decodeOptionalBody[SyncPruneRequest](req)
+        response <- body match {
+          case Left(err) => invalidBody(err)
+          case Right(Some(pruneReq)) =>
             val isDryRun = pruneReq.dryRun.getOrElse(false)
-            if (isDryRun) {
+            val result = if (isDryRun) {
               // Dry run - just find orphans without deleting
               ragService.findOrphanedDocuments(pruneReq.keepDocumentIds.toSet).map { orphans =>
                 SyncPruneResponse(
@@ -283,16 +349,16 @@ object DocumentRoutes {
                 dryRun = false
               )
             }
-          case Left(_) =>
+            result.flatMap(r => Ok(r.asJson))
+          case Right(None) =>
             // No body - just mark sync complete
             ragService.markSyncComplete().as(SyncPruneResponse(
               message = "Sync completed",
               prunedCount = 0,
               prunedIds = None,
               dryRun = false
-            ))
+            )).flatMap(r => Ok(r.asJson))
         }
-        response <- Ok(result.asJson)
       } yield response
 
     // GET /api/v1/sync/documents - List registered document states
@@ -353,60 +419,32 @@ object DocumentRoutes {
       } yield response
 
     // DELETE /api/v1/documents - Batch delete documents or clear all
-    // With body: delete specific documents
-    // Without body: clear all documents
-    case req @ DELETE -> Root / "api" / "v1" / "documents" =>
+    // With a BatchDeleteRequest body: delete the listed documents
+    // With ?all=true and no body: clear all documents (explicit opt-in)
+    // Anything else (no body, malformed body, all=true plus a body) is a 400.
+    case req @ DELETE -> Root / "api" / "v1" / "documents" :? AllParam(allParam) =>
       for {
-        bodyOpt <- req.attemptAs[BatchDeleteRequest].value
-        response <- bodyOpt match {
-          case Right(batchReq) =>
-            // Batch delete specific documents
-            val isDryRun = batchReq.dryRun.getOrElse(false)
-            if (isDryRun) {
-              // Dry run - check which documents exist
-              for {
-                entries <- ragService.getDocumentEntries(batchReq.documentIds)
-                existingIds = entries.map(_.documentId)
-                missingIds = batchReq.documentIds.filterNot(existingIds.contains)
-                resp <- Ok(BatchDeleteResponse(
-                  message = s"Dry run: would delete ${existingIds.size} documents",
-                  deletedCount = existingIds.size,
-                  deletedIds = Some(existingIds),
-                  failedIds = if (missingIds.nonEmpty) Some(missingIds) else None,
-                  dryRun = true
-                ).asJson)
-              } yield resp
-            } else {
-              // Actually delete the documents
-              for {
-                results <- batchReq.documentIds.toList.traverse { id =>
-                  ragService.deleteDocument(id).attempt.map(r => id -> r.isRight)
-                }
-                deleted = results.filter(_._2).map(_._1)
-                failed = results.filterNot(_._2).map(_._1)
-                resp <- Ok(BatchDeleteResponse(
-                  message = s"Deleted ${deleted.size} documents",
-                  deletedCount = deleted.size,
-                  deletedIds = Some(deleted),
-                  failedIds = if (failed.nonEmpty) Some(failed) else None,
-                  dryRun = false
-                ).asJson)
-              } yield resp
+        bodyOpt <- decodeOptionalBody[BatchDeleteRequest](req)
+        clearAll = allParam.map(_.toEither.left.map(_.head.sanitized))
+        response <- (clearAll, bodyOpt) match {
+          case (Some(Left(err)), _) =>
+            BadRequest(ErrorResponse.badRequest("Invalid 'all' query parameter", Some(err)).asJson)
+          case (_, Left(err)) =>
+            invalidBody(err)
+          case (Some(Right(true)), Right(Some(_))) =>
+            BadRequest(ErrorResponse.badRequest(
+              "Specify either ?all=true or a documentIds body, not both"
+            ).asJson)
+          case (Some(Right(true)), Right(None)) =>
+            clearAllDocuments(ragService)
+          case (_, Right(None)) =>
+            BadRequest(ErrorResponse.badRequest(
+              "Request body with documentIds is required. To delete every document use DELETE /api/v1/documents?all=true"
+            ).asJson)
+          case (_, Right(Some(batchReq))) =>
+            InputValidation.withValidation(InputValidation.validateBatchSize(batchReq.documentIds.size)) {
+              batchDelete(ragService, batchReq)
             }
-          case Left(_) =>
-            // No body - clear all documents
-            for {
-              result <- ragService.clearAll.attempt
-              resp <- result match {
-                case Right(_) =>
-                  Ok(Map("message" -> "All documents cleared").asJson)
-                case Left(e) =>
-                  InternalServerError(ErrorResponse.internalError(
-                    "Failed to clear documents",
-                    Some(e.getMessage)
-                  ).asJson)
-              }
-            } yield resp
         }
       } yield response
 

@@ -252,6 +252,13 @@ Response:
 }
 ```
 
+### Errors
+
+An empty body just marks the sync complete. A body that is present but is not
+valid JSON or does not match the schema (e.g. a misspelled `keepDocumentIds`)
+returns `400` with an `ErrorResponse`; nothing is pruned and the sync is not
+marked complete.
+
 ---
 
 ## Sync Workflow

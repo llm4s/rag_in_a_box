@@ -262,7 +262,7 @@ All settings can be configured via environment variables:
 | POST | `/api/v1/documents` | Upload a document |
 | PUT | `/api/v1/documents/{id}` | Upsert a document (idempotent) |
 | GET | `/api/v1/documents` | List documents |
-| DELETE | `/api/v1/documents` | Clear all documents |
+| DELETE | `/api/v1/documents` | Batch delete by `documentIds` body, or clear all with `?all=true` |
 | DELETE | `/api/v1/documents/{id}` | Delete a document |
 
 ### Sync
