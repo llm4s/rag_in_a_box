@@ -29,17 +29,27 @@ object StaticRoutes {
 
     // GET /admin/* - Serve static assets or fallback to index.html for SPA routing
     case req @ GET -> "admin" /: path =>
-      val segments = path.segments.map(_.decoded()).mkString("/")
-      val resourcePath = s"$resourceBasePath/$segments"
+      val decoded = path.segments.map(_.decoded())
+      if (decoded.exists(unsafeSegment)) BadRequest("Invalid path")
+      else {
+        val resourcePath = s"$resourceBasePath/${decoded.mkString("/")}"
 
-      // Try to serve the requested file
-      StaticFile.fromResource[IO](resourcePath, Some(req))
-        .getOrElseF {
-          // For SPA routing: if file not found, serve index.html
-          // This allows client-side routing to work
-          serveResource(s"$resourceBasePath/index.html", "text/html")
-        }
+        // Try to serve the requested file
+        StaticFile.fromResource[IO](resourcePath, Some(req))
+          .getOrElseF {
+            // For SPA routing: if file not found, serve index.html
+            // This allows client-side routing to work
+            serveResource(s"$resourceBasePath/index.html", "text/html")
+          }
+      }
   }
+
+  /**
+   * A decoded path segment that could leave the admin UI directory: `.`/`..`, or one that
+   * decoded to contain a separator (`%2F`, `%5C`) or a NUL (`%00`).
+   */
+  private[routes] def unsafeSegment(segment: String): Boolean =
+    segment == "." || segment == ".." || segment.exists(c => c == '/' || c == '\\' || c == '\u0000')
 
   /**
    * Serve a resource file with the specified content type.

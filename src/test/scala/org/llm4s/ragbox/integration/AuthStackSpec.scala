@@ -102,7 +102,7 @@ class AuthStackSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         mode <- json(app, get("/api/v1/auth/mode"))
         adminUi <- status(app, get("/admin/"))
         unknown <- status(app, get("/api/v1/does-not-exist"))
-        // Password login is disabled outside basic mode (the bootstrap admin has a default password)
+        // Password login is disabled outside basic mode
         pwLogin <- status(app, jsonPost("/api/v1/auth/login", Json.obj("username" -> "admin".asJson, "password" -> "admin".asJson)))
         // WebSocket: browsers cannot send headers, so ?access_token= is accepted there only
         wsNone <- status(app, get("/ws"))
@@ -113,7 +113,7 @@ class AuthStackSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         wrong shouldBe Status.Unauthorized
         header shouldBe Status.Ok
         viaBearer shouldBe Status.Ok
-        viaParam shouldBe Status.Ok
+        viaParam shouldBe Status.Unauthorized  // ?api_key= is no longer accepted (#15)
         health shouldBe Status.Ok
         mode._1 shouldBe Status.Ok
         mode._2.hcursor.get[List[String]]("methods") shouldBe Right(List("api-key"))

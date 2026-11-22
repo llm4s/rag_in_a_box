@@ -54,4 +54,25 @@ class StaticRoutesSpec extends AnyFlatSpec with Matchers {
       response.contentType.map(_.mediaType) shouldBe Some(MediaType.text.html)
     }
   }
+
+  "GET /admin/<traversal>" should "be rejected for dot-dot and encoded separator segments" in {
+    Seq(
+      "/admin/%2e%2e/application.conf",
+      "/admin/%2E%2E/%2E%2E/etc/passwd",
+      "/admin/assets/%2e%2e/%2e%2e/application.conf",
+      "/admin/..%2fapplication.conf",
+      "/admin/..%5capplication.conf",
+      "/admin/%2e/index.html",
+      "/admin/a%00b"
+    ).foreach { path =>
+      withClue(path) {
+        runRequest(Request[IO](Method.GET, Uri.unsafeFromString(path))).status shouldBe Status.BadRequest
+      }
+    }
+  }
+
+  it should "still serve ordinary nested paths" in {
+    Seq(Status.Ok, Status.NotFound) should contain(runRequest(Request[IO](Method.GET, uri"/admin/documents/42")).status)
+    StaticRoutes.unsafeSegment("file..name.js") shouldBe false
+  }
 }

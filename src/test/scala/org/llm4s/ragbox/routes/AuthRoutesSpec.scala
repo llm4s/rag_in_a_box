@@ -23,7 +23,9 @@ class AuthRoutesSpec extends AnyFlatSpec with Matchers {
     oauth = None,
     jwtSecret = "test-secret-key-for-testing-32chars",
     jwtSecretExplicitlySet = true,
-    jwtExpiration = 3600L
+    jwtExpiration = 3600L,
+    passwordMinLength = 4,         // the fixtures use short passwords
+    passwordHashIterations = 1000  // fast hashing for tests
   )
 
   // Mock user registry that stores users in memory
@@ -301,5 +303,32 @@ class AuthRoutesSpec extends AnyFlatSpec with Matchers {
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
     response.status shouldBe Status.NotFound
+  }
+
+  "The password policy" should "answer 400 (not 500) for empty or too-short passwords on create, reset and change" in {
+    val (routes, authService, registry) = createRoutes()
+    val admin = registry.getByUsername("admin").unsafeRunSync().get
+    val token = authService.generateToken(admin)
+
+    def send(method: Method, path: String, body: String): (Status, String) = {
+      val response = routes.orNotFound.run(
+        Request[IO](method, Uri.unsafeFromString(path))
+          .withEntity(body)
+          .withContentType(headers.`Content-Type`(MediaType.application.json))
+          .withHeaders(headers.Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+      ).unsafeRunSync()
+      (response.status, response.as[String].unsafeRunSync())
+    }
+
+    val (emptyStatus, emptyBody) = send(Method.POST, "/api/v1/users", """{"username": "u1", "password": ""}""")
+    emptyStatus shouldBe Status.BadRequest
+    emptyBody should include("Password is required")
+    send(Method.POST, "/api/v1/users", """{"username": "u2", "password": "abc"}""")._1 shouldBe Status.BadRequest
+    send(Method.PUT, s"/api/v1/users/${admin.id}/password", """{"password": ""}""")._1 shouldBe Status.BadRequest
+    send(Method.PUT, s"/api/v1/users/${admin.id}/password", """{"password": "abc"}""")._1 shouldBe Status.BadRequest
+    send(Method.PUT, "/api/v1/auth/password", """{"currentPassword": "adminpass", "newPassword": ""}""")._1 shouldBe
+      Status.BadRequest
+    // and the old password still works
+    authService.authenticate("admin", "adminpass").unsafeRunSync() shouldBe a[AuthResult.Success]
   }
 }

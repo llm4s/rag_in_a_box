@@ -24,7 +24,9 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
     oauth = None,
     jwtSecret = "test-secret-key-for-testing-32chars",
     jwtSecretExplicitlySet = true,
-    jwtExpiration = 3600L
+    jwtExpiration = 3600L,
+    passwordMinLength = 4,         // the fixtures use short passwords
+    passwordHashIterations = 1000  // fast hashing for tests
   )
 
   // Mock user registry
