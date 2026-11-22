@@ -124,9 +124,12 @@ class AuthService(
     val payloadB64 = parts(1)
     val signature = parts(2)
 
-    // Verify signature
+    // Verify signature (constant-time, so response timing does not reveal how much matched)
     val expectedSignature = sign(s"$headerB64.$payloadB64")
-    if (signature != expectedSignature) {
+    if (!MessageDigest.isEqual(
+        signature.getBytes(StandardCharsets.US_ASCII),
+        expectedSignature.getBytes(StandardCharsets.US_ASCII)
+      )) {
       return TokenValidationResult.Invalid("Invalid signature")
     }
 

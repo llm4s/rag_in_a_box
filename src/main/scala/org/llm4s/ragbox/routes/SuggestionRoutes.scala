@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -39,13 +40,13 @@ object SuggestionRoutes {
   object TypeParam extends OptionalQueryParamDecoderMatcher[String]("type")
   object SeverityParam extends OptionalQueryParamDecoderMatcher[String]("severity")
 
-  def routes(suggestionService: SuggestionService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(suggestionService: SuggestionService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/analytics/suggestions - Get optimization suggestions
     // Query params: from, to, collection, type, severity
     case GET -> Root / "api" / "v1" / "analytics" / "suggestions"
         :? FromParam(fromOpt) +& ToParam(toOpt) +& CollectionParam(collOpt)
-        +& TypeParam(typeOpt) +& SeverityParam(severityOpt) =>
+        +& TypeParam(typeOpt) +& SeverityParam(severityOpt) as principal =>
       for {
         result <- suggestionService.generateSuggestions(
           from = fromOpt,
@@ -67,7 +68,7 @@ object SuggestionRoutes {
 
     // GET /api/v1/analytics/suggestions/summary - Get suggestions summary (counts)
     case GET -> Root / "api" / "v1" / "analytics" / "suggestions" / "summary"
-        :? FromParam(fromOpt) +& ToParam(toOpt) =>
+        :? FromParam(fromOpt) +& ToParam(toOpt) as principal =>
       for {
         result <- suggestionService.getSuggestionsSummary(fromOpt, toOpt).attempt
         response <- result match {
@@ -83,7 +84,7 @@ object SuggestionRoutes {
 
     // GET /api/v1/analytics/suggestions/collection/:name - Get suggestions for specific collection
     case GET -> Root / "api" / "v1" / "analytics" / "suggestions" / "collection" / collectionName
-        :? FromParam(fromOpt) +& ToParam(toOpt) =>
+        :? FromParam(fromOpt) +& ToParam(toOpt) as principal =>
       for {
         result <- suggestionService.generateSuggestions(
           from = fromOpt,

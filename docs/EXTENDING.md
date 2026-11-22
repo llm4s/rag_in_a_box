@@ -17,7 +17,7 @@ rag-in-a-box/
 │   │   ├── IngestionService.scala # Ingestion logic
 │   │   └── IngestionScheduler.scala
 │   ├── middleware/
-│   │   └── AuthMiddleware.scala   # Authentication
+│   │   └── Authenticator.scala    # Authentication: credentials -> Principal
 │   ├── model/
 │   │   ├── ApiModels.scala        # Request/response types
 │   │   └── Codecs.scala           # JSON serialization
@@ -202,20 +202,21 @@ object MyMiddleware {
 
 ### 5. Custom Authentication
 
-Replace or extend `AuthMiddleware.scala`:
+All protected routes are `AuthedRoutes[Principal, IO]` behind `middleware/Authenticator.scala`,
+which turns a request's credentials into an `auth.Principal` (see the
+[authentication guide](guide/authentication.md)). To add a credential type, extend
+`Authenticator.credentialOf` / `authenticate` to produce a `Principal`; routes receive it as the
+request context and check it with the `routes.Authz` combinators:
 
 ```scala
-// Add JWT support
-private def extractJwtToken(request: Request[IO]): Option[Claims] = {
-  request.headers.get[Authorization].flatMap { auth =>
-    auth.credentials match {
-      case Credentials.Token(AuthScheme.Bearer, token) =>
-        validateJwt(token) // Your JWT validation
-      case _ => None
-    }
+case (req @ POST -> Root / "api" / "v1" / "my-endpoint") as principal =>
+  Authz.requireAdmin(principal) {
+    // ...
   }
-}
 ```
+
+`RagboxApp` assembles the routes and middleware; `Main` only serves `RagboxApp.httpApp`, so
+tests can build the exact same stack (see `integration/AuthStackSpec`).
 
 ### 6. Custom Vector Store
 

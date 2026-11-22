@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.parser._
@@ -20,7 +22,7 @@ class PrincipalRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterE
 
   override def beforeEach(): Unit = {
     mockStore = MockPrincipalStore()
-    routes = PrincipalRoutes.routes(mockStore)
+    routes = PrincipalRoutes.routes(mockStore).asAdmin
   }
 
   // ============================================================

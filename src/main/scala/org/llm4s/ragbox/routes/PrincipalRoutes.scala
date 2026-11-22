@@ -6,6 +6,7 @@ import io.circe.syntax._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -35,10 +36,10 @@ object PrincipalRoutes {
   implicit val principalResponseEncoder: Encoder[PrincipalResponse] = deriveEncoder
   implicit val principalListResponseEncoder: Encoder[PrincipalListResponse] = deriveEncoder
 
-  def routes(principalStore: PrincipalStore): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/principals/users - Create or get user principal
-    case req @ POST -> Root / "api" / "v1" / "principals" / "users" =>
+    case (req @ POST -> Root / "api" / "v1" / "principals" / "users") as principal =>
       for {
         body <- req.as[CreatePrincipalRequest]
         result <- IO.fromEither(
@@ -61,7 +62,7 @@ object PrincipalRoutes {
       } yield response
 
     // POST /api/v1/principals/groups - Create or get group principal
-    case req @ POST -> Root / "api" / "v1" / "principals" / "groups" =>
+    case (req @ POST -> Root / "api" / "v1" / "principals" / "groups") as principal =>
       for {
         body <- req.as[CreatePrincipalRequest]
         result <- IO.fromEither(
@@ -84,7 +85,7 @@ object PrincipalRoutes {
       } yield response
 
     // GET /api/v1/principals/users - List users
-    case GET -> Root / "api" / "v1" / "principals" / "users" :? LimitParam(limit) +& OffsetParam(offset) =>
+    case GET -> Root / "api" / "v1" / "principals" / "users" :? LimitParam(limit) +& OffsetParam(offset) as principal =>
       for {
         result <- IO.fromEither(
           principalStore.list("user", limit.getOrElse(100), offset.getOrElse(0))
@@ -130,7 +131,7 @@ object PrincipalRoutes {
       } yield response
 
     // GET /api/v1/principals/groups - List groups
-    case GET -> Root / "api" / "v1" / "principals" / "groups" :? LimitParam(limit) +& OffsetParam(offset) =>
+    case GET -> Root / "api" / "v1" / "principals" / "groups" :? LimitParam(limit) +& OffsetParam(offset) as principal =>
       for {
         result <- IO.fromEither(
           principalStore.list("group", limit.getOrElse(100), offset.getOrElse(0))
@@ -176,7 +177,7 @@ object PrincipalRoutes {
       } yield response
 
     // GET /api/v1/principals/lookup/:externalId - Lookup principal by external ID
-    case GET -> Root / "api" / "v1" / "principals" / "lookup" / externalId =>
+    case GET -> Root / "api" / "v1" / "principals" / "lookup" / externalId as principal =>
       for {
         parsed <- IO.fromEither(
           ExternalPrincipal.parse(externalId)
@@ -209,7 +210,7 @@ object PrincipalRoutes {
       } yield response
 
     // DELETE /api/v1/principals/:type/:externalId - Delete principal
-    case DELETE -> Root / "api" / "v1" / "principals" / principalType / externalId =>
+    case DELETE -> Root / "api" / "v1" / "principals" / principalType / externalId as principal =>
       val ext = principalType match {
         case "users" | "user" => Right(ExternalPrincipal.User(externalId))
         case "groups" | "group" => Right(ExternalPrincipal.Group(externalId))

@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.parser._
@@ -24,7 +26,7 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
   override def beforeEach(): Unit = {
     mockService = MockRAGService()
     queryLogRegistry = InMemoryQueryLogRegistry()
-    routes = QueryRoutes.routes(mockService, queryLogRegistry, allowAdminHeader = false)
+    routes = QueryRoutes.routes(mockService, queryLogRegistry, allowAdminHeader = false).asAdmin
   }
 
   // ============================================================

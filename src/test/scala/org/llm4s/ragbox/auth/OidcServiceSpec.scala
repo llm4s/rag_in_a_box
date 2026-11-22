@@ -124,7 +124,7 @@ class OidcServiceSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
           sessions <- registry.getStoredSessions
         yield
           result shouldBe a[Right[?, ?]]
-          val session = result.toOption.get
+          val session = result.toOption.get.session
           session.userId shouldBe s"${mockServer.issuer}|user-1"
           session.groups shouldBe List("x,admins")
           sessions.keySet shouldBe Set(session.sessionId)

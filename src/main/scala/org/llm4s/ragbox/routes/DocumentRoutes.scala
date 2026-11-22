@@ -5,6 +5,8 @@ import cats.syntax.all._
 import io.circe.Decoder
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.{Principal, TokenScope}
+import org.llm4s.ragbox.registry.DocumentEntry
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -247,27 +249,59 @@ object DocumentRoutes {
     }
   }
 
-  def routes(ragService: RAGService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  /** Collection of a registered document (documents without one live in the default collection). */
+  private def collectionOf(entry: DocumentEntry): String =
+    entry.collection.getOrElse(RAGService.DefaultCollection)
+
+  /** Entries a (possibly collection-restricted) access token may see. */
+  private def visibleTo(principal: Principal, entries: Seq[DocumentEntry]): Seq[DocumentEntry] =
+    if (principal.isCollectionRestricted) entries.filter(e => principal.canAccessCollection(collectionOf(e)))
+    else entries
+
+  /**
+   * For a collection-restricted token: run `operation` only if every one of `ids` that exists is
+   * in an allowed collection.
+   */
+  private def requireDocumentsAccessible(ragService: RAGService, principal: Principal, ids: Seq[String])(
+    operation: => IO[Response[IO]]
+  ): IO[Response[IO]] =
+    if (!principal.isCollectionRestricted) operation
+    else
+      ragService.getDocumentEntries(ids).flatMap { entries =>
+        entries.find(e => !principal.canAccessCollection(collectionOf(e))) match {
+          case Some(e) => Authz.forbidden(s"Access token is not allowed to use collection '${collectionOf(e)}'")
+          case None => operation
+        }
+      }
+
+  /**
+   * Document, sync and stats endpoints.
+   *
+   * Access tokens need `documents:read` / `documents:write` / `sync:read` / `sync:write` as
+   * appropriate, and a token restricted to collections only sees and changes documents in them.
+   * Clearing every document needs the `admin` scope.
+   */
+  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/collections - List all collections
-    case GET -> Root / "api" / "v1" / "collections" =>
-      for {
+    case GET -> Root / "api" / "v1" / "collections" as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsRead) { for {
         collections <- ragService.listCollections.attempt
         response <- collections match {
           case Right(cols) =>
-            Ok(Map("collections" -> cols).asJson)
+            Ok(Map("collections" -> cols.filter(principal.canAccessCollection)).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to list collections",
               Some(e.getMessage)
             ).asJson)
         }
-      } yield response
+      } yield response }
 
     // POST /api/v1/documents - Upload document
     // Supports permission-aware ingestion when readableBy is provided and SearchIndex is available
-    case req @ POST -> Root / "api" / "v1" / "documents" =>
-      for {
+    case (req @ POST -> Root / "api" / "v1" / "documents") as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsWrite) { for {
         body <- req.as[DocumentUploadRequest]
         // Validate inputs
         validation = InputValidation.all(
@@ -278,15 +312,19 @@ object DocumentRoutes {
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
           case None =>
-            createDocument(ragService, body.content, body.filename, body.metadata.getOrElse(Map.empty), body.collection, body.readableBy)
+            Authz.requireCollection(principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
+              createDocument(ragService, body.content, body.filename, body.metadata.getOrElse(Map.empty), body.collection, body.readableBy)
+            }
         }
-      } yield response
+      } yield response }
 
     // POST /api/v1/documents/upload - Upload a file (multipart/form-data)
     // Fields: file (required; PDF, DOCX, HTML, Markdown, plain text - anything Apache Tika reads),
     // collection, metadata (a JSON object of strings), readableBy (comma-separated principals).
     // The text is extracted with llm4s's TikaDocumentExtractor and ingested like POST /documents.
-    case req @ POST -> Root / "api" / "v1" / "documents" / "upload" =>
+    case POST -> Root / "api" / "v1" / "documents" / "upload" as principal if !principal.hasScope(TokenScope.DocumentsWrite) =>
+      Authz.requireScope(principal, TokenScope.DocumentsWrite)(IO.never)
+    case (req @ POST -> Root / "api" / "v1" / "documents" / "upload") as principal =>
       req.as[Multipart[IO]].attempt.flatMap {
         case Left(e) =>
           BadRequest(ErrorResponse.badRequest("Expected a multipart/form-data body", Option(e.getMessage)).asJson)
@@ -325,7 +363,9 @@ object DocumentRoutes {
                         InputValidation.toResponse(InputValidation.validateDocumentContent(text)) match {
                           case Some(errorResponse) => errorResponse
                           case None =>
-                            createDocument(ragService, text, Some(filename), extracted ++ userMetadata, collection, readableBy)
+                            Authz.requireCollection(principal, collection.getOrElse(RAGService.DefaultCollection)) {
+                              createDocument(ragService, text, Some(filename), extracted ++ userMetadata, collection, readableBy)
+                            }
                         }
                     }
                 }
@@ -340,24 +380,24 @@ object DocumentRoutes {
     //   - collection: exact collection match
     //   - search: case-insensitive substring of id, filename or title
     case GET -> Root / "api" / "v1" / "documents"
-        :? PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) +& CollectionParam(collectionOpt) +& SearchParam(searchOpt) =>
-      for {
+        :? PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) +& CollectionParam(collectionOpt) +& SearchParam(searchOpt) as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsRead) { for {
         entries <- ragService.listDocumentEntries.attempt
         response <- entries match {
           case Right(docs) =>
-            Ok(buildListResponse(docs, pageOpt, pageSizeOpt, collectionOpt, searchOpt).asJson)
+            Ok(buildListResponse(visibleTo(principal, docs), pageOpt, pageSizeOpt, collectionOpt, searchOpt).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to list documents",
               Some(e.getMessage)
             ).asJson)
         }
-      } yield response
+      } yield response }
 
     // PUT /api/v1/documents/:id - Upsert document (idempotent)
     // Supports permission-aware ingestion when collection and readableBy are provided
-    case req @ PUT -> Root / "api" / "v1" / "documents" / id =>
-      for {
+    case (req @ PUT -> Root / "api" / "v1" / "documents" / id) as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsWrite) { for {
         body <- req.as[DocumentUpsertRequest]
         // Validate inputs
         validation = InputValidation.all(
@@ -367,7 +407,9 @@ object DocumentRoutes {
         )
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
-          case None =>
+          // The target collection must be allowed, and so must the one an existing document is in
+          case None => Authz.requireCollection(principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
+            requireDocumentsAccessible(ragService, principal, Seq(id)) {
             val metadata = body.metadata.getOrElse(Map.empty) ++
               body.collection.map("collection" -> _).toMap
             val upsertIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
@@ -412,15 +454,17 @@ object DocumentRoutes {
                   Some(e.getMessage)
                 ).asJson)
             }
+            }
+          }
         }
-      } yield response
+      } yield response }
 
     // GET /api/v1/documents/:id - Get document details
     // Returns registry metadata; chunk content is served by /api/v1/visibility/chunks/:id
-    case GET -> Root / "api" / "v1" / "documents" / id =>
-      ragService.getDocumentEntries(Seq(id)).attempt.flatMap {
+    case GET -> Root / "api" / "v1" / "documents" / id as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsRead)(ragService.getDocumentEntries(Seq(id)).attempt.flatMap {
         case Right(entries) =>
-          entries.find(_.documentId == id) match {
+          visibleTo(principal, entries).find(_.documentId == id) match {
             case Some(entry) => Ok(toDocumentInfo(entry).asJson)
             case None => NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
           }
@@ -429,11 +473,11 @@ object DocumentRoutes {
             s"Failed to get document $id",
             Some(e.getMessage)
           ).asJson)
-      }
+      })
 
     // DELETE /api/v1/documents/:id - Delete document
-    case DELETE -> Root / "api" / "v1" / "documents" / id =>
-      for {
+    case DELETE -> Root / "api" / "v1" / "documents" / id as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsWrite) { requireDocumentsAccessible(ragService, principal, Seq(id)) { for {
         result <- ragService.deleteDocument(id).attempt
         response <- result match {
           case Right(_) =>
@@ -444,11 +488,11 @@ object DocumentRoutes {
               Some(e.getMessage)
             ).asJson)
         }
-      } yield response
+      } yield response } }
 
     // GET /api/v1/sync/status - Get sync status
-    case GET -> Root / "api" / "v1" / "sync" / "status" =>
-      for {
+    case GET -> Root / "api" / "v1" / "sync" / "status" as principal =>
+      Authz.requireScope(principal, TokenScope.SyncRead) { for {
         status <- ragService.getSyncStatus.attempt
         response <- status match {
           case Right(s) => Ok(s.asJson)
@@ -458,20 +502,28 @@ object DocumentRoutes {
               Some(e.getMessage)
             ).asJson)
         }
-      } yield response
+      } yield response }
 
     // POST /api/v1/sync - Mark sync complete and optionally prune
     // Supports dryRun to preview what would be deleted
-    case req @ POST -> Root / "api" / "v1" / "sync" =>
-      for {
+    case (req @ POST -> Root / "api" / "v1" / "sync") as principal =>
+      Authz.requireScope(principal, TokenScope.SyncWrite) { for {
         body <- decodeOptionalBody[SyncPruneRequest](req)
         response <- body match {
           case Left(err) => invalidBody(err)
           case Right(Some(pruneReq)) =>
             val isDryRun = pruneReq.dryRun.getOrElse(false)
+            // A collection-restricted token only prunes within its collections: every document
+            // outside them is kept
+            val keepIO: IO[Set[String]] =
+              if (!principal.isCollectionRestricted) IO.pure(pruneReq.keepDocumentIds.toSet)
+              else ragService.listDocumentEntries.map { all =>
+                pruneReq.keepDocumentIds.toSet ++
+                  all.filterNot(e => principal.canAccessCollection(collectionOf(e))).map(_.documentId)
+              }
             val result = if (isDryRun) {
               // Dry run - just find orphans without deleting
-              ragService.findOrphanedDocuments(pruneReq.keepDocumentIds.toSet).map { orphans =>
+              keepIO.flatMap(ragService.findOrphanedDocuments).map { orphans =>
                 SyncPruneResponse(
                   message = s"Dry run: would delete ${orphans.size} documents",
                   prunedCount = orphans.size,
@@ -482,7 +534,8 @@ object DocumentRoutes {
             } else {
               // Actual prune - delete orphans and mark sync complete
               for {
-                deleted <- ragService.pruneDocuments(pruneReq.keepDocumentIds.toSet)
+                keep <- keepIO
+                deleted <- ragService.pruneDocuments(keep)
                 _ <- ragService.markSyncComplete()
               } yield SyncPruneResponse(
                 message = "Sync completed",
@@ -501,18 +554,19 @@ object DocumentRoutes {
               dryRun = false
             )).flatMap(r => Ok(r.asJson))
         }
-      } yield response
+      } yield response }
 
     // GET /api/v1/sync/documents - List registered document states
     // Query params:
     //   - include=hash,updatedAt - Include additional fields
     //   - since=2024-01-01T00:00:00Z - Only documents modified since this time
-    case GET -> Root / "api" / "v1" / "sync" / "documents" :? IncludeParam(includeOpt) +& SinceParam(sinceOpt) =>
-      for {
-        entries <- sinceOpt match {
+    case GET -> Root / "api" / "v1" / "sync" / "documents" :? IncludeParam(includeOpt) +& SinceParam(sinceOpt) as principal =>
+      Authz.requireScope(principal, TokenScope.SyncRead) { for {
+        allEntries <- sinceOpt match {
           case Some(since) => ragService.listDocumentEntriesSince(since)
           case None => ragService.listDocumentEntries
         }
+        entries = visibleTo(principal, allEntries)
         includeFields = includeOpt.map(_.split(",").map(_.trim.toLowerCase).toSet).getOrElse(Set.empty)
         documents = entries.map { entry =>
           DocumentSyncState(
@@ -523,13 +577,13 @@ object DocumentRoutes {
           )
         }
         response <- Ok(DocumentSyncListResponse(documents = documents, total = documents.size).asJson)
-      } yield response
+      } yield response }
 
     // GET /api/v1/sync/documents/:id - Get single document state
-    case GET -> Root / "api" / "v1" / "sync" / "documents" / id =>
-      for {
+    case GET -> Root / "api" / "v1" / "sync" / "documents" / id as principal =>
+      Authz.requireScope(principal, TokenScope.SyncRead) { for {
         entries <- ragService.getDocumentEntries(Seq(id))
-        response <- entries.headOption match {
+        response <- visibleTo(principal, entries).headOption match {
           case Some(entry) =>
             Ok(DocumentSyncState(
               id = entry.documentId,
@@ -540,13 +594,13 @@ object DocumentRoutes {
           case None =>
             NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
         }
-      } yield response
+      } yield response }
 
     // POST /api/v1/sync/check - Batch check document states
-    case req @ POST -> Root / "api" / "v1" / "sync" / "check" =>
-      for {
+    case (req @ POST -> Root / "api" / "v1" / "sync" / "check") as principal =>
+      Authz.requireScope(principal, TokenScope.SyncRead) { for {
         body <- req.as[SyncCheckRequest]
-        entries <- ragService.getDocumentEntries(body.documentIds)
+        entries <- ragService.getDocumentEntries(body.documentIds).map(visibleTo(principal, _))
         foundIds = entries.map(_.documentId).toSet
         found = entries.map { entry =>
           DocumentSyncState(
@@ -558,13 +612,13 @@ object DocumentRoutes {
         }
         missing = body.documentIds.filterNot(foundIds.contains)
         response <- Ok(SyncCheckResponse(found = found, missing = missing).asJson)
-      } yield response
+      } yield response }
 
     // DELETE /api/v1/documents - Batch delete documents or clear all
     // With a BatchDeleteRequest body: delete the listed documents
     // With ?all=true and no body: clear all documents (explicit opt-in)
     // Anything else (no body, malformed body, all=true plus a body) is a 400.
-    case req @ DELETE -> Root / "api" / "v1" / "documents" :? AllParam(allParam) =>
+    case (req @ DELETE -> Root / "api" / "v1" / "documents" :? AllParam(allParam)) as principal =>
       for {
         bodyOpt <- decodeOptionalBody[BatchDeleteRequest](req)
         clearAll = allParam.map(_.toEither.left.map(_.head.sanitized))
@@ -578,21 +632,23 @@ object DocumentRoutes {
               "Specify either ?all=true or a documentIds body, not both"
             ).asJson)
           case (Some(Right(true)), Right(None)) =>
-            clearAllDocuments(ragService)
+            Authz.requireScope(principal, TokenScope.Admin)(clearAllDocuments(ragService))
           case (_, Right(None)) =>
             BadRequest(ErrorResponse.badRequest(
               "Request body with documentIds is required. To delete every document use DELETE /api/v1/documents?all=true"
             ).asJson)
           case (_, Right(Some(batchReq))) =>
             InputValidation.withValidation(InputValidation.validateBatchSize(batchReq.documentIds.size)) {
-              batchDelete(ragService, batchReq)
+              Authz.requireScope(principal, TokenScope.DocumentsWrite) {
+                requireDocumentsAccessible(ragService, principal, batchReq.documentIds)(batchDelete(ragService, batchReq))
+              }
             }
         }
       } yield response
 
     // GET /api/v1/stats - Get statistics
-    case GET -> Root / "api" / "v1" / "stats" =>
-      for {
+    case GET -> Root / "api" / "v1" / "stats" as principal =>
+      Authz.requireScope(principal, TokenScope.DocumentsRead) { for {
         stats <- ragService.getStats.attempt
         response <- stats match {
           case Right(s) => Ok(s.asJson)
@@ -602,6 +658,6 @@ object DocumentRoutes {
               Some(e.getMessage)
             ).asJson)
         }
-      } yield response
+      } yield response }
   }
 }

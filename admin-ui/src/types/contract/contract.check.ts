@@ -100,5 +100,10 @@ conforms<Api.VisibilityStats>()(contract.DetailedStatsResponse, true)
 conforms<Api.RAGConfigInfo>()(contract.RAGConfigInfo, true)
 conforms<Api.QueryMetrics>()(contract.QueryMetrics, true)
 
+// Authentication
+conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, true)
+conforms<Api.LoginResponse>()(contract.LoginResponse, true)
+conforms<Api.AuthMe>()(contract.PrincipalResponse, true)
+
 // Errors
 conforms<Api.ApiErrorBody>()(contract.ErrorResponse, true)

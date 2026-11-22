@@ -2,6 +2,8 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
+import { createUnauthorizedHandler } from './router/guards'
+import { setUnauthorizedHandler } from './api/unauthorized'
 
 // Vuetify
 import 'vuetify/styles'
@@ -49,6 +51,9 @@ const app = createApp(App)
 
 app.use(createPinia())
 app.use(router)
+
+// Any 401 from the API: reset auth state and go to the login page
+setUnauthorizedHandler(createUnauthorizedHandler(router))
 app.use(vuetify)
 
 app.mount('#app')

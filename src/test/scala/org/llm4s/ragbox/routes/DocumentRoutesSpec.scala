@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.parser._
@@ -21,7 +23,7 @@ class DocumentRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEa
 
   override def beforeEach(): Unit = {
     mockService = MockRAGService()
-    routes = DocumentRoutes.routes(mockService)
+    routes = DocumentRoutes.routes(mockService).asAdmin
   }
 
   // ============================================================

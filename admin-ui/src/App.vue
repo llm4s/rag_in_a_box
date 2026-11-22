@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useDisplay } from 'vuetify'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { useStatsStore } from '@/stores/stats'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useTheme } from '@/composables/useTheme'
@@ -11,6 +13,9 @@ import KeyboardShortcutsDialog from '@/components/KeyboardShortcutsDialog.vue'
 
 const statsStore = useStatsStore()
 const wsStore = useWebSocketStore()
+const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 const { isDark, toggleTheme } = useTheme()
 const { mobile } = useDisplay()
 const { shortcuts } = useKeyboardShortcuts()
@@ -45,31 +50,59 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleQuestionMark)
 })
 
-const navItems = [
+interface NavItem {
+  title?: string
+  icon?: string
+  to?: string
+  divider?: boolean
+  /** Hidden for non-admins (the route itself has meta.requiresAdmin) */
+  adminOnly?: boolean
+}
+
+const allNavItems: NavItem[] = [
   { title: 'Dashboard', icon: 'mdi-view-dashboard', to: '/' },
   { title: 'Chat', icon: 'mdi-chat', to: '/chat' },
   { divider: true },
   { title: 'Documents', icon: 'mdi-file-document-multiple', to: '/documents' },
   { title: 'Upload', icon: 'mdi-upload', to: '/documents/upload' },
   { divider: true },
-  { title: 'Analytics', icon: 'mdi-chart-line', to: '/analytics' },
+  { title: 'Analytics', icon: 'mdi-chart-line', to: '/analytics', adminOnly: true },
   { title: 'Optimization', icon: 'mdi-lightbulb-on', to: '/suggestions' },
-  { title: 'Experiments', icon: 'mdi-flask', to: '/experiments' },
+  { title: 'Experiments', icon: 'mdi-flask', to: '/experiments', adminOnly: true },
   { divider: true },
   { title: 'Configuration', icon: 'mdi-cog', to: '/config' },
-  { title: 'Runtime Config', icon: 'mdi-tune', to: '/config/runtime' },
+  { title: 'Runtime Config', icon: 'mdi-tune', to: '/config/runtime', adminOnly: true },
   { title: 'Collections', icon: 'mdi-folder-cog', to: '/config/collections' },
   { divider: true },
-  { title: 'Users', icon: 'mdi-account-multiple', to: '/users' },
-  { title: 'Groups', icon: 'mdi-account-group', to: '/groups' },
-  { title: 'Permissions', icon: 'mdi-shield-lock', to: '/permissions' },
+  { title: 'Users', icon: 'mdi-account-multiple', to: '/users', adminOnly: true },
+  { title: 'Groups', icon: 'mdi-account-group', to: '/groups', adminOnly: true },
+  { title: 'Permissions', icon: 'mdi-shield-lock', to: '/permissions', adminOnly: true },
   { divider: true },
   { title: 'Chunking Preview', icon: 'mdi-scissors-cutting', to: '/chunking' },
-  { title: 'Visibility', icon: 'mdi-eye', to: '/visibility' },
-  { title: 'Ingestion', icon: 'mdi-database-import', to: '/ingestion' },
+  { title: 'Visibility', icon: 'mdi-eye', to: '/visibility', adminOnly: true },
+  { title: 'Ingestion', icon: 'mdi-database-import', to: '/ingestion', adminOnly: true },
   { divider: true },
   { title: 'API Docs', icon: 'mdi-api', to: '/api-docs' },
 ]
+
+// Admin-only entries are hidden for non-admins; collapse leftover dividers
+const navItems = computed(() => {
+  const visible = allNavItems.filter((item) => !item.adminOnly || auth.isAdmin)
+  return visible.filter((item, i) =>
+    !item.divider || (i > 0 && i < visible.length - 1 && !visible[i - 1].divider)
+  )
+})
+
+const isLoginPage = computed(() => route.name === 'login')
+/** Auth established (or not required): safe to call the API and open the websocket. */
+const authReady = computed(() => auth.initialized && auth.isAuthenticated)
+const showUserMenu = computed(() => auth.authRequired && auth.user !== null)
+
+async function handleLogout() {
+  wsStore.disconnect()
+  await auth.logout()
+  await router.push({ name: 'login' })
+}
 
 async function checkHealth() {
   try {
@@ -80,10 +113,18 @@ async function checkHealth() {
   }
 }
 
+// Don't hit authenticated endpoints (or open /ws) before auth is established
+watch(authReady, (ready) => {
+  if (ready) {
+    statsStore.fetchStats()
+    wsStore.connect()
+  } else {
+    wsStore.disconnect()
+  }
+}, { immediate: true })
+
 onMounted(() => {
   checkHealth()
-  statsStore.fetchStats()
-  wsStore.connect()
   // Refresh health every 30 seconds
   setInterval(checkHealth, 30000)
 })
@@ -100,7 +141,7 @@ onUnmounted(() => {
 
     <!-- App Bar -->
     <v-app-bar color="primary" :prominent="!mobile">
-      <v-app-bar-nav-icon @click="drawer = !drawer"></v-app-bar-nav-icon>
+      <v-app-bar-nav-icon v-if="!isLoginPage" @click="drawer = !drawer"></v-app-bar-nav-icon>
 
       <v-toolbar-title>
         <span class="font-weight-bold">RAG in a Box</span>
@@ -111,6 +152,7 @@ onUnmounted(() => {
 
       <!-- Search Button -->
       <v-btn
+        v-if="!isLoginPage"
         icon
         @click="searchDialog = true"
         aria-label="Search (Ctrl+K)"
@@ -138,10 +180,28 @@ onUnmounted(() => {
       <v-btn icon @click="toggleTheme" :aria-label="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
         <v-icon>{{ isDark ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
       </v-btn>
+
+      <!-- Current user / logout (only when the server requires authentication) -->
+      <v-menu v-if="showUserMenu" location="bottom end">
+        <template v-slot:activator="{ props }">
+          <v-btn v-bind="props" :icon="mobile" :aria-label="`Signed in as ${auth.username}`" class="ml-1">
+            <v-icon v-if="mobile">mdi-account-circle</v-icon>
+            <template v-else>
+              <v-icon start>mdi-account-circle</v-icon>
+              <span class="text-none">{{ auth.username }}</span>
+            </template>
+          </v-btn>
+        </template>
+        <v-list density="compact" min-width="200">
+          <v-list-item :title="auth.username ?? ''" :subtitle="auth.isAdmin ? 'Administrator' : 'User'" prepend-icon="mdi-account"></v-list-item>
+          <v-divider></v-divider>
+          <v-list-item prepend-icon="mdi-logout" title="Sign out" @click="handleLogout"></v-list-item>
+        </v-list>
+      </v-menu>
     </v-app-bar>
 
     <!-- Navigation Drawer -->
-    <v-navigation-drawer v-model="drawer" :permanent="!mobile">
+    <v-navigation-drawer v-if="!isLoginPage" v-model="drawer" :permanent="!mobile">
       <v-list density="compact" nav>
         <template v-for="(item, index) in navItems" :key="index">
           <v-divider v-if="item.divider" class="my-2"></v-divider>

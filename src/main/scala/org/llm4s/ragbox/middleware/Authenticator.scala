@@ -1,0 +1,215 @@
+package org.llm4s.ragbox.middleware
+
+import cats.data.{Kleisli, OptionT}
+import cats.effect.IO
+import io.circe.syntax._
+import org.http4s._
+import org.http4s.circe._
+import org.http4s.dsl.io._
+import org.http4s.headers.{Authorization, `WWW-Authenticate`}
+import org.http4s.server.AuthMiddleware
+import org.llm4s.ragbox.auth._
+import org.llm4s.ragbox.config.{AuthMode, SecurityConfig}
+import org.llm4s.ragbox.model.ErrorResponse
+import org.llm4s.ragbox.model.Codecs._
+import org.typelevel.ci.CIStringSyntax
+
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+
+/**
+ * The single authenticator in front of every protected route.
+ *
+ * It turns the credentials of a request into a [[Principal]] and hands it to the routes as the
+ * context of an `AuthedRoutes[Principal, IO]` request ([[middleware]]). Which credentials are
+ * accepted depends on the configured mode:
+ *
+ * | credential                                   | open | open + `API_KEY` | basic | oauth |
+ * |----------------------------------------------|------|------------------|-------|-------|
+ * | none (anonymous administrator)               | yes  |                  |       |       |
+ * | static `API_KEY`                             |      | yes              | if set| if set|
+ * | `rat_` access token                          |      | yes              | yes   | yes   |
+ * | JWT from `POST /api/v1/auth/login`           |      |                  | yes   |       |
+ * | OIDC session cookie                          |      |                  |       | yes   |
+ *
+ * Credentials are read from (first match wins):
+ *  - `X-API-Key: <API_KEY>`
+ *  - `Authorization: Bearer <API_KEY | rat_token | JWT>`
+ *  - `?api_key=<API_KEY>` (legacy; prefer a header, query strings end up in access logs)
+ *  - `?access_token=<API_KEY | rat_token | JWT>`, only on the WebSocket endpoint (`/ws`),
+ *    because browsers cannot set headers on a WebSocket handshake
+ *  - the OIDC session cookie (oauth mode)
+ *
+ * A request that presents a credential which is not valid is rejected (401) even if another
+ * credential would have been valid; credentials are never silently ignored.
+ *
+ * JWTs are only accepted in basic mode: in the other modes the bootstrap admin user may still
+ * have its development password, so a password login must not grant access there.
+ *
+ * Public routes (health, login, OAuth, admin UI assets, metrics) are not wrapped by this
+ * middleware; `Main` mounts them in front of it.
+ *
+ * @param validateAccessToken validates a `rat_` token (and records its last use)
+ * @param validateJwt         checks a JWT's signature and expiry
+ * @param lookupUser          loads the current user record for a JWT subject, so a deleted
+ *                            user's or demoted admin's token stops working immediately
+ * @param validateSession     looks up an OIDC session by id (oauth mode)
+ * @param oauthAdminGroups    OIDC groups whose members are administrators
+ */
+final class Authenticator(
+  security: SecurityConfig,
+  validateAccessToken: String => IO[Option[AccessToken]],
+  validateJwt: String => TokenValidationResult,
+  lookupUser: Int => IO[Option[User]],
+  validateSession: Option[String => IO[Option[OAuthSessionData]]] = None,
+  oauthAdminGroups: Set[String] = Set.empty,
+  sessionCookieName: String = OAuthSessionConfig().cookieName
+) {
+
+  import Authenticator._
+
+  private val mode: AuthMode = security.auth.mode
+  private val apiKey: Option[String] = security.apiKey.filter(_.nonEmpty)
+  private val apiKeyDigest: Option[Array[Byte]] = apiKey.map(digest)
+
+  /** False only in open mode without an API key, where every request is anonymous admin. */
+  val authRequired: Boolean = mode != AuthMode.Open || apiKey.isDefined
+
+  /**
+   * Authenticate a request.
+   *
+   * @return the principal, or why the request is not authenticated
+   */
+  def authenticate(req: Request[IO]): IO[Either[AuthFailure, Principal]] =
+    if (!authRequired) IO.pure(Right(Principal.OpenModeAdmin))
+    else
+      credentialOf(req) match {
+        case Some(Credential.Key(key))       => IO.pure(checkApiKey(key))
+        case Some(Credential.Bearer(token))  => bearer(token)
+        case Some(Credential.Session(id))    => session(id)
+        case None                            => IO.pure(Left(AuthFailure.Missing))
+      }
+
+  /** The http4s middleware that runs [[authenticate]] in front of `AuthedRoutes[Principal, IO]`. */
+  lazy val middleware: AuthMiddleware[IO, Principal] =
+    AuthMiddleware(Kleisli(authenticate), onFailure)
+
+  /** Shorthand: protect `routes`. */
+  def apply(routes: AuthedRoutes[Principal, IO]): HttpRoutes[IO] = middleware(routes)
+
+  private def credentialOf(req: Request[IO]): Option[Credential] = {
+    val header = req.headers.get(ci"X-API-Key").map(h => Credential.Key(h.head.value))
+    lazy val bearerHeader = req.headers.get[Authorization].flatMap(_.credentials match {
+      case Credentials.Token(AuthScheme.Bearer, token) => Some(Credential.Bearer(token))
+      case _ => None
+    })
+    lazy val apiKeyParam = req.params.get("api_key").map(Credential.Key(_))
+    lazy val wsToken =
+      if (req.pathInfo.renderString == WebSocketPath) req.params.get("access_token").map(Credential.Bearer(_))
+      else None
+    lazy val sessionCookie =
+      if (mode == AuthMode.OAuth && validateSession.isDefined)
+        req.cookies.find(_.name == sessionCookieName).map(c => Credential.Session(c.content))
+      else None
+
+    header.orElse(bearerHeader).orElse(apiKeyParam).orElse(wsToken).orElse(sessionCookie)
+  }
+
+  private def checkApiKey(key: String): Either[AuthFailure, Principal] =
+    if (apiKeyMatches(key)) Right(Principal.ApiKeyAdmin)
+    else Left(AuthFailure.Invalid("Invalid API key"))
+
+  private def apiKeyMatches(candidate: String): Boolean =
+    apiKeyDigest.exists(expected => MessageDigest.isEqual(expected, digest(candidate)))
+
+  private def bearer(token: String): IO[Either[AuthFailure, Principal]] =
+    if (token.startsWith(AccessTokenPrefix))
+      validateAccessToken(token).map {
+        case Some(accessToken) => Right(Principal.accessToken(accessToken))
+        case None => Left(AuthFailure.Invalid("Invalid, revoked or expired access token"))
+      }
+    else if (apiKeyMatches(token)) IO.pure(Right(Principal.ApiKeyAdmin))
+    else if (mode == AuthMode.Basic && token.count(_ == '.') == 2) jwt(token)
+    else IO.pure(Left(AuthFailure.Invalid("Invalid credentials")))
+
+  private def jwt(token: String): IO[Either[AuthFailure, Principal]] =
+    validateJwt(token) match {
+      case TokenValidationResult.Valid(userId, _, _) =>
+        lookupUser(userId).map {
+          case Some(user) => Right(Principal.passwordUser(user))
+          case None => Left(AuthFailure.Invalid("User no longer exists"))
+        }
+      case TokenValidationResult.Expired => IO.pure(Left(AuthFailure.Invalid("Token expired")))
+      case TokenValidationResult.Invalid(_) => IO.pure(Left(AuthFailure.Invalid("Invalid token")))
+    }
+
+  private def session(sessionId: String): IO[Either[AuthFailure, Principal]] =
+    validateSession match {
+      case Some(validate) =>
+        validate(sessionId).map {
+          case Some(data) => Right(Principal.oidcUser(data, oauthAdminGroups))
+          case None => Left(AuthFailure.Invalid("Session expired or invalid. Please log in again."))
+        }
+      case None => IO.pure(Left(AuthFailure.Missing))
+    }
+
+  private val onFailure: AuthedRoutes[AuthFailure, IO] = Kleisli { (ar: AuthedRequest[IO, AuthFailure]) =>
+    OptionT.liftF(unauthorized(ar.context.message))
+  }
+}
+
+object Authenticator {
+
+  /** The WebSocket endpoint, the only path that accepts `?access_token=`. */
+  val WebSocketPath = "/ws"
+
+  private val AccessTokenPrefix = "rat_"
+
+  /** Why a request could not be authenticated. Both cases answer 401. */
+  sealed trait AuthFailure {
+    def message: String
+  }
+
+  object AuthFailure {
+    case object Missing extends AuthFailure {
+      val message = "Authentication required"
+    }
+    final case class Invalid(message: String) extends AuthFailure
+  }
+
+  private enum Credential:
+    case Key(value: String)
+    case Bearer(value: String)
+    case Session(id: String)
+
+  /** SHA-256 so the constant-time comparison does not leak the key's length either. */
+  private def digest(value: String): Array[Byte] =
+    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))
+
+  /** 401 with a `WWW-Authenticate` challenge and the standard error body. */
+  def unauthorized(message: String): IO[Response[IO]] =
+    Unauthorized(
+      `WWW-Authenticate`(Challenge("Bearer", "ragbox")),
+      ErrorResponse.unauthorized(message).asJson
+    )
+
+  /** Build the authenticator from the application's registries and services. */
+  def apply(
+    security: SecurityConfig,
+    authService: AuthService,
+    userRegistry: UserRegistry,
+    tokenRegistry: AccessTokenRegistry,
+    oidc: Option[OidcService[IO]]
+  ): Authenticator = {
+    val oauth = security.auth.oauth
+    new Authenticator(
+      security = security,
+      validateAccessToken = tokenRegistry.validate,
+      validateJwt = authService.validateToken,
+      lookupUser = userRegistry.getById,
+      validateSession = oidc.map(service => (id: String) => service.validateSession(id)),
+      oauthAdminGroups = oauth.map(_.adminGroups).getOrElse(Set.empty),
+      sessionCookieName = oauth.map(_.session.cookieName).getOrElse(OAuthSessionConfig().cookieName)
+    )
+  }
+}

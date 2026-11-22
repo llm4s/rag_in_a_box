@@ -55,6 +55,35 @@ Scopes control what operations a token can perform:
 | `query` | Execute RAG queries |
 | `admin` | Full administrative access |
 
+### What each scope allows
+
+Scopes and collection restrictions are enforced on every request made with the token:
+
+| Endpoint | Scope |
+|----------|-------|
+| `GET /api/v1/documents`, `GET /api/v1/documents/{id}`, `GET /api/v1/collections`, `GET /api/v1/stats` | `documents:read` |
+| `POST /api/v1/documents`, `POST /api/v1/documents/upload`, `PUT /api/v1/documents/{id}`, `DELETE /api/v1/documents/{id}`, `DELETE /api/v1/documents` (batch) | `documents:write` |
+| `GET /api/v1/sync/status`, `GET /api/v1/sync/documents[/{id}]`, `POST /api/v1/sync/check` | `sync:read` |
+| `POST /api/v1/sync` | `sync:write` |
+| `POST /api/v1/query`, `/query/stream`, `/search`, `/api/v1/chat/*` | `query` |
+| everything else (`DELETE /api/v1/documents?all=true`, tokens, users, configuration, ...) | `admin` |
+
+A missing scope answers `403 Forbidden`. A token with the `admin` scope is an administrator and
+has every scope.
+
+### Collection restrictions
+
+A token created with `collections` can only use those collections **and their
+sub-collections** (`confluence/ENG` also allows `confluence/ENG/api`):
+
+- writes to any other collection, and deletes of documents in one, answer `403`
+- document and sync listings only show documents in the allowed collections; other documents
+  answer `404`
+- queries must name a collection inside the restriction (`confluence/ENG`,
+  `confluence/ENG/*`, `confluence/ENG/**`); `*` and other collections answer `403`
+- `POST /api/v1/sync` with `keepDocumentIds` only prunes documents inside the allowed
+  collections
+
 ### Common Scope Combinations
 
 | Use Case | Scopes |
@@ -68,7 +97,8 @@ Scopes control what operations a token can perform:
 
 ### Create a Token
 
-Requires admin authentication:
+Requires an administrator (the `API_KEY`, an admin user's JWT, an admin SSO user, or a token
+with the `admin` scope):
 
 ```bash
 curl -X POST "http://localhost:8080/api/v1/tokens" \
@@ -316,7 +346,8 @@ await client.upsertDocument(
 
 ### Monitoring
 
-- Check `lastUsedAt` to identify unused tokens
+- `lastUsedAt` is updated every time the token authenticates a request; check it to identify
+  unused tokens
 - Review token list regularly
 - Revoke tokens for departed team members
 
@@ -338,12 +369,13 @@ One or more scopes in the request are invalid. Valid scopes:
 
 ### "Forbidden" (403)
 
-Token doesn't have the required scope for the operation.
+The token lacks the scope the operation needs, or the collection is outside the token's
+restriction. The message says which.
 
-### "Token expired" (401)
+### "Invalid, revoked or expired access token" (401)
 
-Token has passed its `expiresAt` time. Create a new token.
+The token does not exist, was revoked, or has passed its `expiresAt` time. Create a new token.
 
-### "Missing authorization token" (401)
+### "Authentication required" (401)
 
 Request is missing the `Authorization: Bearer` header.

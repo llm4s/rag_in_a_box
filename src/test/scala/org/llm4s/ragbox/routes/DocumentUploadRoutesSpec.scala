@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import fs2.Stream
@@ -28,7 +30,7 @@ class DocumentUploadRoutesSpec extends AnyFlatSpec with Matchers with LoneElemen
     }
 
   private def upload(service: MockRAGService, parts: Part[IO]*): Response[IO] = {
-    val routes = DocumentRoutes.routes(service)
+    val routes = DocumentRoutes.routes(service).asAdmin
     Multiparts.forSync[IO].flatMap { multiparts =>
       multiparts.multipart(Vector(parts*)).flatMap { multipart =>
         val request = Request[IO](Method.POST, uri"/api/v1/documents/upload")

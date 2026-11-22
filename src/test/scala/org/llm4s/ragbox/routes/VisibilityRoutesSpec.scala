@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import org.http4s._
@@ -13,7 +15,7 @@ class VisibilityRoutesSpec extends AnyFlatSpec with Matchers {
 
   private def createRoutes(): (HttpRoutes[IO], MockRAGService) = {
     val ragService = MockRAGService()
-    val routes = VisibilityRoutes.routes(ragService)
+    val routes = VisibilityRoutes.routes(ragService).asAdmin
     (routes, ragService)
   }
 

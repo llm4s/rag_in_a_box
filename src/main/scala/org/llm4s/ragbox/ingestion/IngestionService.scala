@@ -45,6 +45,38 @@ final case class IngestionStatus(
 )
 
 /**
+ * Progress notification for one source run, published to [[IngestionService]]'s listener
+ * (the server broadcasts them to WebSocket clients as `ingestion_progress`).
+ *
+ * @param status   `running`, `completed` or `failed`
+ * @param progress 0.0 when a run starts, 1.0 when it ends
+ */
+final case class IngestionEvent(
+  source: String,
+  status: String,
+  progress: Double,
+  message: Option[String] = None
+)
+
+object IngestionEvent {
+  def started(source: String): IngestionEvent = IngestionEvent(source, "running", 0.0)
+
+  def finished(result: IngestionResult): IngestionEvent = result.error match {
+    case Some(error) => IngestionEvent(result.sourceName, "failed", 1.0, Some(error))
+    case None =>
+      IngestionEvent(
+        result.sourceName,
+        "completed",
+        1.0,
+        Some(
+          s"added=${result.documentsAdded}, updated=${result.documentsUpdated}, " +
+            s"deleted=${result.documentsDeleted}, unchanged=${result.documentsUnchanged}, failed=${result.documentsFailed}"
+        )
+      )
+  }
+}
+
+/**
  * Raised when an ingestion run is requested while another is still in progress.
  * The ingestion routes map it to 409 Conflict.
  */
@@ -77,7 +109,8 @@ final case class IngestionAlreadyRunning()
  */
 class IngestionService(
   ragService: RAGService,
-  config: IngestionConfig
+  config: IngestionConfig,
+  listener: IngestionEvent => IO[Unit] = _ => IO.unit
 ) {
 
   private val logger = LoggerFactory.getLogger(getClass)
@@ -212,8 +245,20 @@ class IngestionService(
         case s3: S3SourceConfig =>
           syncSource(s3.name, s3.name, "s3", IngestionService.s3Loader(s3), removeUnlisted = true, startTime)
       }
-      run.handleError(failedResult(source.name, sourceTypeOf(source), startTime))
+      reporting(source.name)(run.handleError(failedResult(source.name, sourceTypeOf(source), startTime)))
     }
+
+  /** Publish start/finish events around a source run. A failing listener never fails ingestion. */
+  private def reporting(sourceName: String)(run: IO[IngestionResult]): IO[IngestionResult] = {
+    def publish(event: IngestionEvent): IO[Unit] =
+      listener(event).handleError(e => logger.warn(s"Ingestion listener failed: ${e.getMessage}"))
+    publish(IngestionEvent.started(sourceName)) *>
+      run.guaranteeCase {
+        case cats.effect.Outcome.Succeeded(result) => result.flatMap(r => publish(IngestionEvent.finished(r)))
+        case cats.effect.Outcome.Errored(e) => publish(IngestionEvent(sourceName, "failed", 1.0, Option(e.getMessage)))
+        case cats.effect.Outcome.Canceled() => publish(IngestionEvent(sourceName, "failed", 1.0, Some("cancelled")))
+      }
+  }
 
   private def sourceTypeOf(source: SourceConfig): String = source match {
     case _: DirectorySourceConfig => "directory"
@@ -429,8 +474,10 @@ class IngestionService(
     metadata: Map[String, String] = Map.empty
   ): IO[IngestionResult] =
     IO.realTimeInstant.flatMap { startTime =>
-      confinedDirectoryLoader(path, patterns, recursive, metadata + ("source" -> "api"), maxDepth = 10).flatMap {
-        loader => syncSource(s"api:directory:$path", path, "directory", loader, removeUnlisted = true, startTime)
+      reporting(path) {
+        confinedDirectoryLoader(path, patterns, recursive, metadata + ("source" -> "api"), maxDepth = 10).flatMap {
+          loader => syncSource(s"api:directory:$path", path, "directory", loader, removeUnlisted = true, startTime)
+        }
       }
     }
 
@@ -449,7 +496,7 @@ class IngestionService(
           IO.raiseError(IngestionRequestRejected(s"URL '${url.take(UrlPolicy.MaxUrlLength)}' refused: $reason"))
         }
         loader = UrlLoader(urls = urls, metadata = metadata + ("source" -> "api"))
-        result <- syncSource("api:url", "url-ingest", "url", loader, removeUnlisted = false, startTime)
+        result <- reporting("url-ingest")(syncSource("api:url", "url-ingest", "url", loader, removeUnlisted = false, startTime))
       } yield result
     }
 
@@ -514,8 +561,12 @@ class IngestionService(
 
 object IngestionService {
 
-  def apply(ragService: RAGService, config: IngestionConfig): IngestionService =
-    new IngestionService(ragService, config)
+  def apply(
+    ragService: RAGService,
+    config: IngestionConfig,
+    listener: IngestionEvent => IO[Unit] = _ => IO.unit
+  ): IngestionService =
+    new IngestionService(ragService, config, listener)
 
   /**
    * The S3 loader for a source. Static credentials, when configured, are passed to the same

@@ -10,7 +10,8 @@ import org.http4s.implicits._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.llm4s.ragbox.auth._
-import org.llm4s.ragbox.config.{AuthConfig, AuthMode, BasicAuthConfig}
+import org.llm4s.ragbox.config.{AuthConfig, AuthMode, BasicAuthConfig, SecurityConfig}
+import org.llm4s.ragbox.middleware.Authenticator
 
 import java.time.Instant
 
@@ -109,7 +110,14 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
     authService.createUser("admin", "adminpass", UserRole.Admin).unsafeRunSync()
     authService.createUser("user", "userpass", UserRole.User).unsafeRunSync()
 
-    val routes = TokenRoutes.routes(tokenRegistry, authService)
+    // Behind the real authenticator, as RagboxApp mounts it
+    val authenticator = new Authenticator(
+      SecurityConfig(apiKey = None, auth = testConfig),
+      validateAccessToken = tokenRegistry.validate,
+      validateJwt = authService.validateToken,
+      lookupUser = userRegistry.getById
+    )
+    val routes = authenticator(TokenRoutes.routes(tokenRegistry))
     (routes, authService, userRegistry, tokenRegistry)
   }
 
@@ -185,6 +193,18 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
     response.status shouldBe Status.Unauthorized
+  }
+
+  it should "reject token creation with a non-admin access token" in {
+    val (routes, _, _, tokenRegistry) = createRoutes()
+    val (_, raw) = tokenRegistry.create("ingester", Set(TokenScope.DocumentsWrite), None, None, None).unsafeRunSync()
+
+    val request = Request[IO](Method.POST, uri"/api/v1/tokens")
+      .withEntity("""{"name": "escalate", "scopes": ["admin"]}""")
+      .withContentType(headers.`Content-Type`(MediaType.application.json))
+      .withHeaders(headers.Authorization(Credentials.Token(AuthScheme.Bearer, raw)))
+
+    routes.orNotFound.run(request).unsafeRunSync().status shouldBe Status.Forbidden
   }
 
   "GET /api/v1/tokens" should "list tokens as admin" in {

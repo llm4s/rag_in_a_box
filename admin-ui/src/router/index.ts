@@ -1,8 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { createAuthGuard } from './guards'
 
 const router = createRouter({
   history: createWebHistory('/admin/'),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/Login.vue'),
+      meta: { title: 'Sign in', public: true }
+    },
     {
       path: '/',
       name: 'dashboard',
@@ -37,7 +44,7 @@ const router = createRouter({
       path: '/config/runtime',
       name: 'runtime-config',
       component: () => import('@/views/RuntimeConfig.vue'),
-      meta: { title: 'Runtime Configuration' }
+      meta: { title: 'Runtime Configuration', requiresAdmin: true }
     },
     {
       path: '/config/collections',
@@ -55,19 +62,19 @@ const router = createRouter({
       path: '/visibility',
       name: 'visibility',
       component: () => import('@/views/Visibility.vue'),
-      meta: { title: 'System Visibility' }
+      meta: { title: 'System Visibility', requiresAdmin: true }
     },
     {
       path: '/ingestion',
       name: 'ingestion',
       component: () => import('@/views/Ingestion.vue'),
-      meta: { title: 'Ingestion' }
+      meta: { title: 'Ingestion', requiresAdmin: true }
     },
     {
       path: '/analytics',
       name: 'analytics',
       component: () => import('@/views/Analytics.vue'),
-      meta: { title: 'Query Analytics' }
+      meta: { title: 'Query Analytics', requiresAdmin: true }
     },
     {
       path: '/suggestions',
@@ -79,7 +86,7 @@ const router = createRouter({
       path: '/experiments',
       name: 'experiments',
       component: () => import('@/views/Experiments.vue'),
-      meta: { title: 'A/B Experiments' }
+      meta: { title: 'A/B Experiments', requiresAdmin: true }
     },
     {
       path: '/chat',
@@ -91,19 +98,19 @@ const router = createRouter({
       path: '/users',
       name: 'users',
       component: () => import('@/views/Users.vue'),
-      meta: { title: 'Users' }
+      meta: { title: 'Users', requiresAdmin: true }
     },
     {
       path: '/groups',
       name: 'groups',
       component: () => import('@/views/Groups.vue'),
-      meta: { title: 'Principals' }
+      meta: { title: 'Principals', requiresAdmin: true }
     },
     {
       path: '/permissions',
       name: 'permissions',
       component: () => import('@/views/Permissions.vue'),
-      meta: { title: 'Collection Permissions' }
+      meta: { title: 'Collection Permissions', requiresAdmin: true }
     },
     {
       path: '/api-docs',
@@ -114,9 +121,10 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(createAuthGuard(router))
+
+router.afterEach((to) => {
   document.title = `${to.meta.title || 'Admin'} - RAG in a Box`
-  next()
 })
 
 export default router

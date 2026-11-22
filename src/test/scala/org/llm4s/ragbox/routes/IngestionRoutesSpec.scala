@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.Json
@@ -75,7 +77,7 @@ class IngestionRoutesSpec extends AnyFlatSpec with Matchers {
   }
 
   private val ingestionService = new MockIngestionService()
-  private val routes = IngestionRoutes.routes(ingestionService)
+  private val routes = IngestionRoutes.routes(ingestionService).asAdmin
 
   private def runRequest(request: Request[IO]): Response[IO] =
     routes.orNotFound.run(request).unsafeRunSync()

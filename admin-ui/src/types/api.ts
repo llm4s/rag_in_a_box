@@ -944,3 +944,53 @@ export interface ChatStreamingCallbacks {
   onComplete?: (queryId: string, totalContexts: number) => void
   onError?: (error: string, message: string) => void
 }
+
+// ============================================================
+// Authentication (`/api/v1/auth/*`)
+// ============================================================
+
+/** Server auth mode: `open` (optionally API-key protected), `basic` (JWT) or `oauth` (SSO). */
+export type AuthModeName = 'open' | 'basic' | 'oauth'
+
+/** Login methods the server accepts. */
+export type AuthMethodName = 'password' | 'sso' | 'api-key'
+
+/** Response of `GET /auth/mode` (no authentication required). */
+export interface AuthModeResponse {
+  mode: AuthModeName
+  /** False means open mode without an API key: no login, everything allowed. */
+  authRequired: boolean
+  methods: AuthMethodName[]
+  /** SSO entry point (e.g. `/api/v1/oauth/login`) in oauth mode, otherwise null. */
+  oauthLoginUrl: string | null
+}
+
+/** Request body of `POST /auth/login`. */
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+/** Response of `POST /auth/login`. */
+export interface LoginResponse {
+  token: string
+  username: string
+  role: string
+  expiresIn: number
+}
+
+/** How the current principal was authenticated. */
+export type AuthenticationMethod = 'open' | 'api-key' | 'password' | 'access-token' | 'oidc'
+
+/** Response of `GET /auth/me`: the authenticated principal. */
+export interface AuthMe {
+  id: string
+  username: string
+  role: 'admin' | 'user'
+  isAdmin: boolean
+  authMethod: AuthenticationMethod
+  groups: string[]
+  scopes: string[] | null
+  collections: string[] | null
+  userId: number | null
+}

@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
@@ -14,17 +15,17 @@ import org.llm4s.ragbox.service.RAGService
  */
 object ConfigRoutes {
 
-  def routes(ragService: RAGService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/config - Get current configuration
-    case GET -> Root / "api" / "v1" / "config" =>
+    case GET -> Root / "api" / "v1" / "config" as principal =>
       for {
         config <- ragService.getConfigInfo
         response <- Ok(config.asJson)
       } yield response
 
     // PUT /api/v1/config - Update configuration (limited)
-    case req @ PUT -> Root / "api" / "v1" / "config" =>
+    case (req @ PUT -> Root / "api" / "v1" / "config") as principal =>
       // Note: Runtime configuration updates are limited
       // Most settings require restart
       BadRequest(ErrorResponse.badRequest(
@@ -32,7 +33,7 @@ object ConfigRoutes {
       ).asJson)
 
     // GET /api/v1/config/providers - List available providers
-    case GET -> Root / "api" / "v1" / "config" / "providers" =>
+    case GET -> Root / "api" / "v1" / "config" / "providers" as principal =>
       for {
         providers <- ragService.getProviders
         response <- Ok(providers.asJson)

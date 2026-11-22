@@ -677,7 +677,10 @@ object AppConfig {
         stateTtl = Try(config.getInt("security.auth.oauth.state-ttl")).getOrElse(300),
         sessionStorage = getOptionalString(config, "security.auth.oauth.session-storage")
           .map(OAuthSessionStorage.fromString(_).fold(e => throw new IllegalArgumentException(e), identity))
-          .getOrElse(OAuthSessionStorage.Memory)
+          .getOrElse(OAuthSessionStorage.Memory),
+        adminGroups = getOptionalString(config, "security.auth.oauth.admin-groups")
+          .map(_.split(",").map(_.trim).filter(_.nonEmpty).toSet)
+          .getOrElse(Set.empty)
       ))
     }
   }

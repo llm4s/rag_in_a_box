@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { getApiKey, getAuthToken } from '@/api/credentials'
 
 // Message shapes sent by the backend's WebSocketRoutes (`/ws`)
 export interface WebSocketMessage {
@@ -30,6 +31,16 @@ export function reconnectDelay(attempt: number, baseMs = 1000, maxMs = 30000): n
 }
 
 export const MAX_RECONNECT_ATTEMPTS = 10
+
+/**
+ * `/ws` URL. Browsers can't set headers on a WebSocket handshake, so a stored
+ * JWT or API key is passed as `?access_token=`; SSO sessions use the cookie.
+ */
+export function buildWebSocketUrl(protocol: string, host: string): string {
+  const base = `${protocol}//${host}/ws`
+  const credential = getAuthToken() ?? getApiKey()
+  return credential ? `${base}?access_token=${encodeURIComponent(credential)}` : base
+}
 
 export const useWebSocketStore = defineStore('websocket', () => {
   const connected = ref(false)
@@ -64,7 +75,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
     clearReconnectTimer()
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws`
+    const wsUrl = buildWebSocketUrl(protocol, window.location.host)
 
     try {
       const socket = new WebSocket(wsUrl)

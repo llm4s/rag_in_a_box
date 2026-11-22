@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -24,10 +25,10 @@ import org.llm4s.ragbox.model.Codecs._
  */
 object IngestionRoutes {
 
-  def routes(ingestionService: IngestionService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ingestionService: IngestionService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/ingest/directory - One-shot directory ingestion
-    case req @ POST -> Root / "api" / "v1" / "ingest" / "directory" =>
+    case (req @ POST -> Root / "api" / "v1" / "ingest" / "directory") as principal =>
       for {
         body <- req.as[DirectoryIngestRequest]
         result <- ingestionService.ingestDirectory(
@@ -51,7 +52,7 @@ object IngestionRoutes {
       } yield response
 
     // POST /api/v1/ingest/url - One-shot URL ingestion
-    case req @ POST -> Root / "api" / "v1" / "ingest" / "url" =>
+    case (req @ POST -> Root / "api" / "v1" / "ingest" / "url") as principal =>
       for {
         body <- req.as[UrlIngestRequest]
         result <- ingestionService.ingestUrls(
@@ -73,7 +74,7 @@ object IngestionRoutes {
       } yield response
 
     // POST /api/v1/ingest/run - Run all configured sources
-    case POST -> Root / "api" / "v1" / "ingest" / "run" =>
+    case POST -> Root / "api" / "v1" / "ingest" / "run" as principal =>
       for {
         results <- ingestionService.runAll().attempt
         response <- results match {
@@ -90,7 +91,7 @@ object IngestionRoutes {
       } yield response
 
     // POST /api/v1/ingest/run/:source - Run specific source
-    case POST -> Root / "api" / "v1" / "ingest" / "run" / sourceName =>
+    case POST -> Root / "api" / "v1" / "ingest" / "run" / sourceName as principal =>
       for {
         result <- ingestionService.runSource(sourceName).attempt
         response <- result match {
@@ -110,7 +111,7 @@ object IngestionRoutes {
       } yield response
 
     // GET /api/v1/ingest/status - Get ingestion status
-    case GET -> Root / "api" / "v1" / "ingest" / "status" =>
+    case GET -> Root / "api" / "v1" / "ingest" / "status" as principal =>
       for {
         status <- ingestionService.getStatus
         sources <- ingestionService.listSources
@@ -124,7 +125,7 @@ object IngestionRoutes {
       } yield response
 
     // GET /api/v1/ingest/sources - List configured sources
-    case GET -> Root / "api" / "v1" / "ingest" / "sources" =>
+    case GET -> Root / "api" / "v1" / "ingest" / "sources" as principal =>
       for {
         sources <- ingestionService.listSources
         response <- Ok(sources.map(toSourceInfo).asJson)

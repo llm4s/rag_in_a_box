@@ -35,6 +35,15 @@
       "targetSize" : 800
     }
   },
+  "AuthModeResponse" : {
+    "authRequired" : true,
+    "methods" : [
+      "password",
+      "api-key"
+    ],
+    "mode" : "basic",
+    "oauthLoginUrl" : "/api/v1/oauth/login"
+  },
   "ChunkInfo" : {
     "chunkMetadata" : {
       "endOffset" : 12,
@@ -352,6 +361,12 @@
     "error" : "validation_failed",
     "message" : "Configuration validation failed"
   },
+  "LoginResponse" : {
+    "expiresIn" : 3600,
+    "role" : "admin",
+    "token" : "jwt",
+    "username" : "admin"
+  },
   "PresetInfo" : {
     "bestFor" : [
       "general"
@@ -398,6 +413,23 @@
     "isCodeBlock" : false,
     "language" : "scala",
     "length" : 12
+  },
+  "PrincipalResponse" : {
+    "authMethod" : "access-token",
+    "collections" : [
+      "eng"
+    ],
+    "groups" : [
+      "eng"
+    ],
+    "id" : "token:1",
+    "isAdmin" : false,
+    "role" : "user",
+    "scopes" : [
+      "query"
+    ],
+    "userId" : 1,
+    "username" : "ingester"
   },
   "QueryMetrics" : {
     "chunksRetrieved" : 5,

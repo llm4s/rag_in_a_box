@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.Json
@@ -44,7 +46,7 @@ class IngestionPolicyRoutesSpec extends AnyFlatSpec with Matchers {
     val config = IngestionConfig(
       policy = IngestionPolicyConfig(allowedRoots = Some(allowedRoots.getOrElse(Seq(root.toString))))
     )
-    (root, outside, rag, IngestionRoutes.routes(IngestionService(rag, config)))
+    (root, outside, rag, IngestionRoutes.routes(IngestionService(rag, config)).asAdmin)
   }
 
   private def post(routes: HttpRoutes[IO], path: String, body: Json): (Status, Json) = {

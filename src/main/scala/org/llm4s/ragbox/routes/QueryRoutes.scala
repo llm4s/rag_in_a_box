@@ -4,6 +4,7 @@ import cats.effect.IO
 import fs2.Stream
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.{Principal, TokenScope}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -37,16 +38,19 @@ import java.util.UUID
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None, experimentService: Option[ExperimentService] = None): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None, experimentService: Option[ExperimentService] = None): AuthedRoutes[Principal, IO] =
+    // Access tokens need the `query` scope, and may only query collections they are restricted to
+    Authz.scopeForPaths(TokenScope.Query, "/api/v1/query", "/api/v1/search")(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/query - Search and generate answer
     // Supports permission-aware queries when SearchIndex is available
-    case req @ POST -> Root / "api" / "v1" / "query" =>
+    case (req @ POST -> Root / "api" / "v1" / "query") as principal =>
       for {
         body <- req.as[QueryRequest]
         // Validate query input
         validation = InputValidation.validateQuery(body.question)
-        response <- InputValidation.toResponse(validation) match {
+        response <- InputValidation.toResponse(validation)
+          .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
             for {
@@ -123,12 +127,13 @@ object QueryRoutes {
 
     // POST /api/v1/search - Search without answer generation
     // Supports permission-aware search when SearchIndex is available
-    case req @ POST -> Root / "api" / "v1" / "search" =>
+    case (req @ POST -> Root / "api" / "v1" / "search") as principal =>
       for {
         body <- req.as[SearchRequest]
         // Validate query input
         validation = InputValidation.validateQuery(body.query)
-        response <- InputValidation.toResponse(validation) match {
+        response <- InputValidation.toResponse(validation)
+          .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
             val searchIO = (ragService.hasPermissions, ragService.principals) match {
@@ -166,12 +171,13 @@ object QueryRoutes {
     // Returns Server-Sent Events for real-time progress. The answer is not streamed token by
     // token: llm4s RAG has no streaming answer API yet (llm4s/llm4s#2717), so the full answer is
     // generated first and sent as one `answer` event after the contexts.
-    case req @ POST -> Root / "api" / "v1" / "query" / "stream" =>
+    case (req @ POST -> Root / "api" / "v1" / "query" / "stream") as principal =>
       for {
         body <- req.as[QueryRequest]
         // Validate query input
         validation = InputValidation.validateQuery(body.question)
-        response <- InputValidation.toResponse(validation) match {
+        response <- InputValidation.toResponse(validation)
+          .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
             val queryId = UUID.randomUUID().toString
@@ -266,7 +272,7 @@ object QueryRoutes {
             Ok(sseStream).map(_.withContentType(`Content-Type`(MediaType.`text/event-stream`)))
         }
       } yield response
-  }
+  })
 
   /**
    * Resolve experiment traffic routing for a query.
