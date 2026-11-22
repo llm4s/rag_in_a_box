@@ -117,6 +117,12 @@ conforms<Api.QueryResponse>()(contract.QueryResponse, nulls.QueryResponse, true)
 conforms<Api.QueryConfigSnapshot>()(contract.QueryConfigSnapshot, nulls.QueryConfigSnapshot, true)
 conforms<Api.QueryLogEntry>()(contract.QueryLogEntry, nulls.QueryLogEntry, true)
 conforms<Api.QueryLogListResponse>()(contract.QueryLogListResponse, nulls.QueryLogListResponse, true)
+conforms<Api.CollectionQueryStats>()(contract.CollectionQueryStats, nulls.CollectionQueryStats, true)
+conforms<Api.QueryAnalyticsSummary>()(contract.QueryAnalyticsSummary, nulls.QueryAnalyticsSummary, true)
+conforms<Api.SuggestionEvidence>()(contract.SuggestionEvidence, nulls.SuggestionEvidence, true)
+conforms<Api.OptimizationSuggestion>()(contract.OptimizationSuggestion, nulls.OptimizationSuggestion, true)
+conforms<Api.SuggestionsResponse>()(contract.SuggestionsResponse, nulls.SuggestionsResponse, true)
+conforms<Api.SuggestionsSummary>()(contract.SuggestionsSummary, nulls.SuggestionsSummary, true)
 
 // Authentication
 conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, nulls.AuthModeResponse, true)

@@ -44,12 +44,38 @@ class StatisticsSpec extends AnyFlatSpec with Matchers {
     Statistics.welchTTest(5, 3.0, 0.0, 5, 4.0, 0.0) shouldBe None
   }
 
+  it should "give a finite statistic and p-value for extreme inputs" in {
+    // Tiny variances, huge differences, one group with no variance, large samples (#66)
+    val cases = Seq(
+      (2L, 0.0, 1e-300, 2L, 1e12, 1e-300),
+      (2L, 1.0, 0.0, 3L, 2.0, 1e-12),
+      (1000000L, 500.0, 2500.0, 1000000L, 500.0, 2500.0),
+      (2L, 1e150, 1.0, 2L, -1e150, 1.0)
+    )
+    for ((n1, m1, v1, n2, m2, v2) <- cases; r <- Statistics.welchTTest(n1, m1, v1, n2, m2, v2)) {
+      withClue(s"welch($n1, $m1, $v1, $n2, $m2, $v2) = $r: ") {
+        r.pValue.isNaN shouldBe false
+        r.pValue should (be >= 0.0 and be <= 1.0)
+        r.statistic.isNaN shouldBe false
+      }
+    }
+  }
+
   "The two-proportion z-test" should "match R's prop.test(c(45, 30), c(100, 100), correct = FALSE)" in {
     // R: X-squared = 4.8, p-value = 0.02846
     val result = Statistics.twoProportionZTest(45, 100, 30, 100).get
     (result.statistic * result.statistic) shouldBe 4.8 +- 1e-9
     result.statistic should be < 0.0
     result.pValue shouldBe 0.02846 +- 1e-5
+  }
+
+  it should "give a finite statistic and p-value for every split of small groups" in {
+    for (n1 <- 1L to 6L; n2 <- 1L to 6L; s1 <- 0L to n1; s2 <- 0L to n2; r <- Statistics.twoProportionZTest(s1, n1, s2, n2)) {
+      withClue(s"z($s1/$n1, $s2/$n2) = $r: ") {
+        (r.statistic.isNaN || r.statistic.isInfinite) shouldBe false
+        r.pValue should (be >= 0.0 and be <= 1.0)
+      }
+    }
   }
 
   it should "be undefined for an empty group or a single outcome" in {

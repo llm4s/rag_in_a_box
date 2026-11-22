@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.service
 
 import cats.effect.{Deferred, IO, Ref}
+import cats.effect.testkit.TestControl
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import org.scalatest.flatspec.AnyFlatSpec
@@ -72,11 +73,22 @@ class PipelinePoolSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "not keep a failed build, and retry it after the cooldown" in {
-    val p = new Probe(failBuilds = 1, cooldown = 50.millis)
-    run(p.pool.use("a")(IO.pure).attempt).left.map(_.getMessage) shouldBe Left("cannot build a")
-    // Within the cooldown the last error is returned without building again
-    run(p.pool.use("a")(IO.pure).attempt).left.map(_.getMessage) shouldBe Left("cannot build a")
-    run(IO.sleep(60.millis) *> p.pool.use("a")(IO.pure)) shouldBe "a#0"
+    // Virtual time (TestControl): the pool reads the clock with IO.realTime, so the cooldown is
+    // exact and the test cannot be made flaky by a slow machine
+    val p = new Probe(failBuilds = 1, cooldown = 1.minute)
+    val (first, withinCooldown, built, afterCooldown) = TestControl.executeEmbed(for {
+      first <- p.pool.use("a")(IO.pure).attempt
+      _ <- IO.sleep(1.minute - 1.milli)
+      // Within the cooldown the last error is returned without building again
+      within <- p.pool.use("a")(IO.pure).attempt
+      built <- p.built.get
+      _ <- IO.sleep(1.milli)
+      after <- p.pool.use("a")(IO.pure)
+    } yield (first, within, built, after)).unsafeRunSync()
+    first.left.map(_.getMessage) shouldBe Left("cannot build a")
+    withinCooldown.left.map(_.getMessage) shouldBe Left("cannot build a")
+    built shouldBe empty
+    afterCooldown shouldBe "a#0"
   }
 
   it should "close everything on close and refuse later leases" in {

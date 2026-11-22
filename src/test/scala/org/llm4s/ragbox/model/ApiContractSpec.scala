@@ -3,6 +3,7 @@ package org.llm4s.ragbox.model
 import io.circe.{Decoder, Encoder, Json, Printer}
 import io.circe.parser.parse
 import io.circe.syntax._
+import org.llm4s.ragbox.testkit.NonFinite
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -51,6 +52,8 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
   private final case class Sample(full: Json, nulls: Json)
 
   private def entry[A: Encoder: Decoder](name: String, value: A): (String, Sample) = {
+    // A NaN or infinite Double encodes as null (#66): never a valid sample
+    withClue(s"$name has non-finite numbers: ")(NonFinite.paths(value) shouldBe empty)
     val full = value.asJson
     val obj = full.asObject.getOrElse(fail(s"$name does not encode as a JSON object"))
     def roundTrip(json: Json): Option[Json] = json.as[A].toOption.map(_.asJson)
@@ -64,6 +67,16 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       .getOrElse(fail(s"$name does not decode with all of its Option fields (${nullable.mkString(", ")}) null"))
     name -> Sample(full, nulls)
   }
+
+  // --- Analytics summary and suggestions -----------------------------------------
+  private val collectionQueryStats = CollectionQueryStats("docs", queryCount = 30, averageLatencyMs = 640.0, averageRating = Some(4.0))
+  private val suggestionEvidence = SuggestionEvidence("chunk_utilization", 0.3, 0.4, 42, "Last 7 days")
+  private val optimizationSuggestion = OptimizationSuggestion(
+    id = "s-1", suggestionType = "chunking", severity = "warning", title = "Low Chunk Utilization",
+    description = "Only 30% of retrieved chunks are used.", collection = Some("docs"), evidence = suggestionEvidence,
+    recommendation = "Reduce chunk size.", estimatedImpact = "Better precision", currentValue = Some("800 chars"),
+    suggestedValue = Some("600 chars"), createdAt = t0
+  )
 
   // --- Runtime config -------------------------------------------------------
   private val runtimeConfig = RuntimeConfig(
@@ -225,6 +238,19 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     entry("QueryConfigSnapshot", queryConfigSnapshot),
     entry("QueryLogEntry", queryLogEntry),
     entry("QueryLogListResponse", QueryLogListResponse(Seq(queryLogEntry), total = 1, page = 1, pageSize = 20)),
+    // Analytics: the summary (GET /analytics/queries/summary) - averages over no data are 0 or null (#66)
+    entry("CollectionQueryStats", collectionQueryStats),
+    entry("QueryAnalyticsSummary", QueryAnalyticsSummary(
+      totalQueries = 42, averageLatencyMs = 812.5, p50LatencyMs = 700, p95LatencyMs = 1900, p99LatencyMs = 2400,
+      averageChunksRetrieved = 5.0, averageChunksUsed = 3.5, averageRating = Some(4.2), ratedQueriesCount = 10,
+      queriesWithFeedback = 10, topCollections = Seq(collectionQueryStats), periodStart = t0, periodEnd = t0,
+      p95RetrievalLatencyMs = Some(300), totalCostUsd = Some(0.42)
+    )),
+    // Analytics: suggestions (GET /analytics/suggestions, /analytics/suggestions/summary)
+    entry("SuggestionEvidence", suggestionEvidence),
+    entry("OptimizationSuggestion", optimizationSuggestion),
+    entry("SuggestionsResponse", SuggestionsResponse(Seq(optimizationSuggestion), analyzedQueries = 42, analyzedCollections = 2, analysisTimestamp = t0)),
+    entry("SuggestionsSummary", SuggestionsSummary(1, 2, 3, 6, Seq("High Retrieval Latency"))),
     // Authentication
     entry("AuthModeResponse", org.llm4s.ragbox.routes.AuthModeResponse(
       mode = "basic", authRequired = true, methods = Seq("password", "api-key"), oauthLoginUrl = Some("/api/v1/oauth/login")
@@ -327,5 +353,13 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       jsonObject = obj => obj.toList.flatMap { case (k, v) => nullPaths(v, s"$path.$k") }
     )
     nullPaths(contract, "$") shouldBe empty
+  }
+
+  "The non-finite number guard" should "find a NaN or infinite Double anywhere in a model" in {
+    // circe would encode these as null in a number field (#66)
+    val metrics = ExperimentVariantMetrics(0, Double.NaN, Some(Double.PositiveInfinity), 0, 0.0, 0.0)
+    NonFinite.paths(metrics) shouldBe Seq("$.avgLatencyMs = NaN", "$.avgRating = Infinity")
+    NonFinite.paths(Seq(Map("k" -> metrics.copy(avgLatencyMs = 1.0)))) shouldBe Seq("$[0].k.avgRating = Infinity")
+    metrics.asJson.hcursor.downField("avgLatencyMs").focus shouldBe Some(Json.Null)
   }
 }
