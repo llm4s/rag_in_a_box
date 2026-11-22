@@ -239,7 +239,33 @@ final case class QueryRequest(
 final case class QueryResponse(
   answer: String,
   contexts: Seq[ContextItem],
-  usage: Option[UsageInfo] = None
+  usage: Option[UsageInfo] = None,
+  metrics: Option[QueryMetrics] = None
+)
+
+/**
+ * Per-query metrics, from what llm4s traced while answering (`RAGConfig.withTracing` and
+ * `TracingLLMClient`).
+ *
+ * @param embeddingLatencyMs time spent embedding the query, when the provider reported it
+ * @param searchLatencyMs    the rest of retrieval (search, reranking, query rewriting); known
+ *                           only when the embedding time is
+ * @param llmLatencyMs       time spent generating the answer
+ * @param embeddingTokens    tokens embedded
+ * @param promptTokens       LLM prompt tokens, over every completion (rewriting, reranking, answer)
+ * @param completionTokens   LLM completion tokens, over every completion
+ * @param costUsd            estimated cost, for models whose pricing llm4s knows
+ */
+final case class QueryMetrics(
+  embeddingLatencyMs: Option[Int],
+  searchLatencyMs: Option[Int],
+  llmLatencyMs: Option[Int],
+  chunksRetrieved: Int,
+  chunksUsed: Int,
+  embeddingTokens: Option[Int] = None,
+  promptTokens: Option[Int] = None,
+  completionTokens: Option[Int] = None,
+  costUsd: Option[Double] = None
 )
 
 /**
@@ -304,12 +330,26 @@ final case class LLMConfigInfo(
   temperature: Double
 )
 
+/**
+ * @param searchMode     `hybrid` (vector + keyword, fused) or `vector` (permission mode, where
+ *                       llm4s search is vector-only: llm4s/llm4s#2716)
+ * @param fusionApplies  whether `fusionStrategy` and `rrfK` affect search
+ * @param reranking      reranking strategy: none, cohere or llm
+ * @param queryTransform pre-retrieval query transform: none or llm-rewrite
+ * @param limitations    settings that do not take effect, and why
+ */
 final case class RAGConfigInfo(
   chunkingStrategy: String,
   chunkSize: Int,
   chunkOverlap: Int,
   topK: Int,
-  fusionStrategy: String
+  fusionStrategy: String,
+  rrfK: Int = 60,
+  searchMode: String = "hybrid",
+  fusionApplies: Boolean = true,
+  reranking: String = "none",
+  queryTransform: String = "none",
+  limitations: Seq[String] = Seq.empty
 )
 
 final case class DatabaseConfigInfo(
@@ -524,7 +564,12 @@ final case class QueryLogEntry(
   experimentId: Option[String] = None,
   configSnapshot: Option[QueryConfigSnapshot] = None,
 
-  createdAt: Instant
+  createdAt: Instant,
+
+  // Token and cost accounting (llm4s tracing)
+  promptTokens: Option[Int] = None,
+  embeddingTokens: Option[Int] = None,
+  costUsd: Option[Double] = None
 )
 
 /**
@@ -561,7 +606,12 @@ final case class QueryAnalyticsSummary(
   queriesWithFeedback: Int,
   topCollections: Seq[CollectionQueryStats],
   periodStart: Instant,
-  periodEnd: Instant
+  periodEnd: Instant,
+  // p95 of retrieval latency (total minus answer generation), over queries whose LLM latency
+  // was recorded; None when there are none
+  p95RetrievalLatencyMs: Option[Int] = None,
+  // Total estimated cost of the period's queries, where llm4s knows the models' pricing
+  totalCostUsd: Option[Double] = None
 )
 
 /**

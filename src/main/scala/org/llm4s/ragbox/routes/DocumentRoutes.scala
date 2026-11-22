@@ -10,6 +10,7 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.http4s.dsl.impl.{OptionalQueryParamDecoderMatcher, OptionalValidatingQueryParamDecoderMatcher}
 import org.http4s.QueryParamDecoder
+import org.http4s.multipart.Multipart
 import java.time.Instant
 import java.time.format.DateTimeParseException
 import org.llm4s.rag.permissions._
@@ -190,6 +191,62 @@ object DocumentRoutes {
       )
     }.map(_.toSet)
 
+  /**
+   * Ingest a new document under a fresh id: into its collection (or the default one) with its
+   * access list in permission mode, plainly otherwise. Responds 201 with the upload response.
+   */
+  private def createDocument(
+    ragService: RAGService,
+    content: String,
+    filenameOpt: Option[String],
+    userMetadata: Map[String, String],
+    collection: Option[String],
+    readableByIds: Option[Seq[String]]
+  ): IO[Response[IO]] = {
+    val documentId = UUID.randomUUID().toString
+    // Filename is optional (e.g. pasted text); fall back to a stable placeholder
+    val filename = filenameOpt.map(_.trim).filter(_.nonEmpty)
+      .getOrElse(s"untitled-${documentId.take(8)}.txt")
+    val metadata = userMetadata +
+      ("filename" -> filename) ++
+      collection.map("collection" -> _).toMap
+    val ingestIO = (ragService.hasPermissions, ragService.principals) match {
+      // Permission-aware ingestion when SearchIndex is available; no collection means the default one
+      case (true, Some(principals)) =>
+        for {
+          readableBy <- readableByIds match {
+            case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
+            case _ => IO.pure(Set.empty[PrincipalId])
+          }
+          response <- ragService.ingestWithPermissions(
+            collectionPath = collection.getOrElse(RAGService.DefaultCollection),
+            documentId = documentId,
+            content = content,
+            metadata = metadata,
+            readableBy = readableBy
+          )
+        } yield response
+      // Fall back to legacy ingestion (no permissions)
+      case _ =>
+        ragService.ingestDocument(
+          content = content,
+          documentId = documentId,
+          metadata = metadata
+        )
+    }
+    ingestIO.attempt.flatMap {
+      case Right(uploadResponse) =>
+        Created(uploadResponse.asJson)
+      case Left(e: InvalidRequestError) =>
+        BadRequest(ErrorResponse.badRequest(e.message).asJson)
+      case Left(e) =>
+        InternalServerError(ErrorResponse.internalError(
+          "Failed to ingest document",
+          Some(e.getMessage)
+        ).asJson)
+    }
+  }
+
   def routes(ragService: RAGService): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     // GET /api/v1/collections - List all collections
@@ -221,50 +278,60 @@ object DocumentRoutes {
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
           case None =>
-            val documentId = UUID.randomUUID().toString
-            // Filename is optional (e.g. pasted text); fall back to a stable placeholder
-            val filename = body.filename.map(_.trim).filter(_.nonEmpty)
-              .getOrElse(s"untitled-${documentId.take(8)}.txt")
-            val metadata = body.metadata.getOrElse(Map.empty) +
-              ("filename" -> filename) ++
-              body.collection.map("collection" -> _).toMap
-            val ingestIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
-              // Permission-aware ingestion when SearchIndex is available; no collection means the default one
-              case (true, readableByOpt, collectionOpt, Some(principals)) =>
-                for {
-                  readableBy <- readableByOpt match {
-                    case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
-                    case _ => IO.pure(Set.empty[PrincipalId])
-                  }
-                  response <- ragService.ingestWithPermissions(
-                    collectionPath = collectionOpt.getOrElse(RAGService.DefaultCollection),
-                    documentId = documentId,
-                    content = body.content,
-                    metadata = metadata,
-                    readableBy = readableBy
-                  )
-                } yield response
-              // Fall back to legacy ingestion (no permissions)
-              case _ =>
-                ragService.ingestDocument(
-                  content = body.content,
-                  documentId = documentId,
-                  metadata = metadata
-                )
-            }
-            ingestIO.attempt.flatMap {
-              case Right(uploadResponse) =>
-                Created(uploadResponse.asJson)
-              case Left(e: InvalidRequestError) =>
-                BadRequest(ErrorResponse.badRequest(e.message).asJson)
-              case Left(e) =>
-                InternalServerError(ErrorResponse.internalError(
-                  "Failed to ingest document",
-                  Some(e.getMessage)
-                ).asJson)
-            }
+            createDocument(ragService, body.content, body.filename, body.metadata.getOrElse(Map.empty), body.collection, body.readableBy)
         }
       } yield response
+
+    // POST /api/v1/documents/upload - Upload a file (multipart/form-data)
+    // Fields: file (required; PDF, DOCX, HTML, Markdown, plain text - anything Apache Tika reads),
+    // collection, metadata (a JSON object of strings), readableBy (comma-separated principals).
+    // The text is extracted with llm4s's TikaDocumentExtractor and ingested like POST /documents.
+    case req @ POST -> Root / "api" / "v1" / "documents" / "upload" =>
+      req.as[Multipart[IO]].attempt.flatMap {
+        case Left(e) =>
+          BadRequest(ErrorResponse.badRequest("Expected a multipart/form-data body", Option(e.getMessage)).asJson)
+        case Right(multipart) =>
+          def field(name: String): IO[Option[String]] =
+            multipart.parts.find(_.name.contains(name)).traverse(_.bodyText.compile.string).map(_.map(_.trim).filter(_.nonEmpty))
+
+          multipart.parts.find(_.name.contains("file")) match {
+            case None =>
+              BadRequest(ErrorResponse.badRequest("A 'file' part is required").asJson)
+            case Some(filePart) =>
+              val filename = filePart.filename.map(_.trim).filter(_.nonEmpty).getOrElse("upload")
+              for {
+                bytes <- filePart.body.compile.to(Array)
+                collection <- field("collection")
+                metadataField <- field("metadata")
+                readableBy <- field("readableBy").map(_.map(_.split(",").toSeq.map(_.trim).filter(_.nonEmpty)))
+                metadata = metadataField.map(io.circe.parser.decode[Map[String, String]](_)).getOrElse(Right(Map.empty[String, String]))
+                validation = InputValidation.all(
+                  InputValidation.validateFilename(filename),
+                  metadata.fold(_ => InputValidation.Valid, InputValidation.validateMetadata(_))
+                )
+                response <- (metadata, InputValidation.toResponse(validation)) match {
+                  case (Left(error), _) =>
+                    BadRequest(ErrorResponse.badRequest("'metadata' must be a JSON object of strings", Some(error.getMessage)).asJson)
+                  case (_, Some(errorResponse)) => errorResponse
+                  case (Right(_), None) if bytes.isEmpty =>
+                    BadRequest(ErrorResponse.badRequest(s"'$filename' is empty").asJson)
+                  case (Right(userMetadata), None) =>
+                    ragService.extractText(bytes, filename).attempt.flatMap {
+                      case Left(e: InvalidRequestError) =>
+                        BadRequest(ErrorResponse.badRequest(e.message).asJson)
+                      case Left(e) =>
+                        InternalServerError(ErrorResponse.internalError("Failed to extract text", Option(e.getMessage)).asJson)
+                      case Right((text, extracted)) =>
+                        InputValidation.toResponse(InputValidation.validateDocumentContent(text)) match {
+                          case Some(errorResponse) => errorResponse
+                          case None =>
+                            createDocument(ragService, text, Some(filename), extracted ++ userMetadata, collection, readableBy)
+                        }
+                    }
+                }
+              } yield response
+          }
+      }
 
     // GET /api/v1/documents - List documents (paginated, filterable)
     // Query params:

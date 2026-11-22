@@ -85,7 +85,9 @@ final case class DetailedRAGConfigInfo(
   topK: ConfigSetting,
   fusionStrategy: ConfigSetting,
   rrfK: ConfigSetting,
-  systemPrompt: Option[String]
+  systemPrompt: Option[String],
+  searchMode: String = "hybrid",
+  limitations: Seq[String] = Seq.empty
 )
 
 /**

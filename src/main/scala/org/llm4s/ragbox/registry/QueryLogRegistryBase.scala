@@ -31,6 +31,9 @@ trait QueryLogRegistryBase {
    * @param answerTokens Number of tokens in answer
    * @param experimentId Optional experiment ID for A/B testing
    * @param configSnapshot Optional snapshot of config used for this query
+   * @param promptTokens LLM prompt tokens, over every completion the query made
+   * @param embeddingTokens Tokens embedded for the query
+   * @param costUsd Estimated cost of the query, when llm4s knows the models' pricing
    * @return The generated query log ID
    */
   def logQuery(
@@ -45,7 +48,10 @@ trait QueryLogRegistryBase {
     chunksUsed: Int,
     answerTokens: Option[Int],
     experimentId: Option[String] = None,
-    configSnapshot: Option[QueryConfigSnapshot] = None
+    configSnapshot: Option[QueryConfigSnapshot] = None,
+    promptTokens: Option[Int] = None,
+    embeddingTokens: Option[Int] = None,
+    costUsd: Option[Double] = None
   ): IO[String]
 
   /**

@@ -49,6 +49,13 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
         """CREATE INDEX IF NOT EXISTS idx_chunk_registry_length
           |    ON chunk_registry(content_length)""".stripMargin
       )
+      // The id llm4s indexed the chunk under (`<doc>-chunk-<n>`, or `coll-<id>-<doc>-chunk-<n>`
+      // in permission mode), so a chunk can be matched with a search result. Rows written before
+      // it existed have none and show their serial id.
+      stmt.execute("ALTER TABLE chunk_registry ADD COLUMN IF NOT EXISTS chunk_id TEXT")
+      // Chunks without a collection used to be stored with collection '' rather than NULL, so the
+      // default-collection statistics (`collection IS NULL`) missed them
+      stmt.execute("UPDATE chunk_registry SET collection = NULL WHERE collection = ''")
     } finally {
       stmt.close()
     }
@@ -85,8 +92,8 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
       val insertSql =
         """INSERT INTO chunk_registry
           |(document_id, chunk_index, content, content_length, metadata, headings,
-          | is_code_block, language, start_offset, end_offset, collection)
-          |VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?)""".stripMargin
+          | is_code_block, language, start_offset, end_offset, collection, chunk_id)
+          |VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
       val insertStmt = connection.prepareStatement(insertSql)
       try {
         chunks.foreach { chunk =>
@@ -100,7 +107,8 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
           insertStmt.setString(8, chunk.chunkMetadata.language.orNull)
           insertStmt.setObject(9, chunk.chunkMetadata.startOffset.map(Integer.valueOf).orNull)
           insertStmt.setObject(10, chunk.chunkMetadata.endOffset.map(Integer.valueOf).orNull)
-          insertStmt.setString(11, chunk.metadata.get("collection").orNull)
+          insertStmt.setString(11, chunk.metadata.get("collection").filter(_.nonEmpty).orNull)
+          insertStmt.setString(12, chunk.id)
           insertStmt.addBatch()
         }
         insertStmt.executeBatch()
@@ -112,7 +120,7 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 
   override def getChunks(documentId: String): IO[Seq[ChunkInfo]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
-      """SELECT id, document_id, chunk_index, content, content_length, metadata,
+      """SELECT id, chunk_id, document_id, chunk_index, content, content_length, metadata,
         |       headings, is_code_block, language, start_offset, end_offset
         |FROM chunk_registry
         |WHERE document_id = ?
@@ -133,7 +141,7 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 
   override def getChunk(documentId: String, index: Int): IO[Option[ChunkInfo]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
-      """SELECT id, document_id, chunk_index, content, content_length, metadata,
+      """SELECT id, chunk_id, document_id, chunk_index, content, content_length, metadata,
         |       headings, is_code_block, language, start_offset, end_offset
         |FROM chunk_registry
         |WHERE document_id = ? AND chunk_index = ?""".stripMargin
@@ -162,7 +170,7 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 
     // Get page of chunks
     val sql =
-      """SELECT id, document_id, chunk_index, content, content_length, metadata,
+      """SELECT id, chunk_id, document_id, chunk_index, content, content_length, metadata,
         |       headings, is_code_block, language, start_offset, end_offset
         |FROM chunk_registry
         |ORDER BY document_id, chunk_index
@@ -344,10 +352,13 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
   }
 
   override def deleteByCollection(collection: String): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    val sql = "DELETE FROM chunk_registry WHERE collection = ?"
+    // "default" is the pseudo-collection of chunks without one, as in countByCollection
+    val (sql, useParam) =
+      if (collection == "default") ("DELETE FROM chunk_registry WHERE collection IS NULL", false)
+      else ("DELETE FROM chunk_registry WHERE collection = ?", true)
     val stmt = connection.prepareStatement(sql)
     try {
-      stmt.setString(1, collection)
+      if (useParam) stmt.setString(1, collection)
       stmt.executeUpdate()
     } finally {
       stmt.close()
@@ -382,7 +393,7 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
     val endOffset = Option(rs.getObject("end_offset")).map(_.asInstanceOf[Integer].intValue())
 
     ChunkInfo(
-      id = rs.getInt("id").toString,
+      id = Option(rs.getString("chunk_id")).getOrElse(rs.getInt("id").toString),
       documentId = rs.getString("document_id"),
       index = rs.getInt("chunk_index"),
       content = rs.getString("content"),

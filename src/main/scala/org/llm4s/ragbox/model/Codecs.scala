@@ -90,6 +90,9 @@ object Codecs {
   implicit val usageInfoEncoder: Encoder[UsageInfo] = deriveEncoder
   implicit val usageInfoDecoder: Decoder[UsageInfo] = deriveDecoder
 
+  implicit val queryMetricsEncoder: Encoder[QueryMetrics] = deriveEncoder
+  implicit val queryMetricsDecoder: Decoder[QueryMetrics] = deriveDecoder
+
   implicit val contextItemEncoder: Encoder[ContextItem] = deriveEncoder
   implicit val contextItemDecoder: Decoder[ContextItem] = deriveDecoder
 

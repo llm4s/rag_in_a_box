@@ -13,8 +13,8 @@ import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase}
-import org.llm4s.ragbox.service.RAGService
+import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase, QueryLogging}
+import org.llm4s.ragbox.service.{Llm4sPipeline, RAGService}
 
 import java.util.UUID
 
@@ -123,6 +123,11 @@ object ChatRoutes {
             for {
               body <- req.as[SendChatMessageRequest]
 
+              // Earlier messages, sent to the LLM as conversation history
+
+              history <- recentHistory(chatRegistry, sessionId, config)
+
+
               // Add user message
               userMessage <- chatRegistry.addMessage(
                 sessionId = sessionId,
@@ -148,15 +153,10 @@ object ChatRoutes {
                 case (true, Some(principals)) =>
                   for {
                     auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
-                    response <- ragService.queryWithPermissionsAndAnswer(
-                      question = body.content,
-                      auth = auth,
-                      collectionPattern = session.collectionPattern,
-                      topK = None
-                    )
+                    response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
                   } yield response
                 case _ =>
-                  ragService.queryWithAnswer(body.content, None)
+                  ragService.chatAnswer(body.content, history, permissions = None, topK = None)
               }).attempt
 
               endTime <- IO.realTimeInstant
@@ -166,18 +166,7 @@ object ChatRoutes {
                 case Right(queryResponse) =>
                   for {
                     // Log the query
-                    queryLogId <- queryLogRegistry.logQuery(
-                      queryText = body.content,
-                      collectionPattern = Some(session.collectionPattern),
-                      userId = userId,
-                      embeddingLatencyMs = None,
-                      searchLatencyMs = None,
-                      llmLatencyMs = None,
-                      totalLatencyMs = totalLatencyMs,
-                      chunksRetrieved = queryResponse.contexts.size,
-                      chunksUsed = queryResponse.contexts.size,
-                      answerTokens = queryResponse.usage.map(_.completionTokens)
-                    )
+                    queryLogId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse)
 
                     // Add assistant message with link to query log
                     assistantMessage <- chatRegistry.addMessage(
@@ -198,7 +187,7 @@ object ChatRoutes {
 
                 case Left(e) =>
                   val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                    "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
                   } else {
                     Option(e.getMessage).getOrElse("Query failed")
                   }
@@ -208,7 +197,7 @@ object ChatRoutes {
                     errorAssistant <- chatRegistry.addMessage(
                       sessionId = sessionId,
                       role = "assistant",
-                      content = s"Sorry, I encountered an error: $errorMessage"
+                      content = s"$ErrorReplyPrefix $errorMessage"
                     )
 
                     result <- Ok(Json.obj(
@@ -222,7 +211,8 @@ object ChatRoutes {
         }
       } yield response
 
-    // POST /api/v1/chat/sessions/:id/messages/stream - Send message with SSE streaming
+    // POST /api/v1/chat/sessions/:id/messages/stream - Send message with SSE streaming. The answer
+    // arrives as one event once complete: llm4s has no streaming RAG answer API (llm4s/llm4s#2717).
     case req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" / "stream" =>
       for {
         sessionOpt <- chatRegistry.getSession(sessionId)
@@ -232,6 +222,11 @@ object ChatRoutes {
           case Some(session) =>
             for {
               body <- req.as[SendChatMessageRequest]
+
+              // Earlier messages, sent to the LLM as conversation history
+
+              history <- recentHistory(chatRegistry, sessionId, config)
+
 
               // Add user message first
               userMessage <- chatRegistry.addMessage(
@@ -267,15 +262,10 @@ object ChatRoutes {
                     case (true, Some(principals)) =>
                       for {
                         auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
-                        response <- ragService.queryWithPermissionsAndAnswer(
-                          question = body.content,
-                          auth = auth,
-                          collectionPattern = session.collectionPattern,
-                          topK = None
-                        )
+                        response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
                       } yield response
                     case _ =>
-                      ragService.queryWithAnswer(body.content, None)
+                      ragService.chatAnswer(body.content, history, permissions = None, topK = None)
                   }).attempt
                 }.flatMap {
                   case Right(queryResponse) =>
@@ -303,18 +293,7 @@ object ChatRoutes {
                         totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
 
                         // Log to query_logs
-                        logId <- queryLogRegistry.logQuery(
-                          queryText = body.content,
-                          collectionPattern = Some(session.collectionPattern),
-                          userId = userId,
-                          embeddingLatencyMs = None,
-                          searchLatencyMs = None,
-                          llmLatencyMs = None,
-                          totalLatencyMs = totalLatencyMs,
-                          chunksRetrieved = queryResponse.contexts.size,
-                          chunksUsed = queryResponse.contexts.size,
-                          answerTokens = queryResponse.usage.map(_.completionTokens)
-                        )
+                        logId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse)
 
                         // Save assistant message
                         _ <- chatRegistry.addMessage(
@@ -332,7 +311,7 @@ object ChatRoutes {
 
                   case Left(e) =>
                     val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                      "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                      "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
                     } else {
                       Option(e.getMessage).getOrElse("Unknown error")
                     }
@@ -342,7 +321,7 @@ object ChatRoutes {
                       chatRegistry.addMessage(
                         sessionId = sessionId,
                         role = "assistant",
-                        content = s"Sorry, I encountered an error: $errorMessage"
+                        content = s"$ErrorReplyPrefix $errorMessage"
                       )
                     }.drain
 
@@ -395,6 +374,36 @@ object ChatRoutes {
         }
       } yield response
   }
+
+  /** Prefix of the assistant message stored when answering failed. */
+  private[routes] val ErrorReplyPrefix: String = "Sorry, I encountered an error:"
+
+  /**
+   * The session's latest messages as conversation history for the LLM, bounded by
+   * `rag.chat.history-messages`. Only answered exchanges are kept - a question whose answer
+   * failed is dropped with its error reply - so the history alternates user and assistant turns.
+   */
+  private def recentHistory(
+    chatRegistry: ChatSessionRegistry,
+    sessionId: String,
+    config: Option[AppConfig]
+  ): IO[Seq[Llm4sPipeline.ChatTurn]] = {
+    val limit = config.fold(org.llm4s.ragbox.config.ChatSettings().historyMessages)(_.rag.chat.historyMessages)
+    if (limit <= 0) IO.pure(Seq.empty)
+    else chatRegistry.getMessages(sessionId, limit).map(messages => historyTurns(messages))
+  }
+
+  /** Answered (user, assistant) exchanges from `messages` (oldest first), as conversation turns. */
+  private[routes] def historyTurns(messages: Seq[ChatMessageRecord]): Seq[Llm4sPipeline.ChatTurn] =
+    messages
+      .sliding(2)
+      .collect {
+        case Seq(question, answer)
+            if question.role == "user" && answer.role == "assistant" && !answer.content.startsWith(ErrorReplyPrefix) =>
+          Seq(Llm4sPipeline.ChatTurn("user", question.content), Llm4sPipeline.ChatTurn("assistant", answer.content))
+      }
+      .flatten
+      .toSeq
 
   /**
    * Format a message as a Server-Sent Event.

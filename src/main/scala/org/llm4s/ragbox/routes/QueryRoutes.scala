@@ -13,7 +13,7 @@ import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.registry.QueryLogRegistryBase
+import org.llm4s.ragbox.registry.{QueryLogRegistryBase, QueryLogging}
 import org.llm4s.ragbox.service.{ExperimentService, InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
 
@@ -90,17 +90,13 @@ object QueryRoutes {
               // Log the query (fire and forget - don't block response)
               _ <- result match {
                 case Right(queryResponse) =>
-                  queryLogRegistry.logQuery(
+                  QueryLogging.logAnswer(
+                    queryLogRegistry,
                     queryText = body.question,
                     collectionPattern = Some(collectionPattern),
                     userId = userId,
-                    embeddingLatencyMs = None,
-                    searchLatencyMs = None,
-                    llmLatencyMs = None,
                     totalLatencyMs = totalLatencyMs,
-                    chunksRetrieved = queryResponse.contexts.size,
-                    chunksUsed = queryResponse.contexts.size,
-                    answerTokens = queryResponse.usage.map(_.completionTokens),
+                    response = queryResponse,
                     experimentId = storedExperimentId,
                     configSnapshot = configSnapshot
                   ).attempt.void
@@ -113,7 +109,7 @@ object QueryRoutes {
                   BadRequest(ErrorResponse.badRequest(e.message).asJson)
                 case Left(e) if e.getMessage != null && e.getMessage.contains("LLM client required") =>
                   BadRequest(ErrorResponse.configError(
-                    "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
                   ).asJson)
                 case Left(e) =>
                   InternalServerError(ErrorResponse.internalError(
@@ -167,7 +163,9 @@ object QueryRoutes {
       } yield response
 
     // POST /api/v1/query/stream - Search and generate answer with SSE streaming
-    // Returns Server-Sent Events for real-time progress
+    // Returns Server-Sent Events for real-time progress. The answer is not streamed token by
+    // token: llm4s RAG has no streaming answer API yet (llm4s/llm4s#2717), so the full answer is
+    // generated first and sent as one `answer` event after the contexts.
     case req @ POST -> Root / "api" / "v1" / "query" / "stream" =>
       for {
         body <- req.as[QueryRequest]
@@ -236,17 +234,13 @@ object QueryRoutes {
                   val logEffect = Stream.eval {
                     IO.realTimeInstant.flatMap { endTime =>
                       val totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
-                      queryLogRegistry.logQuery(
+                      QueryLogging.logAnswer(
+                        queryLogRegistry,
                         queryText = body.question,
                         collectionPattern = Some(collectionPattern),
                         userId = userId,
-                        embeddingLatencyMs = None,
-                        searchLatencyMs = None,
-                        llmLatencyMs = None,
                         totalLatencyMs = totalLatencyMs,
-                        chunksRetrieved = queryResponse.contexts.size,
-                        chunksUsed = queryResponse.contexts.size,
-                        answerTokens = queryResponse.usage.map(_.completionTokens),
+                        response = queryResponse,
                         experimentId = storedExperimentId,
                         configSnapshot = configSnapshot
                       ).attempt.void
@@ -257,7 +251,7 @@ object QueryRoutes {
 
                 case Left(e) =>
                   val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                    "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
                   } else {
                     Option(e.getMessage).getOrElse("Unknown error")
                   }

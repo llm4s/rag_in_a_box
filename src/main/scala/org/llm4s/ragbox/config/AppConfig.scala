@@ -83,6 +83,19 @@ final case class AppConfig(
       case _ => // OK
     }
 
+    // Unknown reranking / query-transform strategies fail at startup, not on the first query
+    rag.reranking.normalizedStrategy.left.foreach(errors += _)
+    rag.queryTransform.normalizedStrategy.left.foreach(errors += _)
+    if (rag.reranking.normalizedStrategy.contains("cohere") && apiKeys.cohere.isEmpty) {
+      errors += "COHERE_API_KEY required when RAG_RERANKING_STRATEGY=cohere"
+    }
+    if (rag.reranking.candidates < 1) {
+      errors += s"RAG_RERANKING_CANDIDATES must be at least 1 (got ${rag.reranking.candidates})"
+    }
+    if (rag.chat.historyMessages < 0) {
+      errors += s"RAG_CHAT_HISTORY_MESSAGES must be non-negative (got ${rag.chat.historyMessages})"
+    }
+
     errors.toList
   }
 
@@ -153,29 +166,107 @@ object DatabaseConfig {
   val DefaultPoolSize: Int = 10
 }
 
+/**
+ * Embedding settings.
+ *
+ * @param provider   an llm4s embedding provider id or alias, resolved through llm4s's
+ *                   `ProviderRegistry` (any provider module on the classpath: openai, voyage,
+ *                   ollama, ...)
+ * @param dimensions the embedding dimensions, passed to llm4s; when unset llm4s takes them from
+ *                   the provider's model table
+ * @param baseUrl    the provider's endpoint, when it is not the provider's default - e.g. an
+ *                   Ollama server that is not on `http://localhost:11434`
+ */
 final case class EmbeddingConfig(
   provider: String,
   model: String,
-  dimensions: Option[Int]
+  dimensions: Option[Int],
+  baseUrl: Option[String] = None
 ) {
-  /**
-   * The llm4s embedding provider id (resolved through llm4s's ProviderRegistry).
-   */
-  def providerId: String = provider.toLowerCase match {
-    case id @ ("openai" | "voyage" | "ollama") => id
-    case other => throw new IllegalArgumentException(s"Unknown embedding provider: $other")
-  }
+  /** The provider id as configured, trimmed and lower-cased; the registry canonicalises aliases. */
+  def providerId: String = provider.trim.toLowerCase
 }
 
+/**
+ * LLM settings.
+ *
+ * @param model   `provider/model`, e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5` or
+ *                `ollama/llama3.1`. The provider is resolved through llm4s's `ProviderRegistry`,
+ *                so any registered provider works. A bare model name means OpenAI.
+ * @param baseUrl the provider's endpoint, when it is not the provider's default (Ollama, an
+ *                OpenAI-compatible gateway, ...)
+ */
 final case class LLMConfig(
   model: String,
-  temperature: Double
-)
+  temperature: Double,
+  baseUrl: Option[String] = None
+) {
+  /** The provider id part of [[model]] (`openai` when it names none). */
+  def providerId: String = model.split("/", 2) match {
+    case Array(provider, _) => provider.trim.toLowerCase
+    case _ => "openai"
+  }
+
+  /** The model part of [[model]]. */
+  def modelName: String = model.split("/", 2) match {
+    case Array(_, name) => name.trim
+    case _ => model.trim
+  }
+}
 
 final case class RAGSettings(
   chunking: ChunkingSettings,
   search: SearchSettings,
-  systemPrompt: String
+  systemPrompt: String,
+  reranking: RerankingSettings = RerankingSettings(),
+  queryTransform: QueryTransformSettings = QueryTransformSettings(),
+  chat: ChatSettings = ChatSettings()
+)
+
+/**
+ * Reranking of retrieved candidates, through llm4s `RAGConfig.withCohereReranking` /
+ * `withLLMReranking`. Off by default.
+ *
+ * @param strategy   `none`, `cohere` (needs `COHERE_API_KEY`) or `llm` (reranks with the answer LLM)
+ * @param model      the Cohere rerank model
+ * @param candidates how many hybrid-search candidates are reranked down to top-k
+ */
+final case class RerankingSettings(
+  strategy: String = "none",
+  model: String = "rerank-english-v3.0",
+  candidates: Int = 30
+) {
+  def normalizedStrategy: Either[String, String] = strategy.trim.toLowerCase match {
+    case s @ ("none" | "cohere" | "llm") => Right(s)
+    case other => Left(s"Unknown reranking strategy: $other. Use: none, cohere or llm")
+  }
+  def enabled: Boolean = normalizedStrategy.exists(_ != "none")
+}
+
+/**
+ * Pre-retrieval query transformation, through llm4s `RAGConfig.withQueryTransformer`. Off by
+ * default.
+ *
+ * @param strategy `none` or `llm-rewrite` (llm4s `LLMQueryRewriter`, using the answer LLM)
+ */
+final case class QueryTransformSettings(
+  strategy: String = "none"
+) {
+  def normalizedStrategy: Either[String, String] = strategy.trim.toLowerCase match {
+    case s @ ("none" | "llm-rewrite") => Right(s)
+    case other => Left(s"Unknown query transform: $other. Use: none or llm-rewrite")
+  }
+  def enabled: Boolean = normalizedStrategy.exists(_ != "none")
+}
+
+/**
+ * Chat settings.
+ *
+ * @param historyMessages how many earlier messages of a chat session are sent to the LLM with
+ *                        each new question (0 sends none)
+ */
+final case class ChatSettings(
+  historyMessages: Int = 10
 )
 
 final case class ChunkingSettings(
@@ -209,7 +300,8 @@ final case class SearchSettings(
 final case class ApiKeysConfig(
   openai: Option[Secret],
   anthropic: Option[Secret],
-  voyage: Option[Secret]
+  voyage: Option[Secret],
+  cohere: Option[Secret] = None
 ) {
   /**
    * Get API key for the specified provider.
@@ -218,6 +310,7 @@ final case class ApiKeysConfig(
     case "openai" => openai
     case "anthropic" => anthropic
     case "voyage" => voyage
+    case "cohere" => cohere
     case _ => None
   }
 
@@ -399,11 +492,13 @@ object AppConfig {
       embedding = EmbeddingConfig(
         provider = config.getString("embedding.provider"),
         model = config.getString("embedding.model"),
-        dimensions = getOptionalInt(config, "embedding.dimensions")
+        dimensions = getOptionalInt(config, "embedding.dimensions"),
+        baseUrl = getOptionalString(config, "embedding.base-url")
       ),
       llm = LLMConfig(
         model = config.getString("llm.model"),
-        temperature = config.getDouble("llm.temperature")
+        temperature = config.getDouble("llm.temperature"),
+        baseUrl = getOptionalString(config, "llm.base-url")
       ),
       rag = RAGSettings(
         chunking = ChunkingSettings(
@@ -416,12 +511,24 @@ object AppConfig {
           fusionStrategy = config.getString("rag.search.fusion-strategy"),
           rrfK = config.getInt("rag.search.rrf-k")
         ),
-        systemPrompt = config.getString("rag.system-prompt")
+        systemPrompt = config.getString("rag.system-prompt"),
+        reranking = RerankingSettings(
+          strategy = getOptionalString(config, "rag.reranking.strategy").getOrElse("none"),
+          model = getOptionalString(config, "rag.reranking.model").getOrElse(RerankingSettings().model),
+          candidates = getOptionalInt(config, "rag.reranking.candidates").getOrElse(RerankingSettings().candidates)
+        ),
+        queryTransform = QueryTransformSettings(
+          strategy = getOptionalString(config, "rag.query-transform.strategy").getOrElse("none")
+        ),
+        chat = ChatSettings(
+          historyMessages = getOptionalInt(config, "rag.chat.history-messages").getOrElse(ChatSettings().historyMessages)
+        )
       ),
       apiKeys = ApiKeysConfig(
         openai = getOptionalString(config, "api-keys.openai").map(Secret(_)),
         anthropic = getOptionalString(config, "api-keys.anthropic").map(Secret(_)),
-        voyage = getOptionalString(config, "api-keys.voyage").map(Secret(_))
+        voyage = getOptionalString(config, "api-keys.voyage").map(Secret(_)),
+        cohere = getOptionalString(config, "api-keys.cohere").map(Secret(_))
       ),
       ingestion = {
         // Load from config file first, then merge with environment variables

@@ -38,7 +38,10 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
     chunksUsed: Int,
     answerTokens: Option[Int],
     experimentId: Option[String] = None,
-    configSnapshot: Option[QueryConfigSnapshot] = None
+    configSnapshot: Option[QueryConfigSnapshot] = None,
+    promptTokens: Option[Int] = None,
+    embeddingTokens: Option[Int] = None,
+    costUsd: Option[Double] = None
   ): IO[String] = IO {
     val id = UUID.randomUUID().toString
     val entry = QueryLogEntry(
@@ -56,7 +59,10 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
       userRating = None,
       experimentId = experimentId,
       configSnapshot = configSnapshot,
-      createdAt = Instant.now()
+      createdAt = Instant.now(),
+      promptTokens = promptTokens,
+      embeddingTokens = embeddingTokens,
+      costUsd = costUsd
     )
     logs.update(id, entry)
     id

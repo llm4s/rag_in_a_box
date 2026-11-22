@@ -257,18 +257,19 @@ class SuggestionService(
       )
     }
 
-    // High latency
-    if (summary.p95LatencyMs > Thresholds.HighLatencyP95Ms) {
+    // High retrieval latency. Measured without answer generation, which takes seconds on any
+    // LLM and which retrieval settings cannot change - total latency would always exceed this.
+    summary.p95RetrievalLatencyMs.filter(_ > Thresholds.HighLatencyP95Ms).foreach { p95 =>
       suggestions += createSuggestion(
         suggestionType = "search",
         severity = "warning",
-        title = "High Query Latency",
-        description = s"p95 latency is ${summary.p95LatencyMs}ms, which may impact user experience.",
+        title = "High Retrieval Latency",
+        description = s"p95 retrieval latency (embedding and search, without answer generation) is ${p95}ms, which may impact user experience.",
         collection = None,
-        evidence = SuggestionEvidence("p95_latency_ms", summary.p95LatencyMs.toDouble, Thresholds.HighLatencyP95Ms.toDouble, summary.totalQueries, timeRange),
-        recommendation = "Consider reducing topK, adding caching, or optimizing the embedding provider.",
+        evidence = SuggestionEvidence("p95_retrieval_latency_ms", p95.toDouble, Thresholds.HighLatencyP95Ms.toDouble, summary.totalQueries, timeRange),
+        recommendation = "Consider reducing topK or the reranking candidates, adding caching, or optimizing the embedding provider.",
         estimatedImpact = "Faster response times",
-        currentValue = Some(s"${summary.p95LatencyMs}ms"),
+        currentValue = Some(s"${p95}ms"),
         suggestedValue = Some(s"<${Thresholds.HighLatencyP95Ms}ms")
       )
     }

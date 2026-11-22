@@ -2,17 +2,20 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import cats.syntax.all._
-import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk}
-import org.llm4s.llmconnect.{LLMClient, LLMConnect}
-import org.llm4s.llmconnect.config.{AnthropicConfig, EmbeddingProviderConfig, OpenAIConfig, ProviderConfig}
-import org.llm4s.llmconnect.spi.{EmbeddingProviderSection, ProviderRegistry}
+import org.llm4s.chunking.{DocumentChunk, DocumentChunker}
+import org.llm4s.extract.TikaDocumentExtractor
+import org.llm4s.llmconnect.LLMClient
+import org.llm4s.llmconnect.model.CompletionOptions
+import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.model.ModelRegistryService
-import org.llm4s.rag.{RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
+import org.llm4s.rag.{RAG, RAGSearchResult, RAGAnswerResult}
 import org.llm4s.rag.RAG.RAGConfigOps
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSchemaManager
+import org.llm4s.trace.TracingLLMClient
 import org.llm4s.types.Result
 import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentRegistry}
@@ -85,89 +88,34 @@ class RAGService(
    */
   def hasPermissions: Boolean = searchIndex.isDefined
 
-  // Model metadata bundled with llm4s: resolves context windows for LLM configs and is
-  // required (as a given) when building LLM clients and the RAG pipeline.
+  // Model metadata bundled with llm4s: resolves context windows for LLM configs, prices tokens,
+  // and is required (as a given) when building LLM clients and the RAG pipeline.
   private lazy val modelRegistry: Result[ModelRegistryService] = ModelRegistryService.default()
 
-  // Create LLM client for answer generation
-  private lazy val llmClient: Option[LLMClient] = modelRegistry.toOption.flatMap { registry =>
-    given ModelRegistryService = registry
-
-    // Parse provider/model format (e.g., "openai/gpt-4o")
-    val parts = config.llm.model.split("/", 2)
-    val provider = if (parts.length > 1) parts(0) else "openai"
-    val model = if (parts.length > 1) parts(1) else config.llm.model
-
-    // fromValues resolves context window / completion reserve from the model registry
-    val providerConfig: Option[Result[ProviderConfig]] = provider.toLowerCase match {
-      case "openai" =>
-        config.apiKeys.openai.map(OpenAIConfig.fromValues(model, _, OpenAIConfig.DEFAULT_BASE_URL))
-      case "anthropic" =>
-        config.apiKeys.anthropic.map(AnthropicConfig.fromValues(model, _, AnthropicConfig.DEFAULT_BASE_URL))
-      case _ => None
-    }
-
-    providerConfig.flatMap(_.flatMap(LLMConnect.getClient).toOption)
-  }
+  /**
+   * Attributes llm4s trace events (embedding and completion usage, durations, cost) to the
+   * request that caused them; see [[QueryMetricsTracing]].
+   */
+  private val metricsTracing = new QueryMetricsTracing
 
   /**
-   * Embedding provider config resolver, called by llm4s with the configured embedding
-   * provider id. Base URL and model defaults come from the provider's llm4s descriptor;
-   * ragbox supplies the API key and model from its own configuration.
+   * The answer LLM, resolved through the provider registry (see [[Llm4sPipeline.llmClient]]) and
+   * traced with [[metricsTracing]]. When it cannot be built the reason is logged and the service
+   * runs without answer generation: search still works, answers fail with a configuration error.
    */
-  private def resolveEmbeddingProvider(providerId: String): Result[EmbeddingProviderConfig] = {
-    val registry = summon[ProviderRegistry]
-    val id = registry.canonicalEmbeddingId(providerId)
-    for {
-      descriptor <- registry.resolveEmbedding(id)
-      section = EmbeddingProviderSection(
-        apiKey = config.apiKeys.getKey(id.asString),
-        model = Some(config.embedding.model)
-      )
-      providerConfig <- descriptor.buildConfig(section, modelOverride = None)
-    } yield providerConfig
-  }
-
-  // Build RAG configuration
-  private lazy val ragConfig: RAGConfig = {
-    val baseConfig = RAGConfig.default
-      .withEmbeddings(config.embedding.providerId, config.embedding.model)
-      .withChunking(
-        config.rag.chunking.toChunkerStrategy,
-        config.rag.chunking.size,
-        config.rag.chunking.overlap
-      )
-      .withTopK(config.rag.search.topK)
-      .withFusion(config.rag.search.toFusionStrategy)
-      .withSystemPrompt(config.rag.systemPrompt)
-
-    // Configure storage: use SearchIndex if available, otherwise pgvector directly
-    val withStorage = searchIndex match {
-      case Some(si) =>
-        // Permission-based RAG with SearchIndex. A SearchIndex over the shared pool
-        // (PgSearchIndex.fromDataSource) carries no connection settings, so the pipeline's own
-        // pgvector + keyword store is pointed at the same database explicitly.
-        baseConfig
-          .withSearchIndex(si)
-          .withPgHybrid(
-            connectionString = config.database.connectionString,
-            user = config.database.effectiveUser,
-            password = config.database.effectivePassword,
-            vectorTableName = config.database.tableName,
-            keywordTableName = si.pgConfig.map(_.keywordTableName).getOrElse(RAGService.KeywordTableName)
-          )
-      case None =>
-        // Basic pgvector without permissions
-        baseConfig.withPgVector(
-          connectionString = config.database.connectionString,
-          user = config.database.effectiveUser,
-          password = config.database.effectivePassword,
-          tableName = config.database.tableName
-        )
+  private lazy val llmClient: Option[LLMClient] = {
+    val built = modelRegistry.flatMap { registry =>
+      given ModelRegistryService = registry
+      Llm4sPipeline.llmClient(config, providerRegistry)
     }
-
-    // Add LLM client if available
-    llmClient.fold(withStorage)(withStorage.withLLM)
+    built match {
+      case Right((client, providerConfig)) =>
+        RAGService.logger.info(s"LLM '${config.llm.model}' resolved through the llm4s provider registry")
+        Some(TracingLLMClient(client, metricsTracing, providerConfig))
+      case Left(error) =>
+        RAGService.logger.warn(s"LLM '${config.llm.model}' is not available, answer generation is disabled: ${error.formatted}")
+        None
+    }
   }
 
   // The RAG instance once built, and the last build failure (time, message) while it is not.
@@ -177,9 +125,27 @@ class RAGService(
   @volatile private var closed = false
 
   private def buildRag(): Result[RAG] =
+    for {
+      registry <- modelRegistry
+      ragConfig <- Llm4sPipeline.ragConfig(config, searchIndex, llmClient, metricsTracing)
+      rag <- {
+        given ModelRegistryService = registry
+        ragConfig.build(
+          Llm4sPipeline.embeddingProviderConfig(config, providerRegistry),
+          () => Llm4sPipeline.rerankerConfig(config)
+        )
+      }
+    } yield rag
+
+  /**
+   * The chunker documents are chunked with - the same one llm4s's pipeline is configured with.
+   * Each document is chunked once, here, and the chunks are both indexed and kept in the chunk
+   * store, so what the chunk store shows is exactly what was indexed.
+   */
+  private lazy val chunker: Result[DocumentChunker] =
     modelRegistry.flatMap { registry =>
       given ModelRegistryService = registry
-      ragConfig.build(resolveEmbeddingProvider)
+      Llm4sPipeline.chunker(config, providerRegistry)
     }
 
   /**
@@ -249,6 +215,32 @@ class RAGService(
       ingestAndRegister(documentId, content, contentHash, metadata, sourceId = None).map { result =>
         DocumentUploadResponse(documentId, result.chunks, s"Successfully ingested ${result.chunks} chunks")
       }
+    }
+
+  /**
+   * Extract the text of an uploaded file (PDF, DOCX, HTML, plain text, ... - anything Apache Tika
+   * reads) with llm4s's `TikaDocumentExtractor`, the extractor behind `RAG.ingestBytes`.
+   *
+   * ragbox extracts and then ingests the text itself rather than calling `RAG.ingestBytes`, so an
+   * upload goes through the same path as any other document: chunked once into the chunk store,
+   * registered with its content hash, and in permission mode put in its collection (llm4s has no
+   * permission-aware `ingestBytes`).
+   *
+   * @return the text and the metadata worth keeping: the detected format and, when Tika found
+   *         them, title and author
+   */
+  def extractText(content: Array[Byte], filename: String): IO[(String, Map[String, String])] =
+    IO.blocking(TikaDocumentExtractor.extract(content, filename)).flatMap {
+      case Left(error) =>
+        IO.raiseError(InvalidRequestError(s"Could not extract text from '$filename': ${error.message}"))
+      case Right(extracted) if extracted.text.trim.isEmpty =>
+        IO.raiseError(InvalidRequestError(s"'$filename' contains no extractable text"))
+      case Right(extracted) =>
+        val kept = extracted.metadata.collect {
+          case (key, value) if RAGService.ExtractedMetadataKeys.contains(key.toLowerCase) && value.trim.nonEmpty =>
+            key.toLowerCase.replace("dc:", "") -> value.trim.take(500)
+        }
+        IO.pure((extracted.text, kept + ("format" -> extracted.format.name)))
     }
 
   /**
@@ -436,7 +428,21 @@ class RAGService(
     }
 
   /**
-   * Helper to ingest and register a document.
+   * Chunk a document once, with the pipeline's chunker and chunking config (`RAG.config`), on the
+   * blocking pool (the semantic chunker calls the embedding provider).
+   */
+  private def chunkContent(r: RAG, content: String, metadata: Map[String, String]): IO[Seq[DocumentChunk]] =
+    IO.fromEither(chunker.left.map(e => new RuntimeException(e.message))).flatMap { c =>
+      IO.blocking {
+        val chunks = c.chunk(content, r.config.chunkingConfig)
+        metadata.get("filename").fold(chunks)(f => chunks.map(ch => ch.copy(metadata = ch.metadata.withSource(f))))
+      }
+    }
+
+  /**
+   * Ingest a document without permissions: chunk it once and hand exactly those chunks to llm4s
+   * (`RAG.ingestChunks`), which embeds and indexes them as `<documentId>-chunk-<n>` in both the
+   * vector and the keyword store. The chunk store keeps the same chunks under the same ids.
    */
   private def ingestAndRegister(
     documentId: String,
@@ -445,25 +451,37 @@ class RAGService(
     metadata: Map[String, String],
     sourceId: Option[String]
   ): IO[DocumentUpsertResponse] =
-    rag.flatMap { r =>
-      blockingResult(r.ingestText(content, documentId, metadata)).flatMap { chunkCount =>
-        recordIngest(documentId, content, contentHash, chunkCount, metadata, metadata.get("collection"), Set.empty, sourceId)
-          .as(DocumentUpsertResponse(
-            documentId = documentId,
-            chunks = chunkCount,
-            action = "created",
-            message = s"Successfully indexed $chunkCount chunks"
-          ))
-      }
-    }
+    for {
+      r <- rag
+      chunks <- chunkContent(r, content, metadata)
+      chunkCount <- blockingResult(r.ingestChunks(documentId, chunks.map(_.content), metadata))
+      collection = metadata.get("collection")
+      _ <- recordIngest(
+        documentId = documentId,
+        chunks = chunks.zipWithIndex.map { case (chunk, i) =>
+          toChunkInfo(RAGService.chunkId(documentId, i), documentId, i, collection, chunk)
+        },
+        contentHash = contentHash,
+        chunkCount = chunkCount,
+        metadata = metadata,
+        collection = collection,
+        readableBy = Set.empty,
+        sourceId = sourceId
+      )
+    } yield DocumentUpsertResponse(
+      documentId = documentId,
+      chunks = chunkCount,
+      action = "created",
+      message = s"Successfully indexed $chunkCount chunks"
+    )
 
   /**
-   * After a successful ingest: store the document's chunks for visibility, track ingestion time
-   * and register the document.
+   * After a successful ingest: store the document's indexed chunks for visibility, track
+   * ingestion time and register the document.
    */
   private def recordIngest(
     documentId: String,
-    content: String,
+    chunks: Seq[ChunkInfo],
     contentHash: String,
     chunkCount: Int,
     metadata: Map[String, String],
@@ -472,30 +490,12 @@ class RAGService(
     sourceId: Option[String]
   ): IO[Unit] = {
     val now = Instant.now()
-
-    // Create chunks for visibility using the same chunking strategy
-    val chunker = ChunkerFactory.create(config.rag.chunking.strategy).getOrElse(ChunkerFactory.default)
-    val chunkingConfig = ChunkingConfig(
-      targetSize = config.rag.chunking.size,
-      maxSize = (config.rag.chunking.size * 1.5).toInt,
-      overlap = config.rag.chunking.overlap
-    )
-    val filename = metadata.get("filename")
-    val docChunks = filename.map(f => chunker.chunkWithSource(content, f, chunkingConfig))
-      .getOrElse(chunker.chunk(content, chunkingConfig))
-
-    // Convert to ChunkInfo for storage
-    val chunkInfos = docChunks.map(toChunkInfo(documentId, collection, _))
-
     for {
-      // Store chunks for visibility
-      _ <- chunkStore.store(documentId, chunkInfos)
-      // Track ingestion time
+      _ <- chunkStore.store(documentId, chunks)
       _ <- IO {
         if (firstIngestionTime.isEmpty) firstIngestionTime = Some(now)
         lastIngestionTime = Some(now)
       }
-      // Register document
       _ <- documentRegistry.put(DocumentEntry(
         documentId = documentId,
         contentHash = contentHash,
@@ -511,16 +511,24 @@ class RAGService(
   }
 
   /**
-   * Convert a DocumentChunk to ChunkInfo for storage.
+   * A chunk as the chunk store keeps it, under the id llm4s indexed it as. Chunks of documents
+   * without a collection have no `collection` metadata (stored as NULL), which is what the
+   * default-collection statistics query for.
    */
-  private def toChunkInfo(documentId: String, collection: Option[String], chunk: DocumentChunk): ChunkInfo =
+  private def toChunkInfo(
+    id: String,
+    documentId: String,
+    index: Int,
+    collection: Option[String],
+    chunk: DocumentChunk
+  ): ChunkInfo =
     ChunkInfo(
-      id = s"$documentId-${chunk.index}",
+      id = id,
       documentId = documentId,
-      index = chunk.index,
+      index = index,
       content = chunk.content,
       contentLength = chunk.length,
-      metadata = Map("collection" -> collection.getOrElse("")),
+      metadata = collection.map("collection" -> _).toMap,
       chunkMetadata = ChunkMetadataInfo(
         headings = chunk.metadata.headings,
         isCodeBlock = chunk.metadata.isCodeBlock,
@@ -643,10 +651,13 @@ class RAGService(
     }
 
   /**
-   * Query with answer generation.
+   * Query with answer generation, through llm4s `RAG.queryWithAnswer`. The response carries the
+   * query's per-stage latencies, token usage and cost, from what llm4s traced while answering.
    */
   def queryWithAnswer(question: String, topK: Option[Int]): IO[QueryResponse] =
-    rag.flatMap(r => blockingResult(r.queryWithAnswer(question, topK)).map(toQueryResponse))
+    rag.flatMap(r => measured(r.queryWithAnswer(question, topK))).map { case (result, collected, nanos) =>
+      toQueryResponse(result, collected, nanos)
+    }
 
   // ============================================================
   // Permission-Aware Query Operations
@@ -654,6 +665,9 @@ class RAGService(
 
   /**
    * Search with permission filtering.
+   *
+   * Permission-filtered search is vector-only in llm4s: fusion, keyword search, reranking and
+   * query transforms do not apply (llm4s/llm4s#2716).
    *
    * @param query Search query text
    * @param auth User authorization (from UserContextMiddleware)
@@ -686,10 +700,60 @@ class RAGService(
     topK: Option[Int]
   ): IO[QueryResponse] =
     (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
-      blockingResult(r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)).map(toQueryResponse)
+      measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)).map { case (result, collected, nanos) =>
+        toQueryResponse(result, collected, nanos)
+      }
     }
 
-  private def toQueryResponse(result: RAGAnswerResult): QueryResponse =
+  /**
+   * Answer a chat message, with the session's earlier messages as conversation history.
+   *
+   * llm4s's `queryWithAnswer` takes a single question (llm4s/llm4s#2733), so ragbox composes the two llm4s steps
+   * itself: retrieval through the pipeline (`RAG.query`, or `RAG.queryWithPermissions` when
+   * `permissions` is given), then the answer LLM with the history, the retrieved context and the
+   * configured `llm.temperature` (see [[Llm4sPipeline.chatConversation]]).
+   *
+   * @param history     earlier messages, oldest first; the caller bounds how many
+   * @param permissions the user's authorization and collection pattern, in permission mode
+   */
+  def chatAnswer(
+    question: String,
+    history: Seq[ChatTurn],
+    permissions: Option[(UserAuthorization, String)],
+    topK: Option[Int]
+  ): IO[QueryResponse] =
+    for {
+      r <- rag
+      client <- IO.fromOption(llmClient)(new RuntimeException(RAGService.LlmRequiredMessage))
+      pattern <- permissions.traverse { case (auth, p) => parseCollectionPattern(p).map(auth -> _) }
+      measuredAnswer <- measured {
+        for {
+          contexts <- pattern match {
+            case Some((auth, p)) => r.queryWithPermissions(auth, p, question, topK)
+            case None => r.query(question, topK)
+          }
+          conversation = Llm4sPipeline.chatConversation(config.rag.systemPrompt, history, contexts, question)
+          completion <- client.complete(conversation, CompletionOptions(temperature = config.llm.temperature))
+        } yield RAGAnswerResult(answer = completion.content, question = question, contexts = contexts, usage = completion.usage)
+      }
+    } yield {
+      val (result, collected, nanos) = measuredAnswer
+      toQueryResponse(result, collected, nanos)
+    }
+
+  /**
+   * Run a synchronous llm4s call on the blocking pool, collecting what it traced and timing it.
+   */
+  private def measured[A](call: => Result[A]): IO[(A, QueryMetricsTracing.Collected, Long)] =
+    IO.blocking {
+      val started = System.nanoTime()
+      val (result, collected) = metricsTracing.collect(call)
+      (result, collected, System.nanoTime() - started)
+    }.flatMap { case (result, collected, nanos) =>
+      IO.fromEither(result.left.map(e => new RuntimeException(e.message))).map(a => (a, collected, nanos))
+    }
+
+  private def toQueryResponse(result: RAGAnswerResult, collected: QueryMetricsTracing.Collected, nanos: Long): QueryResponse =
     QueryResponse(
       answer = result.answer,
       contexts = result.contexts.map(toContextItem),
@@ -697,8 +761,44 @@ class RAGService(
         promptTokens = u.promptTokens,
         completionTokens = u.completionTokens,
         totalTokens = u.totalTokens
-      ))
+      )),
+      metrics = Some(queryMetrics(collected, nanos, result.contexts.size))
     )
+
+  /**
+   * A query's metrics from its trace events. The answer is the last completion; earlier ones
+   * (query rewriting, LLM reranking) are part of retrieval. Search latency is the rest of the
+   * query once embedding and answer generation are taken out, so it is known only when the
+   * embedding provider reported its duration (llm4s traces it with the call's token usage).
+   */
+  private def queryMetrics(collected: QueryMetricsTracing.Collected, nanos: Long, contexts: Int): QueryMetrics = {
+    def millis(d: scala.concurrent.duration.FiniteDuration): Int = d.toMillis.toInt
+    val totalMs = (nanos / 1000000L).toInt
+    val completions = collected.completions
+    val llmMs = completions.lastOption.flatMap(_.duration).map(millis)
+    val embeddingMs = collected.embeddingDuration.map(millis)
+    val llmCost = completions.flatMap { c =>
+      for {
+        usage <- c.usage
+        registry <- modelRegistry.toOption
+        meta <- registry.lookup(c.model).toOption
+        cost <- meta.pricing.estimateCost(usage.promptTokens, usage.completionTokens)
+      } yield cost
+    }
+    val costs = llmCost ++ collected.embeddingCostUsd.toSeq
+    QueryMetrics(
+      embeddingLatencyMs = embeddingMs,
+      searchLatencyMs = embeddingMs.map(e => math.max(0, totalMs - e - llmMs.getOrElse(0))),
+      llmLatencyMs = llmMs,
+      // llm4s sends every retrieved chunk to the LLM, so the two are equal
+      chunksRetrieved = contexts,
+      chunksUsed = contexts,
+      embeddingTokens = collected.embeddingTokens,
+      promptTokens = Option.when(completions.exists(_.usage.isDefined))(completions.flatMap(_.usage).map(_.promptTokens).sum),
+      completionTokens = Option.when(completions.exists(_.usage.isDefined))(completions.flatMap(_.usage).map(_.completionTokens).sum),
+      costUsd = Option.when(costs.nonEmpty)(costs.sum)
+    )
+  }
 
   /**
    * Ingest a document with permission controls.
@@ -720,6 +820,14 @@ class RAGService(
   ): IO[DocumentUploadResponse] =
     ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, computeContentHash(content), None)
 
+  /**
+   * Ingest into a collection through llm4s `RAG.ingestWithPermissions`, and keep the indexed
+   * chunks in the chunk store under the ids llm4s gave them (`coll-<collectionId>-<doc>-chunk-<n>`).
+   *
+   * llm4s has no pre-chunked permission ingest (llm4s/llm4s#2732), so it chunks the content itself - with the same
+   * chunker and config [[chunkContent]] uses, which gives the same chunks. A count that differs
+   * (possible only for the semantic chunker, whose boundaries depend on embeddings) is logged.
+   */
   private def ingestIntoCollection(
     collectionPath: String,
     documentId: String,
@@ -732,13 +840,21 @@ class RAGService(
     for {
       path <- parseCollectionPath(collectionPath)
       r <- rag
+      chunks <- chunkContent(r, content, metadata)
       chunkCount <- blockingResult(r.ingestWithPermissions(path, documentId, content, metadata, readableBy))
+      _ <- IO.whenA(chunkCount != chunks.size)(IO(RAGService.logger.warn(
+        s"Document '$documentId': llm4s indexed $chunkCount chunks, the chunk store has ${chunks.size}"
+      )))
+      collectionId <- collections.traverse(store => blockingResult(store.get(path))).map(_.flatten.map(_.id))
       // The registry records documents in the default collection with no collection, which is
       // how it has always represented "default" (see PgDocumentRegistry.listIdsByCollection).
       registeredCollection = Option.when(path.value != DefaultCollection)(path.value)
       _ <- recordIngest(
         documentId = documentId,
-        content = content,
+        chunks = chunks.zipWithIndex.map { case (chunk, i) =>
+          val id = collectionId.fold(RAGService.chunkId(documentId, i))(cid => s"coll-$cid-${RAGService.chunkId(documentId, i)}")
+          toChunkInfo(id, documentId, i, registeredCollection, chunk)
+        },
         contentHash = contentHash,
         chunkCount = chunkCount,
         metadata = metadata ++ registeredCollection.map("collection" -> _),
@@ -870,7 +986,9 @@ class RAGService(
   // ============================================================
 
   /**
-   * Get current configuration info.
+   * Get current configuration info, including how the pipeline searches: in permission mode
+   * llm4s's permission-filtered search is vector-only, so the configured fusion strategy and RRF k,
+   * reranking and query transforms do not apply there (llm4s/llm4s#2716).
    */
   def getConfigInfo: IO[ConfigResponse] = IO.pure {
     ConfigResponse(
@@ -888,7 +1006,13 @@ class RAGService(
         chunkSize = config.rag.chunking.size,
         chunkOverlap = config.rag.chunking.overlap,
         topK = config.rag.search.topK,
-        fusionStrategy = config.rag.search.fusionStrategy
+        fusionStrategy = config.rag.search.fusionStrategy,
+        rrfK = config.rag.search.rrfK,
+        searchMode = if (hasPermissions) "vector" else "hybrid",
+        fusionApplies = !hasPermissions,
+        reranking = config.rag.reranking.normalizedStrategy.getOrElse(config.rag.reranking.strategy),
+        queryTransform = config.rag.queryTransform.normalizedStrategy.getOrElse(config.rag.queryTransform.strategy),
+        limitations = pipelineLimitations
       ),
       database = DatabaseConfigInfo(
         host = config.database.effectiveHost,
@@ -900,23 +1024,104 @@ class RAGService(
     )
   }
 
+  /** What the configured settings do not affect, with the llm4s issue that tracks each. */
+  private def pipelineLimitations: Seq[String] = {
+    val permissionMode =
+      if (hasPermissions)
+        Seq(
+          "Permission mode: llm4s permission-filtered search is vector-only, so fusionStrategy and rrfK " +
+            "have no effect" +
+            (if (config.rag.reranking.enabled) ", nor does reranking" else "") +
+            (if (config.rag.queryTransform.enabled) ", nor does the query transform" else "") +
+            " (llm4s/llm4s#2716)."
+        )
+      else Seq.empty
+    permissionMode ++ Seq(
+      "llm.temperature applies to chat answers only: llm4s RAG.queryWithAnswer generates /query answers " +
+        "at temperature 0.0 in llm4s 0.6.0 (llm4s/llm4s#2715, fixed upstream for the next release).",
+      "Streaming endpoints send the answer in one event once it is complete: llm4s RAG has no streaming " +
+        "answer API in 0.6.0 (llm4s/llm4s#2717, added upstream for the next release)."
+    )
+  }
+
+  // Live model lists by provider id, with when they were fetched
+  private val modelListCache = new java.util.concurrent.ConcurrentHashMap[String, (Long, Seq[String])]()
+
   /**
-   * Get available providers.
+   * Get available providers: every LLM and embedding provider registered with llm4s's
+   * [[ProviderRegistry]]. A provider counts as configured when it needs no API key or ragbox has
+   * one for it. Models come from the provider's live model lister when it has one and is
+   * configured (cached for [[RAGService.ModelListTtlMillis]]), otherwise from llm4s's bundled model
+   * metadata and the embedding descriptors' model tables.
    */
-  def getProviders: IO[ProvidersResponse] = IO.pure {
-    ProvidersResponse(
-      embeddingProviders = Seq(
-        ProviderInfo("openai", Seq("text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"), config.apiKeys.openai.isDefined),
-        ProviderInfo("voyage", Seq("voyage-3", "voyage-3-lite", "voyage-code-3"), config.apiKeys.voyage.isDefined),
-        ProviderInfo("ollama", Seq("nomic-embed-text", "mxbai-embed-large"), configured = true)
-      ),
-      llmProviders = Seq(
-        ProviderInfo("openai", Seq("gpt-4o", "gpt-4o-mini", "gpt-4-turbo"), config.apiKeys.openai.isDefined),
-        ProviderInfo("anthropic", Seq("claude-3-opus", "claude-3-sonnet", "claude-3-haiku"), config.apiKeys.anthropic.isDefined)
-      ),
-      chunkingStrategies = Seq("simple", "sentence", "markdown", "semantic"),
+  def getProviders: IO[ProvidersResponse] =
+    for {
+      llmProviders <- providerRegistry.ids.toList.parTraverse(llmProviderInfo)
+      embeddingProviders = providerRegistry.embeddingIds.map(embeddingProviderInfo)
+    } yield ProvidersResponse(
+      embeddingProviders = embeddingProviders,
+      llmProviders = llmProviders,
+      chunkingStrategies = org.llm4s.chunking.ChunkerFactory.Strategy.all.map(_.name),
       fusionStrategies = Seq("rrf", "weighted", "vector_only", "keyword_only")
     )
+
+  private def bundledModels(provider: String, mode: org.llm4s.model.ModelMode): Seq[String] =
+    modelRegistry.toOption
+      .flatMap(_.listByProvider(provider).toOption)
+      .getOrElse(Nil)
+      .filter(_.mode == mode)
+      .map(_.modelId)
+      .sorted
+
+  private def embeddingProviderInfo(id: String): ProviderInfo = {
+    val descriptor = providerRegistry.findEmbedding(org.llm4s.types.ProviderModelTypes.ProviderId(id))
+    val fromDescriptor = descriptor.map(_.modelDimensions.keys.toSeq.sorted).getOrElse(Nil)
+    val models = if (fromDescriptor.nonEmpty) fromDescriptor else bundledModels(id, org.llm4s.model.ModelMode.Embedding)
+    val needsKey = descriptor.exists(_.configSpec.requiresApiKey)
+    ProviderInfo(id, models, configured = !needsKey || config.apiKeys.getKey(id).isDefined)
+  }
+
+  private def llmProviderInfo(id: String): IO[ProviderInfo] = {
+    val providerId = org.llm4s.types.ProviderModelTypes.ProviderId(id)
+    val descriptor = providerRegistry.find(providerId)
+    val apiKey = config.apiKeys.getKey(id)
+    val configured = descriptor.exists(d => !d.configSpec.requiresApiKey || apiKey.isDefined)
+    val bundled = bundledModels(id, org.llm4s.model.ModelMode.Chat)
+    val listed: IO[Option[Seq[String]]] = descriptor.flatMap(_.modelLister).filter(_ => configured) match {
+      case None => IO.pure(None)
+      case Some(lister) =>
+        Option(modelListCache.get(id)).filter { case (at, _) =>
+          System.currentTimeMillis() - at < RAGService.ModelListTtlMillis
+        } match {
+          case Some((_, models)) => IO.pure(Some(models))
+          case None =>
+            val isActive = config.llm.providerId == id
+            val section = org.llm4s.config.ProvidersConfigModel.NamedProviderConfig(
+              provider = providerId,
+              model = org.llm4s.types.ProviderModelTypes.ModelName(if (isActive) config.llm.modelName else ""),
+              baseUrl = (if (isActive) config.llm.baseUrl else None)
+                .orElse(descriptor.flatMap(_.configSpec.defaultBaseUrl))
+                .map(org.llm4s.types.ProviderModelTypes.BaseUrl(_)),
+              apiKey = apiKey.map(k => org.llm4s.types.ProviderModelTypes.ApiKey(k.reveal))
+            )
+            IO.interruptible {
+              val http = org.llm4s.http.Llm4sHttpClient.create(scala.concurrent.duration.FiniteDuration(3, "seconds"))
+              lister.listModels(section, http).map(_.map(_.name.asString).sorted.toSeq)
+            }.timeout(scala.concurrent.duration.FiniteDuration(5, "seconds")).attempt.map {
+              case Right(Right(models)) if models.nonEmpty =>
+                modelListCache.put(id, (System.currentTimeMillis(), models))
+                Some(models)
+              case Right(Left(error)) =>
+                RAGService.logger.debug(s"Listing models of '$id' failed: ${error.message}")
+                None
+              case Left(e) =>
+                RAGService.logger.debug(s"Listing models of '$id' failed: ${e.getMessage}")
+                None
+              case _ => None
+            }
+        }
+    }
+    listed.map(live => ProviderInfo(id, live.getOrElse(bundled), configured))
   }
 
   // ============================================================
@@ -946,7 +1151,9 @@ class RAGService(
         topK = ConfigSetting("topK", config.rag.search.topK.toString, ChangeabilityInfo.hot),
         fusionStrategy = ConfigSetting("fusionStrategy", config.rag.search.fusionStrategy, ChangeabilityInfo.hot),
         rrfK = ConfigSetting("rrfK", config.rag.search.rrfK.toString, ChangeabilityInfo.hot),
-        systemPrompt = Some(config.rag.systemPrompt)
+        systemPrompt = Some(config.rag.systemPrompt),
+        searchMode = if (hasPermissions) "vector" else "hybrid",
+        limitations = pipelineLimitations
       ),
       database = VisibilityDatabaseConfig(
         host = config.database.effectiveHost,
@@ -1205,11 +1412,23 @@ object RAGService {
    */
   val DefaultCollection: String = "default"
 
-  /** Keyword table the permission-mode pipeline uses (llm4s `PgConfig`'s default). */
-  val KeywordTableName: String = "documents"
+  /** Keyword table the pipeline uses in both modes (llm4s `PgConfig`'s default). */
+  val KeywordTableName: String = Llm4sPipeline.KeywordTableName
 
   /** Minimum time between attempts to build the RAG instance after a failure. */
   val RetryCooldownMillis: Long = 5000L
+
+  /** Tika metadata kept on an uploaded document (lower-cased keys; `dc:` is dropped). */
+  private val ExtractedMetadataKeys: Set[String] = Set("dc:title", "title", "dc:creator", "author")
+
+  /** How long a provider's live model list is cached by [[RAGService.getProviders]]. */
+  val ModelListTtlMillis: Long = 10 * 60 * 1000L
+
+  /** The error answer generation fails with when no LLM is available; routes match on it. */
+  val LlmRequiredMessage: String = "LLM client required for answer generation"
+
+  /** The id llm4s indexes chunk `index` of a document under (outside permission mode). */
+  def chunkId(documentId: String, index: Int): String = s"$documentId-chunk-$index"
 
   /**
    * Create a new RAGService with PostgreSQL-backed document registry and chunk store over the

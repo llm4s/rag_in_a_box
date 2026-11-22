@@ -144,6 +144,16 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       collections = Seq(detailedCollectionStats), chunkSizeDistribution = sizeDistribution,
       indexedSince = Some(t0), lastIngestion = Some(t0), currentConfig = chunkConfigSnapshot
     )),
+    // Pipeline config and query metrics
+    entry("RAGConfigInfo", RAGConfigInfo(
+      chunkingStrategy = "sentence", chunkSize = 800, chunkOverlap = 150, topK = 5, fusionStrategy = "rrf",
+      rrfK = 60, searchMode = "vector", fusionApplies = false, reranking = "none", queryTransform = "none",
+      limitations = Seq("fusionStrategy and rrfK have no effect (llm4s/llm4s#2716).")
+    )),
+    entry("QueryMetrics", QueryMetrics(
+      embeddingLatencyMs = Some(12), searchLatencyMs = Some(8), llmLatencyMs = Some(900), chunksRetrieved = 5,
+      chunksUsed = 5, embeddingTokens = Some(7), promptTokens = Some(1200), completionTokens = Some(80), costUsd = Some(0.0042)
+    )),
     // Errors
     entry("ErrorResponse", ErrorResponse("validation_failed", "Configuration validation failed", Some("topK: too large")))
   )
