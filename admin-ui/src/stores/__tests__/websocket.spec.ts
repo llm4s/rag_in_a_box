@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { useWebSocketStore, reconnectDelay, MAX_RECONNECT_ATTEMPTS } from '../websocket'
+import { useWebSocketStore, reconnectDelay, buildWebSocketUrl, MAX_RECONNECT_ATTEMPTS } from '../websocket'
+import { setApiKey, setAuthToken } from '@/api/credentials'
 
 class FakeWebSocket {
   static CONNECTING = 0
@@ -66,6 +67,16 @@ describe('websocket store', () => {
     expect(FakeWebSocket.instances[0].url).toMatch(/\/ws$/)
     FakeWebSocket.instances[0].open()
     expect(store.isConnected).toBe(true)
+  })
+
+  it('passes a stored JWT or API key as access_token (browsers cannot set ws headers)', () => {
+    localStorage.clear()
+    setApiKey('key/with+chars')
+    expect(buildWebSocketUrl('ws:', 'host')).toBe('ws://host/ws?access_token=key%2Fwith%2Bchars')
+    setAuthToken('jwt.token')
+    expect(buildWebSocketUrl('wss:', 'host')).toBe('wss://host/ws?access_token=jwt.token')
+    localStorage.clear()
+    expect(buildWebSocketUrl('ws:', 'host')).toBe('ws://host/ws')
   })
 
   it('reconnects with backoff after an unexpected close', () => {

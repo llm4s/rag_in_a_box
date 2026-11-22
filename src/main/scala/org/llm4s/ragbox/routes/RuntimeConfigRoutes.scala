@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.dsl.io._
@@ -21,17 +22,17 @@ object RuntimeConfigRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(configManager: RuntimeConfigManager): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(configManager: RuntimeConfigManager): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/config/runtime - Get current runtime-modifiable settings
-    case GET -> Root / "api" / "v1" / "config" / "runtime" =>
+    case GET -> Root / "api" / "v1" / "config" / "runtime" as principal =>
       for {
         config <- configManager.get
         response <- Ok(config.asJson)
       } yield response
 
     // PUT /api/v1/config/runtime - Update runtime settings
-    case req @ PUT -> Root / "api" / "v1" / "config" / "runtime" =>
+    case (req @ PUT -> Root / "api" / "v1" / "config" / "runtime") as principal =>
       for {
         request <- req.as[RuntimeConfigUpdateRequest]
         // First validate
@@ -57,7 +58,7 @@ object RuntimeConfigRoutes {
       } yield response
 
     // POST /api/v1/config/runtime/validate - Validate proposed changes
-    case req @ POST -> Root / "api" / "v1" / "config" / "runtime" / "validate" =>
+    case (req @ POST -> Root / "api" / "v1" / "config" / "runtime" / "validate") as principal =>
       for {
         request <- req.as[RuntimeConfigValidateRequest]
         result <- configManager.validate(request)
@@ -66,14 +67,14 @@ object RuntimeConfigRoutes {
 
     // GET /api/v1/config/runtime/history - Get config change history
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "history"
-        :? PageParam(page) +& PageSizeParam(pageSize) =>
+        :? PageParam(page) +& PageSizeParam(pageSize) as principal =>
       for {
         result <- configManager.getHistory(page.getOrElse(1), pageSize.getOrElse(50))
         response <- Ok(result.asJson)
       } yield response
 
     // GET /api/v1/config/runtime/meta - Get metadata about configurable settings
-    case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" =>
+    case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" as principal =>
       for {
         current <- configManager.get
         meta: Seq[ConfigMetaItem] = Seq(

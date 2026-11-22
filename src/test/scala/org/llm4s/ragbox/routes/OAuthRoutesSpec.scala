@@ -285,7 +285,7 @@ class MockOidcService extends OidcService[IO]:
   )
   @volatile var callbackCalls: List[(String, String, String)] = Nil
   @volatile var loggedOut: List[String] = Nil
-  private var callbackResponse: Either[OidcError, OAuthSessionData] = Right(OAuthSessionData(
+  private var callbackResponse: Either[OidcError, OAuthCallbackResult] = Right(OAuthCallbackResult(OAuthSessionData(
     sessionId = "mock-session",
     userId = "test-user",
     email = Some("test@example.com"),
@@ -294,14 +294,14 @@ class MockOidcService extends OidcService[IO]:
     provider = "mock",
     expiresAt = System.currentTimeMillis() + 3600000,
     createdAt = System.currentTimeMillis()
-  ))
+  ), None))
   private var validSession: Option[OAuthSessionData] = None
   private var authorization: Option[UserAuthorization] = None
 
   def setLoginResponse(response: OAuthLoginResponse): Unit =
     loginResponse = response
 
-  def setCallbackResponse(response: Either[OidcError, OAuthSessionData]): Unit =
+  def setCallbackResponse(response: Either[OidcError, OAuthCallbackResult]): Unit =
     callbackResponse = response
 
   def setValidSession(session: Option[OAuthSessionData]): Unit =
@@ -317,7 +317,7 @@ class MockOidcService extends OidcService[IO]:
       code: String,
       state: String,
       browserBinding: String
-  ): IO[Either[OidcError, OAuthSessionData]] =
+  ): IO[Either[OidcError, OAuthCallbackResult]] =
     IO { callbackCalls = callbackCalls :+ ((code, state, browserBinding)) }.as(callbackResponse)
 
   override def validateSession(sessionId: String): IO[Option[OAuthSessionData]] =

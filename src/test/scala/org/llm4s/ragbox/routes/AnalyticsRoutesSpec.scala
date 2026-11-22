@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.parser._
@@ -130,7 +132,7 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
 
   private def createRoutes(): (HttpRoutes[IO], MockQueryLogRegistry) = {
     val registry = new MockQueryLogRegistry()
-    val routes = AnalyticsRoutes.routes(registry)
+    val routes = AnalyticsRoutes.routes(registry).asAdmin
     (routes, registry)
   }
 

@@ -1,7 +1,8 @@
 package org.llm4s.ragbox.routes
 
-import cats.effect.{IO, Ref}
+import cats.effect.{IO, Ref, Unique}
 import cats.effect.std.Queue
+import cats.syntax.all._
 import fs2.{Pipe, Stream}
 import io.circe.syntax._
 import io.circe.{Encoder, Json}
@@ -9,13 +10,25 @@ import org.http4s._
 import org.http4s.dsl.io._
 import org.http4s.server.websocket.WebSocketBuilder2
 import org.http4s.websocket.WebSocketFrame
+import org.llm4s.ragbox.auth.Principal
+import org.llm4s.ragbox.ingestion.IngestionEvent
 
 import scala.concurrent.duration._
 
 /**
- * WebSocket routes for real-time updates.
+ * WebSocket endpoint (`GET /ws`) for real-time updates: ingestion progress and stats.
+ *
+ * The endpoint is behind the authenticator like every other API route. Browsers cannot set
+ * headers on a WebSocket handshake, so besides the OIDC session cookie the authenticator also
+ * accepts `?access_token=<token>` on this path only.
+ *
+ * Messages are server-to-client JSON `{"type", "payload", "timestamp"}`; client messages are
+ * ignored.
  */
 object WebSocketRoutes {
+
+  /** Frames buffered per client; when a slow client's buffer is full, new messages are dropped. */
+  val ClientBufferSize: Int = 256
 
   // Message types for WebSocket communication
   case class WSMessage(
@@ -30,59 +43,53 @@ object WebSocketRoutes {
     )
   }
 
-  // Broadcast hub for all connected clients
-  case class BroadcastHub(
-    subscribers: Ref[IO, List[Queue[IO, WebSocketFrame]]]
-  ) {
+  /**
+   * Fan-out of server messages to the connected clients.
+   *
+   * Each client has a bounded queue; [[broadcast]] never blocks on a slow client (it drops the
+   * message for that client instead). A client is removed when its connection closes.
+   */
+  final class BroadcastHub private (subscribers: Ref[IO, Map[Unique.Token, Queue[IO, WebSocketFrame]]]) {
+
     def broadcast(message: WSMessage): IO[Unit] = {
       val frame = WebSocketFrame.Text(message.asJson.noSpaces)
-      subscribers.get.flatMap { subs =>
-        IO.parTraverseN(10)(subs) { queue =>
-          queue.tryOffer(frame).void
-        }.void
-      }
+      subscribers.get.flatMap(_.values.toList.traverse_(_.tryOffer(frame).void))
     }
 
-    def subscribe(queue: Queue[IO, WebSocketFrame]): IO[Unit] =
-      subscribers.update(_ :+ queue)
+    /** Register a client queue; returns the key to [[unsubscribe]] it with. */
+    def subscribe(queue: Queue[IO, WebSocketFrame]): IO[Unique.Token] =
+      IO.unique.flatTap(token => subscribers.update(_ + (token -> queue)))
 
-    def unsubscribe(queue: Queue[IO, WebSocketFrame]): IO[Unit] =
-      subscribers.update(_.filterNot(_ == queue))
+    def unsubscribe(token: Unique.Token): IO[Unit] =
+      subscribers.update(_ - token)
+
+    def subscriberCount: IO[Int] = subscribers.get.map(_.size)
   }
 
   object BroadcastHub {
     def create: IO[BroadcastHub] =
-      Ref.of[IO, List[Queue[IO, WebSocketFrame]]](List.empty).map(BroadcastHub(_))
+      Ref.of[IO, Map[Unique.Token, Queue[IO, WebSocketFrame]]](Map.empty).map(new BroadcastHub(_))
   }
 
-  def routes(wsb: WebSocketBuilder2[IO], hub: BroadcastHub): HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "ws" =>
+  def routes(wsb: WebSocketBuilder2[IO], hub: BroadcastHub): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+    case GET -> Root / "ws" as _ =>
       for {
-        // Create a queue for this client
-        clientQueue <- Queue.unbounded[IO, WebSocketFrame]
-        _ <- hub.subscribe(clientQueue)
+        clientQueue <- Queue.bounded[IO, WebSocketFrame](ClientBufferSize)
+        token <- hub.subscribe(clientQueue)
 
-        // Send stream: heartbeat + broadcast messages
-        sendStream = Stream.awakeEvery[IO](30.seconds)
+        // Heartbeat + broadcast messages; leaving the hub however the stream ends
+        sendStream = Stream
+          .awakeEvery[IO](30.seconds)
           .map(_ => WebSocketFrame.Ping())
           .mergeHaltBoth(Stream.fromQueueUnterminated(clientQueue))
+          .onFinalize(hub.unsubscribe(token))
 
-        // Receive stream: handle pings, log messages
-        receiveStream: Pipe[IO, WebSocketFrame, Unit] = _.evalMap {
-          case WebSocketFrame.Ping(data) =>
-            clientQueue.offer(WebSocketFrame.Pong(data))
-          case WebSocketFrame.Pong(_) =>
-            IO.unit
-          case WebSocketFrame.Text(text, _) =>
-            // Could handle client messages here
-            IO.unit
-          case WebSocketFrame.Close(_) =>
-            hub.unsubscribe(clientQueue)
-          case _ =>
-            IO.unit
-        }
+        // Client messages are not used
+        receiveStream: Pipe[IO, WebSocketFrame, Unit] = _.drain
 
-        response <- wsb.build(sendStream, receiveStream)
+        response <- wsb
+          .withOnClose(hub.unsubscribe(token))
+          .build(sendStream, receiveStream)
       } yield response
   }
 
@@ -115,4 +122,7 @@ object WebSocketRoutes {
         "message" -> message.map(Json.fromString).getOrElse(Json.Null)
       )
     )
+
+  def ingestionProgress(event: IngestionEvent): WSMessage =
+    ingestionProgress(event.source, event.status, event.progress, event.message)
 }

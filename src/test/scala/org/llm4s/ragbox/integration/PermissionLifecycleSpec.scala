@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.integration
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.Json
@@ -230,8 +232,8 @@ class PermissionLifecycleSpec extends AnyFlatSpec with Matchers with PgVectorFix
   it should "answer 400 to an invalid collection or pattern over HTTP" in withContainers { pg =>
     val db = freshDatabase(pg)
     permissionService(db).use { service =>
-      val documents = DocumentRoutes.routes(service).orNotFound
-      val queries = QueryRoutes.routes(service, InMemoryQueryLogRegistry()).orNotFound
+      val documents = DocumentRoutes.routes(service).asAdmin.orNotFound
+      val queries = QueryRoutes.routes(service, InMemoryQueryLogRegistry()).asAdmin.orNotFound
       for {
         put <- documents.run(
           Request[IO](Method.PUT, uri"/api/v1/documents/doc-1")

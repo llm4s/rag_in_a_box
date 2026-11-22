@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.ingestion
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.{Deferred, IO}
 import cats.effect.unsafe.implicits.global
 import org.http4s._
@@ -47,7 +49,7 @@ class IngestionServiceSpec extends AnyFlatSpec with Matchers {
     val test = for {
       release <- Deferred[IO, Unit]
       service = IngestionService(new GatedRAGService(release), oneFileSource())
-      routes = IngestionRoutes.routes(service).orNotFound
+      routes = IngestionRoutes.routes(service).asAdmin.orNotFound
       first <- service.runAll().start
       _ <- waitUntilRunning(service).timeout(10.seconds)
 
@@ -96,6 +98,32 @@ class IngestionServiceSpec extends AnyFlatSpec with Matchers {
     val results = service.runAll().unsafeRunSync()
     results.map(_.error.isDefined) shouldBe Seq(true)
     service.getStatus.unsafeRunSync().running shouldBe false
+  }
+
+  it should "publish start and finish events for each source run" in {
+    val failing = IngestionConfig(
+      enabled = true,
+      sources = Seq(DatabaseSourceConfig(
+        name = "db", url = "jdbc:postgresql://127.0.0.1:1/none", user = "u", password = "p", query = "SELECT 1"
+      ))
+    )
+    val events = new java.util.concurrent.ConcurrentLinkedQueue[IngestionEvent]()
+    val service = IngestionService(new MockRAGService(), failing, e => IO(events.add(e)).void)
+    service.runAll().unsafeRunSync()
+
+    import scala.jdk.CollectionConverters._
+    events.asScala.toList.map(e => (e.source, e.status)) shouldBe List("db" -> "running", "db" -> "failed")
+  }
+
+  it should "not fail ingestion when the event listener fails" in {
+    val failing = IngestionConfig(
+      enabled = true,
+      sources = Seq(DatabaseSourceConfig(
+        name = "db", url = "jdbc:postgresql://127.0.0.1:1/none", user = "u", password = "p", query = "SELECT 1"
+      ))
+    )
+    val service = IngestionService(new MockRAGService(), failing, _ => IO.raiseError(new RuntimeException("boom")))
+    service.runAll().unsafeRunSync().map(_.sourceName) shouldBe Seq("db")
   }
 
   "s3Loader" should "keep the source's extensions and metadata when static credentials are configured" in {

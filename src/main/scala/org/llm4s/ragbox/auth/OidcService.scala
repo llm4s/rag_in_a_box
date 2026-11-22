@@ -40,7 +40,7 @@ trait OidcService[F[_]]:
    *                       match the binding stored for `state`, otherwise the callback is
    *                       rejected (login CSRF protection).
    */
-  def handleCallback(code: String, state: String, browserBinding: String): F[Either[OidcError, OAuthSessionData]]
+  def handleCallback(code: String, state: String, browserBinding: String): F[Either[OidcError, OAuthCallbackResult]]
 
   /** Validate an existing session */
   def validateSession(sessionId: String): F[Option[OAuthSessionData]]
@@ -121,7 +121,7 @@ class OidcServiceImpl private (
       code: String,
       state: String,
       browserBinding: String
-  ): IO[Either[OidcError, OAuthSessionData]] =
+  ): IO[Either[OidcError, OAuthCallbackResult]] =
     (for
       _ <- logger.info(s"Handling OAuth callback with state: ${state.take(8)}...")
 
@@ -180,7 +180,7 @@ class OidcServiceImpl private (
       _ <- logger.info(
         s"OAuth login successful for user: ${sessionData.userId}, session: ${sessionId.take(8)}..."
       )
-    yield sessionData).attempt.map {
+    yield OAuthCallbackResult(sessionData, authState.redirectAfterLogin)).attempt.map {
       case Right(data)              => Right(data)
       case Left(e: OidcError) => Left(e)
       case Left(e) =>

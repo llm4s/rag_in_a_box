@@ -8,7 +8,6 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.http4s.headers.`WWW-Authenticate`
 import org.llm4s.ragbox.auth._
 import org.llm4s.ragbox.model.ErrorResponse
 import org.llm4s.ragbox.model.Codecs._
@@ -99,22 +98,11 @@ object TokenListResponse {
  */
 object TokenRoutes {
 
-  /**
-   * Helper to create proper Unauthorized response with WWW-Authenticate header.
-   */
-  private def unauthorized(message: String): IO[Response[IO]] = {
-    Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
-      .map(_.withEntity(ErrorResponse("unauthorized", message).asJson))
-  }
-
-  def routes(
-    tokenRegistry: AccessTokenRegistry,
-    authService: AuthService
-  ): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(tokenRegistry: AccessTokenRegistry): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/tokens - Create access token (admin only)
-    case req @ POST -> Root / "api" / "v1" / "tokens" =>
-      requireAdmin(req, authService) { userId =>
+    case (req @ POST -> Root / "api" / "v1" / "tokens") as principal =>
+      Authz.requireAdmin(principal) {
         for {
           body <- req.as[CreateTokenRequest]
           expiresAt = body.expiresAt.map(Instant.parse)
@@ -122,7 +110,7 @@ object TokenRoutes {
             name = body.name,
             scopes = body.scopes.toSet,
             collections = body.collections.map(_.toSet),
-            createdBy = Some(userId),
+            createdBy = principal.userId,
             expiresAt = expiresAt
           ).attempt
           response <- result match {
@@ -147,8 +135,8 @@ object TokenRoutes {
       }
 
     // GET /api/v1/tokens - List all tokens (admin only)
-    case req @ GET -> Root / "api" / "v1" / "tokens" =>
-      requireAdmin(req, authService) { _ =>
+    case GET -> Root / "api" / "v1" / "tokens" as principal =>
+      Authz.requireAdmin(principal) {
         for {
           tokens <- tokenRegistry.list()
           response <- Ok(TokenListResponse(
@@ -159,8 +147,8 @@ object TokenRoutes {
       }
 
     // GET /api/v1/tokens/:id - Get token info (admin only)
-    case req @ GET -> Root / "api" / "v1" / "tokens" / id =>
-      requireAdmin(req, authService) { _ =>
+    case GET -> Root / "api" / "v1" / "tokens" / id as principal =>
+      Authz.requireAdmin(principal) {
         for {
           tokenOpt <- tokenRegistry.getById(id)
           response <- tokenOpt match {
@@ -173,8 +161,8 @@ object TokenRoutes {
       }
 
     // DELETE /api/v1/tokens/:id - Revoke token (admin only)
-    case req @ DELETE -> Root / "api" / "v1" / "tokens" / id =>
-      requireAdmin(req, authService) { _ =>
+    case DELETE -> Root / "api" / "v1" / "tokens" / id as principal =>
+      Authz.requireAdmin(principal) {
         for {
           result <- tokenRegistry.delete(id)
           response <- if (result) {
@@ -186,37 +174,4 @@ object TokenRoutes {
       }
   }
 
-  /**
-   * Extract JWT token from Authorization header.
-   */
-  private def extractToken(req: Request[IO]): Option[String] = {
-    req.headers.get(org.typelevel.ci.CIString("Authorization"))
-      .map(_.head.value)
-      .filter(_.startsWith("Bearer "))
-      .map(_.substring(7))
-  }
-
-  /**
-   * Require admin role for an operation.
-   * Returns the user ID if authorized.
-   */
-  private def requireAdmin(req: Request[IO], authService: AuthService)(
-    operation: Int => IO[Response[IO]]
-  ): IO[Response[IO]] = {
-    extractToken(req) match {
-      case Some(token) =>
-        authService.validateToken(token) match {
-          case TokenValidationResult.Valid(userId, _, role) if role == UserRole.Admin =>
-            operation(userId)
-          case TokenValidationResult.Valid(_, _, _) =>
-            Forbidden(ErrorResponse("forbidden", "Admin access required").asJson)
-          case TokenValidationResult.Expired =>
-            unauthorized("Token expired")
-          case TokenValidationResult.Invalid(msg) =>
-            unauthorized(msg)
-        }
-      case None =>
-        unauthorized("Missing authorization token")
-    }
-  }
 }

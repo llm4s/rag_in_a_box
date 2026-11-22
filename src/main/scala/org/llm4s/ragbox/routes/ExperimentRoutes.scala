@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -25,10 +26,10 @@ object ExperimentRoutes {
   object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
   object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
 
-  def routes(experimentService: ExperimentService): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(experimentService: ExperimentService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/experiments - Create a new experiment
-    case req @ POST -> Root / "api" / "v1" / "experiments" =>
+    case (req @ POST -> Root / "api" / "v1" / "experiments") as principal =>
       for {
         body <- req.as[CreateExperimentRequest]
         experiment <- experimentService.createExperiment(body)
@@ -39,7 +40,7 @@ object ExperimentRoutes {
       } yield response
 
     // GET /api/v1/experiments?status=&limit=&offset= - List experiments, newest first
-    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) +& LimitParam(limit) +& OffsetParam(offset) =>
+    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) +& LimitParam(limit) +& OffsetParam(offset) as principal =>
       for {
         experiments <- experimentService.listExperiments(
           status,
@@ -50,7 +51,7 @@ object ExperimentRoutes {
       } yield response
 
     // GET /api/v1/experiments/running - Get the currently running experiment
-    case GET -> Root / "api" / "v1" / "experiments" / "running" =>
+    case GET -> Root / "api" / "v1" / "experiments" / "running" as principal =>
       for {
         running <- experimentService.getRunningExperiment()
         response <- running match {
@@ -60,7 +61,7 @@ object ExperimentRoutes {
       } yield response
 
     // GET /api/v1/experiments/:id - Get experiment by ID
-    case GET -> Root / "api" / "v1" / "experiments" / id =>
+    case GET -> Root / "api" / "v1" / "experiments" / id as principal =>
       for {
         experimentOpt <- experimentService.getExperiment(id)
         response <- experimentOpt match {
@@ -70,7 +71,7 @@ object ExperimentRoutes {
       } yield response
 
     // PUT /api/v1/experiments/:id/start - Start an experiment
-    case PUT -> Root / "api" / "v1" / "experiments" / id / "start" =>
+    case PUT -> Root / "api" / "v1" / "experiments" / id / "start" as principal =>
       experimentService.startExperiment(id).flatMap { result =>
         if (result.success) Ok(result.asJson) else BadRequest(result.asJson)
       }.recoverWith { case e: ExperimentAlreadyRunningError =>
@@ -78,7 +79,7 @@ object ExperimentRoutes {
       }
 
     // PUT /api/v1/experiments/:id/stop - Stop an experiment
-    case PUT -> Root / "api" / "v1" / "experiments" / id / "stop" =>
+    case PUT -> Root / "api" / "v1" / "experiments" / id / "stop" as principal =>
       for {
         result <- experimentService.stopExperiment(id)
         response <- if (result.success) {
@@ -89,7 +90,7 @@ object ExperimentRoutes {
       } yield response
 
     // PUT /api/v1/experiments/:id/archive - Archive an experiment
-    case PUT -> Root / "api" / "v1" / "experiments" / id / "archive" =>
+    case PUT -> Root / "api" / "v1" / "experiments" / id / "archive" as principal =>
       for {
         result <- experimentService.archiveExperiment(id)
         response <- if (result.success) {
@@ -100,7 +101,7 @@ object ExperimentRoutes {
       } yield response
 
     // DELETE /api/v1/experiments/:id - Delete a draft experiment
-    case DELETE -> Root / "api" / "v1" / "experiments" / id =>
+    case DELETE -> Root / "api" / "v1" / "experiments" / id as principal =>
       for {
         result <- experimentService.deleteExperiment(id)
         response <- if (result.success) {
@@ -111,7 +112,7 @@ object ExperimentRoutes {
       } yield response
 
     // GET /api/v1/experiments/:id/results - Get experiment results
-    case GET -> Root / "api" / "v1" / "experiments" / id / "results" =>
+    case GET -> Root / "api" / "v1" / "experiments" / id / "results" as principal =>
       for {
         resultsOpt <- experimentService.getResults(id)
         response <- resultsOpt match {

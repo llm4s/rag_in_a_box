@@ -1,5 +1,6 @@
 import client from './client'
 import { getAuthHeaders } from './credentials'
+import { notifyUnauthorized } from './unauthorized'
 import type {
   ChatSession,
   ChatSessionListResponse,
@@ -102,6 +103,7 @@ export function sendMessageStream(
   })
     .then(async (response) => {
       if (!response.ok) {
+        if (response.status === 401) notifyUnauthorized(url)
         const errorText = await response.text()
         callbacks.onError?.('http_error', `HTTP ${response.status}: ${errorText}`)
         return

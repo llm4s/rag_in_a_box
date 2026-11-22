@@ -5,6 +5,7 @@ import fs2.Stream
 import io.circe.Json
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.{Principal, TokenScope}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -39,23 +40,27 @@ object ChatRoutes {
     queryLogRegistry: QueryLogRegistryBase,
     allowAdminHeader: Boolean = false,
     config: Option[AppConfig] = None
-  ): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  ): AuthedRoutes[Principal, IO] =
+    // Access tokens need the `query` scope for chat, and may only chat over their collections
+    Authz.scopeForPaths(TokenScope.Query, "/api/v1/chat")(AuthedRoutes.of[Principal, IO] {
 
     // ============================================================
     // Session Endpoints
     // ============================================================
 
     // POST /api/v1/chat/sessions - Create new session
-    case req @ POST -> Root / "api" / "v1" / "chat" / "sessions" =>
+    case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions") as principal =>
       for {
         body <- req.as[CreateChatSessionRequest]
-        session <- chatRegistry.createSession(body)
-        response <- Created(CreateChatSessionResponse(session, "Session created").asJson)
+        response <- Authz.requirePattern(principal, body.collectionPattern.getOrElse("*")) {
+          chatRegistry.createSession(body).flatMap(session =>
+            Created(CreateChatSessionResponse(session, "Session created").asJson))
+        }
       } yield response
 
     // GET /api/v1/chat/sessions?limit=&offset= - List sessions, most recently updated first.
     // `total` is the number of sessions, across all pages.
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) +& LimitParam(limit) +& OffsetParam(offset) =>
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) +& LimitParam(limit) +& OffsetParam(offset) as principal =>
       val archived = includeArchived.getOrElse(false)
       for {
         sessions <- chatRegistry.listSessions(
@@ -68,7 +73,7 @@ object ChatRoutes {
       } yield response
 
     // GET /api/v1/chat/sessions/:id?limit=&offset= - Get session with its latest messages
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? LimitParam(limit) +& OffsetParam(offset) =>
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? LimitParam(limit) +& OffsetParam(offset) as principal =>
       for {
         sessionOpt <- chatRegistry.getSession(id)
         response <- sessionOpt match {
@@ -87,7 +92,7 @@ object ChatRoutes {
       } yield response
 
     // PUT /api/v1/chat/sessions/:id - Update session
-    case req @ PUT -> Root / "api" / "v1" / "chat" / "sessions" / id =>
+    case (req @ PUT -> Root / "api" / "v1" / "chat" / "sessions" / id) as principal =>
       for {
         body <- req.as[UpdateChatSessionRequest]
         updated <- chatRegistry.updateSession(id, body)
@@ -98,7 +103,7 @@ object ChatRoutes {
       } yield response
 
     // DELETE /api/v1/chat/sessions/:id - Delete session
-    case DELETE -> Root / "api" / "v1" / "chat" / "sessions" / id =>
+    case DELETE -> Root / "api" / "v1" / "chat" / "sessions" / id as principal =>
       for {
         deleted <- chatRegistry.deleteSession(id)
         response <- if (deleted) {
@@ -113,12 +118,14 @@ object ChatRoutes {
     // ============================================================
 
     // POST /api/v1/chat/sessions/:id/messages - Send message (non-streaming)
-    case req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" =>
+    case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages") as principal =>
       for {
         sessionOpt <- chatRegistry.getSession(sessionId)
         response <- sessionOpt match {
           case None =>
             NotFound(ErrorResponse.notFound(s"Session '$sessionId' not found").asJson)
+          case Some(session) if !principal.canAccessPattern(session.collectionPattern) =>
+            Authz.requirePattern(principal, session.collectionPattern)(IO.never)
           case Some(session) =>
             for {
               body <- req.as[SendChatMessageRequest]
@@ -213,12 +220,14 @@ object ChatRoutes {
 
     // POST /api/v1/chat/sessions/:id/messages/stream - Send message with SSE streaming. The answer
     // arrives as one event once complete: llm4s has no streaming RAG answer API (llm4s/llm4s#2717).
-    case req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" / "stream" =>
+    case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" / "stream") as principal =>
       for {
         sessionOpt <- chatRegistry.getSession(sessionId)
         response <- sessionOpt match {
           case None =>
             NotFound(ErrorResponse.notFound(s"Session '$sessionId' not found").asJson)
+          case Some(session) if !principal.canAccessPattern(session.collectionPattern) =>
+            Authz.requirePattern(principal, session.collectionPattern)(IO.never)
           case Some(session) =>
             for {
               body <- req.as[SendChatMessageRequest]
@@ -337,7 +346,7 @@ object ChatRoutes {
       } yield response
 
     // PUT /api/v1/chat/messages/:id/rate - Rate a message
-    case req @ PUT -> Root / "api" / "v1" / "chat" / "messages" / messageId / "rate" =>
+    case (req @ PUT -> Root / "api" / "v1" / "chat" / "messages" / messageId / "rate") as principal =>
       for {
         body <- req.as[RateChatMessageRequest]
         // Validate rating
@@ -373,7 +382,7 @@ object ChatRoutes {
           } yield result
         }
       } yield response
-  }
+  })
 
   /** Prefix of the assistant message stored when answering failed. */
   private[routes] val ErrorReplyPrefix: String = "Sorry, I encountered an error:"

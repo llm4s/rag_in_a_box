@@ -6,6 +6,7 @@ import io.circe.syntax._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -95,10 +96,10 @@ object CollectionPermissionRoutes {
       )
     }.map(_.toSet)
 
-  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/collections - Create collection
-    case req @ POST -> Root / "api" / "v1" / "collections" =>
+    case (req @ POST -> Root / "api" / "v1" / "collections") as principal =>
       for {
         body <- req.as[CreateCollectionRequest]
         path <- IO.fromEither(
@@ -131,7 +132,7 @@ object CollectionPermissionRoutes {
       } yield response
 
     // GET /api/v1/collections - List collections (with optional pattern filter)
-    case GET -> Root / "api" / "v1" / "collections" :? PatternParam(patternOpt) =>
+    case GET -> Root / "api" / "v1" / "collections" :? PatternParam(patternOpt) as principal =>
       val pattern = patternOpt
         .flatMap(p => CollectionPattern.parse(p).toOption)
         .getOrElse(CollectionPattern.All)
@@ -153,7 +154,7 @@ object CollectionPermissionRoutes {
       } yield response
 
     // GET /api/v1/collections/accessible - List collections accessible to current user
-    case req @ GET -> Root / "api" / "v1" / "collections" / "accessible" :? PatternParam(patternOpt) =>
+    case (req @ GET -> Root / "api" / "v1" / "collections" / "accessible" :? PatternParam(patternOpt)) as principal =>
       val pattern = patternOpt
         .flatMap(p => CollectionPattern.parse(p).toOption)
         .getOrElse(CollectionPattern.All)
@@ -178,27 +179,27 @@ object CollectionPermissionRoutes {
     // GET /api/v1/collections/:path - Get collection by path
     // Note: path can contain slashes, so we match the remainder
     // Exclude "configs" which is handled by CollectionConfigRoutes
-    case GET -> Root / "api" / "v1" / "collections" / path if !path.contains("/") && path != "configs" =>
+    case GET -> Root / "api" / "v1" / "collections" / path as principal if !path.contains("/") && path != "configs" =>
       getCollection(collectionStore, path)
 
     // Paths ending in /config belong to CollectionConfigRoutes (GET /collections/{c}/config);
     // this catch-all is mounted later in the Router and would otherwise shadow it.
-    case GET -> "api" /: "v1" /: "collections" /: rest
+    case GET -> "api" /: "v1" /: "collections" /: rest as principal
         if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" &&
           !(rest.segments.size > 1 && rest.segments.last.decoded() == "config") =>
       val path = rest.segments.mkString("/")
       getCollection(collectionStore, path)
 
     // PUT /api/v1/collections/:path/permissions - Update collection permissions
-    case req @ PUT -> Root / "api" / "v1" / "collections" / path / "permissions" =>
+    case (req @ PUT -> Root / "api" / "v1" / "collections" / path / "permissions") as principal =>
       updateCollectionPermissions(req, collectionStore, principalStore, path)
 
     // DELETE /api/v1/collections/:path - Delete collection
-    case DELETE -> Root / "api" / "v1" / "collections" / path =>
+    case DELETE -> Root / "api" / "v1" / "collections" / path as principal =>
       deleteCollection(collectionStore, path)
 
     // GET /api/v1/collections/:path/stats - Get collection statistics
-    case GET -> Root / "api" / "v1" / "collections" / path / "stats" =>
+    case GET -> Root / "api" / "v1" / "collections" / path / "stats" as principal =>
       getCollectionStats(collectionStore, path)
   }
 

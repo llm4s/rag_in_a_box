@@ -154,6 +154,15 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       embeddingLatencyMs = Some(12), searchLatencyMs = Some(8), llmLatencyMs = Some(900), chunksRetrieved = 5,
       chunksUsed = 5, embeddingTokens = Some(7), promptTokens = Some(1200), completionTokens = Some(80), costUsd = Some(0.0042)
     )),
+    // Authentication
+    entry("AuthModeResponse", org.llm4s.ragbox.routes.AuthModeResponse(
+      mode = "basic", authRequired = true, methods = Seq("password", "api-key"), oauthLoginUrl = Some("/api/v1/oauth/login")
+    )),
+    entry("LoginResponse", org.llm4s.ragbox.routes.LoginResponse("jwt", "admin", "admin", 3600L)),
+    entry("PrincipalResponse", org.llm4s.ragbox.routes.PrincipalResponse(
+      id = "token:1", username = "ingester", role = "user", isAdmin = false, authMethod = "access-token",
+      groups = Seq("eng"), scopes = Some(Seq("query")), collections = Some(Seq("eng")), userId = Some(1)
+    )),
     // Errors
     entry("ErrorResponse", ErrorResponse("validation_failed", "Configuration validation failed", Some("topK: too large")))
   )

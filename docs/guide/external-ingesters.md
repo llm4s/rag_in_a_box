@@ -368,18 +368,25 @@ class SharePointIngester {
 
 ## Authentication for Ingesters
 
-When authentication is enabled, ingesters need an access token:
+When authentication is enabled (`API_KEY` set, or `AUTH_MODE=basic`/`oauth`), ingesters need
+an [access token](access-tokens.md). Give it only the scopes it needs and, ideally, restrict it
+to the collections it writes:
 
 ```bash
-# Create an access token (admin only)
+# Create an access token (administrators: API_KEY, an admin JWT, or an admin-scoped token)
 curl -X POST "http://localhost:8080/api/v1/tokens" \
-  -H "Authorization: Bearer admin-token" \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "confluence-ingester",
-    "scopes": ["documents:write", "sync:write", "sync:read"]
+    "scopes": ["documents:write", "sync:write", "sync:read"],
+    "collections": ["confluence"]
   }'
 ```
+
+A token restricted to `confluence` may write to `confluence` and its sub-collections
+(`confluence/ENG`, ...). Writes to other collections answer `403`, and `POST /api/v1/sync`
+with `keepDocumentIds` only prunes documents inside the token's collections.
 
 Response:
 ```json

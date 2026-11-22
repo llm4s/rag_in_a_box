@@ -76,6 +76,7 @@ RAG in a Box includes pre-configured settings for major identity providers:
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session duration in seconds (24 hours) |
 | `OAUTH_STATE_TTL` | `300` | Auth state and pre-auth cookie lifetime in seconds (5 minutes) |
 | `OAUTH_SESSION_STORAGE` | `memory` | Session storage: `memory` (single instance) or `postgres` |
+| `OAUTH_ADMIN_GROUPS` | (none) | Comma-separated groups (from the groups claim) whose members are ragbox administrators. With none, no SSO user is an administrator |
 | `OAUTH_SCOPES` | `openid profile email` | OAuth scopes to request |
 
 ---
@@ -253,7 +254,15 @@ OAuth authentication exposes these endpoints:
 4. Provider redirects to `OAUTH_REDIRECT_URI` (`/api/v1/oauth/callback`) with `code` and `state`
 5. Server checks the pre-auth cookie matches `state`, exchanges the code (PKCE), validates
    the ID token (including `nonce`), invalidates any previous session, creates a new session
-6. Server clears the pre-auth cookie, sets the session cookie and redirects to `/admin/`
+6. Server clears the pre-auth cookie, sets the session cookie and redirects to the
+   `redirect_after` passed to `/login` if it is a relative path on this server (starts with a
+   single `/`, no scheme, host or backslash), otherwise to `/admin/`
+7. Every later request authenticates with the session cookie; `GET /api/v1/auth/me` returns the
+   principal (`authMethod: "oidc"`, `isAdmin` from `OAUTH_ADMIN_GROUPS`)
+
+In oauth mode `API_KEY` (if set) and `rat_` [access tokens](guide/access-tokens.md) are accepted
+as well, for integrations; password login (`/api/v1/auth/login`) is disabled. Expired sessions
+and login states are removed every `max(60, OAUTH_STATE_TTL)` seconds.
 
 A callback without the pre-auth cookie (for example, a link opened in a different browser,
 or after `OAUTH_STATE_TTL` has elapsed) is rejected with `400`; start the login again.

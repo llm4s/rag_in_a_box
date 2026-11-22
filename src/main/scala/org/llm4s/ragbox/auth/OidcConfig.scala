@@ -70,7 +70,8 @@ case class OAuthConfig(
     session: OAuthSessionConfig = OAuthSessionConfig(),
     pkceEnabled: Boolean = true,
     stateTtl: Int = 300, // 5 minutes in seconds
-    sessionStorage: OAuthSessionStorage = OAuthSessionStorage.Memory
+    sessionStorage: OAuthSessionStorage = OAuthSessionStorage.Memory,
+    adminGroups: Set[String] = Set.empty // members of these groups are ragbox administrators
 )
 
 object OAuthConfig:
@@ -134,6 +135,18 @@ case class OAuthLoginResponse(
     authorizationUrl: String,
     state: String,
     browserBinding: String
+)
+
+/**
+ * Result of a successful OAuth callback.
+ *
+ * @param redirectAfterLogin the `redirect_after` the login was started with. It is client
+ *                           input: callers must only redirect to it after checking it is a
+ *                           safe relative path (see `OAuthRoutes.safeRedirect`).
+ */
+case class OAuthCallbackResult(
+    session: OAuthSessionData,
+    redirectAfterLogin: Option[String]
 )
 
 /** OAuth userinfo response */

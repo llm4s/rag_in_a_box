@@ -10,7 +10,9 @@ import org.http4s.implicits._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.llm4s.ragbox.auth._
-import org.llm4s.ragbox.config.{AuthConfig, AuthMode, BasicAuthConfig}
+import org.llm4s.ragbox.config.{AuthConfig, AuthMode, BasicAuthConfig, SecurityConfig}
+import org.llm4s.ragbox.middleware.Authenticator
+import cats.syntax.all._
 
 class AuthRoutesSpec extends AnyFlatSpec with Matchers {
 
@@ -69,7 +71,15 @@ class AuthRoutesSpec extends AnyFlatSpec with Matchers {
     val authService = new AuthService(registry, testConfig)
     // Initialize - create admin user
     authService.createUser("admin", "adminpass", UserRole.Admin).unsafeRunSync()
-    val routes = AuthRoutes.routes(authService, registry, testConfig.jwtExpiration)
+    // Public routes plus the protected ones behind the real authenticator, as RagboxApp mounts them
+    val security = SecurityConfig(apiKey = None, auth = testConfig)
+    val authenticator = new Authenticator(
+      security,
+      validateAccessToken = _ => IO.pure(None),
+      validateJwt = authService.validateToken,
+      lookupUser = registry.getById
+    )
+    val routes = AuthRoutes.publicRoutes(authService, security) <+> authenticator(AuthRoutes.routes(authService, registry))
     (routes, authService, registry)
   }
 
@@ -131,9 +141,58 @@ class AuthRoutesSpec extends AnyFlatSpec with Matchers {
     response.status shouldBe Status.Ok
     val body = response.as[String].unsafeRunSync()
     body should include("admin")
+    body should include("\"authMethod\":\"password\"")
+    body should include("\"isAdmin\":true")
   }
 
-  it should "reject request without token" in {
+  it should "reject the token of a user that has since been deleted" in {
+    val (routes, authService, registry) = createRoutes()
+    val user = authService.createUser("gone", "password", UserRole.User).unsafeRunSync().toOption.get
+    val token = authService.generateToken(user)
+    registry.delete(user.id).unsafeRunSync()
+
+    val request = Request[IO](Method.GET, uri"/api/v1/auth/me")
+      .withHeaders(headers.Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+
+    routes.orNotFound.run(request).unsafeRunSync().status shouldBe Status.Unauthorized
+  }
+
+  it should "reject a token signed with another secret" in {
+    val (routes, _, registry) = createRoutes()
+    val other = new AuthService(registry, testConfig.copy(jwtSecret = "another-secret-key-for-testing-32ch"))
+    val token = other.generateToken(registry.getByUsername("admin").unsafeRunSync().get)
+
+    val request = Request[IO](Method.GET, uri"/api/v1/auth/me")
+      .withHeaders(headers.Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+
+    routes.orNotFound.run(request).unsafeRunSync().status shouldBe Status.Unauthorized
+  }
+
+  "GET /api/v1/auth/mode" should "describe basic mode without authentication" in {
+    val (routes, _, _) = createRoutes()
+    val response = routes.orNotFound.run(Request[IO](Method.GET, uri"/api/v1/auth/mode")).unsafeRunSync()
+    response.status shouldBe Status.Ok
+    val json = parse(response.as[String].unsafeRunSync()).toOption.get
+    json.hcursor.get[String]("mode") shouldBe Right("basic")
+    json.hcursor.get[Boolean]("authRequired") shouldBe Right(true)
+    json.hcursor.get[List[String]]("methods") shouldBe Right(List("password"))
+  }
+
+  "POST /api/v1/auth/login" should "be refused outside basic mode" in {
+    val registry = new InMemoryUserRegistry()
+    val authService = new AuthService(registry, testConfig.copy(mode = AuthMode.Open))
+    authService.createUser("admin", "admin", UserRole.Admin).unsafeRunSync()
+    val security = SecurityConfig(apiKey = Some("k"), auth = testConfig.copy(mode = AuthMode.Open))
+    val routes = AuthRoutes.publicRoutes(authService, security)
+
+    val request = Request[IO](Method.POST, uri"/api/v1/auth/login")
+      .withEntity("""{"username": "admin", "password": "admin"}""")
+      .withContentType(headers.`Content-Type`(MediaType.application.json))
+
+    routes.orNotFound.run(request).unsafeRunSync().status shouldBe Status.BadRequest
+  }
+
+  "GET /api/v1/auth/me" should "reject request without token" in {
     val (routes, _, _) = createRoutes()
 
     val request = Request[IO](Method.GET, uri"/api/v1/auth/me")

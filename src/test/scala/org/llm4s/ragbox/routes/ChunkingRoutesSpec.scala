@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import org.http4s._
@@ -13,7 +15,7 @@ import org.llm4s.ragbox.testkit.TestFixtures
 class ChunkingRoutesSpec extends AnyFlatSpec with Matchers {
 
   private val chunkingService = ChunkingService(TestFixtures.testAppConfig)
-  private val routes = ChunkingRoutes.routes(chunkingService)
+  private val routes = ChunkingRoutes.routes(chunkingService).asAdmin
 
   // ============================================================
   // POST /api/v1/chunking/preview

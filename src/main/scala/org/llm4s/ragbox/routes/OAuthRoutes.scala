@@ -51,7 +51,8 @@ class OAuthRoutes(
     // ============================================================
     case GET -> Root / "api" / "v1" / "oauth" / "login" :? RedirectAfterParam(redirectAfter) =>
       for
-        login <- oidcService.initiateLogin(redirectAfter)
+        // Only keep a safe relative target; anything else falls back to /admin/ after login
+        login <- oidcService.initiateLogin(redirectAfter.flatMap(OAuthRoutes.safeRedirect))
         authUri <- IO.fromEither(Uri.fromString(login.authorizationUrl))
         result <- Found(Location(authUri)).map(_.addCookie(createPreAuthCookie(login.browserBinding)))
       yield result
@@ -134,16 +135,17 @@ class OAuthRoutes(
 
   private def callbackResponse(
       req: Request[IO],
-      result: Either[OidcError, OAuthSessionData]
+      result: Either[OidcError, OAuthCallbackResult]
   ): IO[Response[IO]] =
     result match
-      case Right(sessionData) =>
+      case Right(OAuthCallbackResult(sessionData, redirectAfter)) =>
         // Session fixation: invalidate any session id the browser already carried
         val previousSession = req.cookies.find(_.name == sessionConfig.cookieName).map(_.content)
         val rotate = previousSession.filter(_ != sessionData.sessionId).fold(IO.unit)(oidcService.logout)
 
-        // For now, redirect to admin UI root
-        rotate *> SeeOther(Location(Uri.unsafeFromString("/admin/"))).map(_.addCookie(createSessionCookie(sessionData.sessionId)))
+        // Back to where the login started, if that is a safe relative path, else the admin UI
+        val target = redirectAfter.flatMap(OAuthRoutes.safeRedirect).getOrElse(OAuthRoutes.DefaultRedirect)
+        rotate *> SeeOther(Location(Uri.unsafeFromString(target))).map(_.addCookie(createSessionCookie(sessionData.sessionId)))
 
       case Left(OidcError.InvalidState(msg)) =>
         BadRequest(ErrorResponse.badRequest(s"Invalid state: $msg").asJson)
@@ -216,6 +218,29 @@ class OAuthRoutes(
     )
 
 object OAuthRoutes:
+
+  /** Where the callback sends the browser when there is no (safe) `redirect_after`. */
+  val DefaultRedirect = "/admin/"
+
+  /**
+   * `redirect_after` is attacker-controllable, so it is only honoured when it is a relative
+   * path on this server: it must start with a single `/`, must not start with `//` or `/\`
+   * (protocol-relative URLs), and must not contain a scheme, backslashes, or control characters.
+   *
+   * @return the path to redirect to, or None if it is not safe
+   */
+  def safeRedirect(target: String): Option[String] =
+    val t = target.trim
+    val ok =
+      t.startsWith("/") &&
+        !t.startsWith("//") &&
+        !t.contains('\\') &&
+        !t.exists(c => c.isControl || c.isWhitespace) &&
+        !t.takeWhile(c => c != '?' && c != '#').contains(':') &&
+        t.length <= 2048 &&
+        Uri.fromString(t).toOption.exists(u => u.scheme.isEmpty && u.authority.isEmpty)
+    Option.when(ok)(t)
+
   def apply(
       oidcService: OidcService[IO],
       sessionConfig: OAuthSessionConfig,

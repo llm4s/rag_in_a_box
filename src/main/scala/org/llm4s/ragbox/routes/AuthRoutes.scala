@@ -11,6 +11,7 @@ import org.http4s.dsl.io._
 import org.http4s.headers.`WWW-Authenticate`
 import org.http4s.Challenge
 import org.llm4s.ragbox.auth._
+import org.llm4s.ragbox.config.{AuthMode, SecurityConfig}
 import org.llm4s.ragbox.model.ErrorResponse
 import org.llm4s.ragbox.model.Codecs._
 
@@ -111,171 +112,202 @@ object UserListResponse {
 }
 
 /**
- * HTTP routes for authentication.
+ * Response of `GET /api/v1/auth/mode`: how clients (the admin UI) should authenticate.
+ *
+ * @param mode           configured auth mode: open, basic or oauth
+ * @param authRequired   false only in open mode without an API key
+ * @param methods        accepted interactive login methods: `password`, `sso`, `api-key`
+ * @param oauthLoginUrl  where to send the browser for SSO (oauth mode)
+ */
+final case class AuthModeResponse(
+  mode: String,
+  authRequired: Boolean,
+  methods: Seq[String],
+  oauthLoginUrl: Option[String]
+)
+
+object AuthModeResponse {
+  implicit val encoder: Encoder[AuthModeResponse] = deriveEncoder
+  implicit val decoder: Decoder[AuthModeResponse] = deriveDecoder
+
+  def from(security: SecurityConfig): AuthModeResponse = {
+    val apiKey = security.apiKey.exists(_.nonEmpty)
+    val mode = security.auth.mode
+    val methods =
+      (if (mode == AuthMode.Basic) Seq("password") else Nil) ++
+        (if (mode == AuthMode.OAuth) Seq("sso") else Nil) ++
+        (if (apiKey) Seq("api-key") else Nil)
+    AuthModeResponse(
+      mode = mode match {
+        case AuthMode.Open => "open"
+        case AuthMode.Basic => "basic"
+        case AuthMode.OAuth => "oauth"
+      },
+      authRequired = mode != AuthMode.Open || apiKey,
+      methods = methods,
+      oauthLoginUrl = if (mode == AuthMode.OAuth) Some("/api/v1/oauth/login") else None
+    )
+  }
+}
+
+/**
+ * Response of `GET /api/v1/auth/me`: the authenticated principal.
+ */
+final case class PrincipalResponse(
+  id: String,
+  username: String,
+  role: String,
+  isAdmin: Boolean,
+  authMethod: String,
+  groups: Seq[String],
+  scopes: Option[Seq[String]],
+  collections: Option[Seq[String]],
+  userId: Option[Int]
+)
+
+object PrincipalResponse {
+  implicit val encoder: Encoder[PrincipalResponse] = deriveEncoder
+  implicit val decoder: Decoder[PrincipalResponse] = deriveDecoder
+
+  def from(p: Principal): PrincipalResponse = PrincipalResponse(
+    id = p.id,
+    username = p.name,
+    role = p.role,
+    isAdmin = p.isAdmin,
+    authMethod = p.method.name,
+    groups = p.groups.toSeq.sorted,
+    scopes = p.scopes.map(_.toSeq.sorted),
+    collections = p.collections.map(_.toSeq.sorted),
+    userId = p.userId
+  )
+}
+
+/**
+ * HTTP routes for authentication and user management.
+ *
+ * [[publicRoutes]] (login, mode discovery) are mounted in front of the authenticator;
+ * [[routes]] need an authenticated [[Principal]].
  */
 object AuthRoutes {
 
-  /**
-   * Helper to create proper Unauthorized response with WWW-Authenticate header.
-   */
-  private def unauthorized(message: String): IO[Response[IO]] = {
+  private def unauthorized(message: String): IO[Response[IO]] =
     Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
       .map(_.withEntity(ErrorResponse("unauthorized", message).asJson))
-  }
 
-  def routes(authService: AuthService, userRegistry: UserRegistry, jwtExpiration: Long): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  /**
+   * Unauthenticated endpoints:
+   *  - `POST /api/v1/auth/login` - exchange username/password for a JWT (basic mode only)
+   *  - `GET  /api/v1/auth/mode`  - which login methods the server accepts
+   */
+  def publicRoutes(authService: AuthService, security: SecurityConfig): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
-    // POST /api/v1/auth/login - Login and get JWT token
     case req @ POST -> Root / "api" / "v1" / "auth" / "login" =>
-      for {
-        body <- req.as[LoginRequest]
-        result <- authService.authenticate(body.username, body.password)
-        response <- result match {
-          case AuthResult.Success(user, token) =>
-            Ok(LoginResponse(
-              token = token,
-              username = user.username,
-              role = user.role.name,
-              expiresIn = jwtExpiration
+      if (security.auth.mode != AuthMode.Basic) {
+        // In other modes the bootstrap admin may still have a development password, and the
+        // authenticator would not accept the JWT anyway.
+        BadRequest(ErrorResponse.badRequest(
+          "Password login is only available when AUTH_MODE=basic"
+        ).asJson)
+      } else {
+        for {
+          body <- req.as[LoginRequest]
+          result <- authService.authenticate(body.username, body.password)
+          response <- result match {
+            case AuthResult.Success(user, token) =>
+              Ok(LoginResponse(
+                token = token,
+                username = user.username,
+                role = user.role.name,
+                expiresIn = security.auth.jwtExpiration
+              ).asJson)
+            case AuthResult.Failure(_) =>
+              // Don't reveal whether the user exists
+              unauthorized("Invalid username or password")
+          }
+        } yield response
+      }
+
+    case GET -> Root / "api" / "v1" / "auth" / "mode" =>
+      Ok(AuthModeResponse.from(security).asJson)
+  }
+
+  /**
+   * Authenticated endpoints:
+   *  - `GET    /api/v1/auth/me`                 - the current principal
+   *  - `PUT    /api/v1/auth/password`           - change own password (password logins)
+   *  - `POST   /api/v1/users`                   - create a user (admin)
+   *  - `GET    /api/v1/users`                   - list users (admin)
+   *  - `DELETE /api/v1/users/{id}`              - delete a user (admin)
+   *  - `PUT    /api/v1/users/{id}/password`     - reset a password (admin)
+   */
+  def routes(authService: AuthService, userRegistry: UserRegistry): AuthedRoutes[Principal, IO] =
+    AuthedRoutes.of[Principal, IO] {
+
+      case GET -> Root / "api" / "v1" / "auth" / "me" as principal =>
+        Ok(PrincipalResponse.from(principal).asJson)
+
+      case (req @ PUT -> Root / "api" / "v1" / "auth" / "password") as principal =>
+        principal.userId match {
+          case Some(userId) =>
+            for {
+              body <- req.as[ChangePasswordRequest]
+              result <- authService.changePassword(userId, body.currentPassword, body.newPassword)
+              response <- result match {
+                case Right(_) => Ok(Map("message" -> "Password changed successfully").asJson)
+                case Left(msg) => BadRequest(ErrorResponse.badRequest(msg).asJson)
+              }
+            } yield response
+          case None =>
+            BadRequest(ErrorResponse.badRequest("Only password-login users can change a password").asJson)
+        }
+
+      case (req @ POST -> Root / "api" / "v1" / "users") as principal =>
+        Authz.requireAdmin(principal) {
+          for {
+            body <- req.as[CreateUserRequest]
+            role = body.role.map(UserRole.fromString).getOrElse(UserRole.User)
+            result <- authService.createUser(body.username, body.password, role)
+            response <- result match {
+              case Right(user) =>
+                Created(CreateUserResponse(user.id, user.username, user.role.name).asJson)
+              case Left(msg) =>
+                BadRequest(ErrorResponse.badRequest(msg).asJson)
+            }
+          } yield response
+        }
+
+      case GET -> Root / "api" / "v1" / "users" as principal =>
+        Authz.requireAdmin(principal) {
+          for {
+            users <- userRegistry.list()
+            response <- Ok(UserListResponse(
+              users = users.map(u => UserInfoResponse(u.id, u.username, u.role.name)),
+              total = users.size
             ).asJson)
-          case AuthResult.Failure(message) =>
-            unauthorized(message)
+          } yield response
         }
-      } yield response
 
-    // GET /api/v1/auth/me - Get current user info (requires auth)
-    case req @ GET -> Root / "api" / "v1" / "auth" / "me" =>
-      extractToken(req) match {
-        case Some(token) =>
-          authService.validateToken(token) match {
-            case TokenValidationResult.Valid(userId, username, role) =>
-              Ok(UserInfoResponse(userId, username, role.name).asJson)
-            case TokenValidationResult.Expired =>
-              unauthorized("Token expired")
-            case TokenValidationResult.Invalid(msg) =>
-              unauthorized(msg)
+      case DELETE -> Root / "api" / "v1" / "users" / IntVar(id) as principal =>
+        Authz.requireAdmin(principal) {
+          userRegistry.delete(id).flatMap { deleted =>
+            if (deleted) NoContent()
+            else NotFound(ErrorResponse.notFound(s"User $id not found").asJson)
           }
-        case None =>
-          unauthorized("Missing authorization token")
-      }
-
-    // PUT /api/v1/auth/password - Change current user's password
-    case req @ PUT -> Root / "api" / "v1" / "auth" / "password" =>
-      extractToken(req) match {
-        case Some(token) =>
-          authService.validateToken(token) match {
-            case TokenValidationResult.Valid(userId, _, _) =>
-              for {
-                body <- req.as[ChangePasswordRequest]
-                result <- authService.changePassword(userId, body.currentPassword, body.newPassword)
-                response <- result match {
-                  case Right(_) =>
-                    Ok(Map("message" -> "Password changed successfully").asJson)
-                  case Left(msg) =>
-                    BadRequest(ErrorResponse.badRequest(msg).asJson)
-                }
-              } yield response
-            case TokenValidationResult.Expired =>
-              unauthorized("Token expired")
-            case TokenValidationResult.Invalid(msg) =>
-              unauthorized(msg)
-          }
-        case None =>
-          unauthorized("Missing authorization token")
-      }
-
-    // POST /api/v1/users - Create a new user (admin only)
-    case req @ POST -> Root / "api" / "v1" / "users" =>
-      requireAdmin(req, authService) {
-        for {
-          body <- req.as[CreateUserRequest]
-          role = body.role.map(UserRole.fromString).getOrElse(UserRole.User)
-          result <- authService.createUser(body.username, body.password, role)
-          response <- result match {
-            case Right(user) =>
-              Created(CreateUserResponse(user.id, user.username, user.role.name).asJson)
-            case Left(msg) =>
-              BadRequest(ErrorResponse.badRequest(msg).asJson)
-          }
-        } yield response
-      }
-
-    // GET /api/v1/users - List all users (admin only)
-    case req @ GET -> Root / "api" / "v1" / "users" =>
-      requireAdmin(req, authService) {
-        for {
-          users <- userRegistry.list()
-          response <- Ok(UserListResponse(
-            users = users.map(u => UserInfoResponse(u.id, u.username, u.role.name)),
-            total = users.size
-          ).asJson)
-        } yield response
-      }
-
-    // DELETE /api/v1/users/:id - Delete a user (admin only)
-    case req @ DELETE -> Root / "api" / "v1" / "users" / IntVar(id) =>
-      requireAdmin(req, authService) {
-        for {
-          result <- userRegistry.delete(id)
-          response <- if (result) {
-            NoContent()
-          } else {
-            NotFound(ErrorResponse.notFound(s"User $id not found").asJson)
-          }
-        } yield response
-      }
-
-    // PUT /api/v1/users/:id/password - Reset user password (admin only)
-    case req @ PUT -> Root / "api" / "v1" / "users" / IntVar(id) / "password" =>
-      requireAdmin(req, authService) {
-        for {
-          body <- req.as[Map[String, String]]
-          newPassword = body.getOrElse("password", "")
-          result <- if (newPassword.isEmpty) {
-            IO.pure(Left("Password is required"))
-          } else {
-            authService.resetPassword(id, newPassword)
-          }
-          response <- result match {
-            case Right(_) =>
-              Ok(Map("message" -> "Password reset successfully").asJson)
-            case Left(msg) =>
-              BadRequest(ErrorResponse.badRequest(msg).asJson)
-          }
-        } yield response
-      }
-  }
-
-  /**
-   * Extract JWT token from Authorization header.
-   */
-  private def extractToken(req: Request[IO]): Option[String] = {
-    req.headers.get(org.typelevel.ci.CIString("Authorization"))
-      .map(_.head.value)
-      .filter(_.startsWith("Bearer "))
-      .map(_.substring(7))
-  }
-
-  /**
-   * Require admin role for an operation.
-   */
-  private def requireAdmin(req: Request[IO], authService: AuthService)(
-    operation: IO[Response[IO]]
-  ): IO[Response[IO]] = {
-    extractToken(req) match {
-      case Some(token) =>
-        authService.validateToken(token) match {
-          case TokenValidationResult.Valid(_, _, role) if role == UserRole.Admin =>
-            operation
-          case TokenValidationResult.Valid(_, _, _) =>
-            Forbidden(ErrorResponse("forbidden", "Admin access required").asJson)
-          case TokenValidationResult.Expired =>
-            unauthorized("Token expired")
-          case TokenValidationResult.Invalid(msg) =>
-            unauthorized(msg)
         }
-      case None =>
-        unauthorized("Missing authorization token")
+
+      case (req @ PUT -> Root / "api" / "v1" / "users" / IntVar(id) / "password") as principal =>
+        Authz.requireAdmin(principal) {
+          for {
+            body <- req.as[Map[String, String]]
+            newPassword = body.getOrElse("password", "")
+            result <-
+              if (newPassword.isEmpty) IO.pure(Left("Password is required"))
+              else authService.resetPassword(id, newPassword)
+            response <- result match {
+              case Right(_) => Ok(Map("message" -> "Password reset successfully").asJson)
+              case Left(msg) => BadRequest(ErrorResponse.badRequest(msg).asJson)
+            }
+          } yield response
+        }
     }
-  }
 }

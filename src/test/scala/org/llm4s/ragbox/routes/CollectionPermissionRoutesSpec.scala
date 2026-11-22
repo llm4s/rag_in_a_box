@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.routes
 
+import org.llm4s.ragbox.testkit.TestAuth.*
+
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import io.circe.parser._
@@ -22,7 +24,7 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
   override def beforeEach(): Unit = {
     mockCollectionStore = MockCollectionStore()
     mockPrincipalStore = MockPrincipalStore()
-    routes = CollectionPermissionRoutes.routes(mockCollectionStore, mockPrincipalStore)
+    routes = CollectionPermissionRoutes.routes(mockCollectionStore, mockPrincipalStore).asAdmin
   }
 
   "GET /api/v1/collections/{c}/config" should "fall through to CollectionConfigRoutes" in {

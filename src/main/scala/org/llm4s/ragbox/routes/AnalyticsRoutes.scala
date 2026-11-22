@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import io.circe.syntax._
 import org.http4s._
+import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -39,13 +40,13 @@ object AnalyticsRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(queryLogRegistry: QueryLogRegistryBase): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  def routes(queryLogRegistry: QueryLogRegistryBase): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/analytics/queries - List query logs with pagination
     // Query params: from, to, collection, page, pageSize
     case GET -> Root / "api" / "v1" / "analytics" / "queries"
         :? FromParam(fromOpt) +& ToParam(toOpt) +& CollectionParam(collOpt)
-        +& PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) =>
+        +& PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) as principal =>
       for {
         result <- queryLogRegistry.list(
           from = fromOpt,
@@ -73,7 +74,7 @@ object AnalyticsRoutes {
     // GET /api/v1/analytics/queries/summary - Get analytics summary
     // Query params: from, to (defaults to last 7 days)
     case GET -> Root / "api" / "v1" / "analytics" / "queries" / "summary"
-        :? FromParam(fromOpt) +& ToParam(toOpt) =>
+        :? FromParam(fromOpt) +& ToParam(toOpt) as principal =>
       for {
         now <- IO.realTimeInstant
         from = fromOpt.getOrElse(now.minusSeconds(7 * 24 * 3600)) // Default: last 7 days
@@ -91,7 +92,7 @@ object AnalyticsRoutes {
       } yield response
 
     // GET /api/v1/analytics/queries/:id - Get single query log
-    case GET -> Root / "api" / "v1" / "analytics" / "queries" / id =>
+    case GET -> Root / "api" / "v1" / "analytics" / "queries" / id as principal =>
       for {
         result <- queryLogRegistry.get(id).attempt
         response <- result match {
@@ -108,7 +109,7 @@ object AnalyticsRoutes {
       } yield response
 
     // POST /api/v1/feedback - Submit feedback for a query
-    case req @ POST -> Root / "api" / "v1" / "feedback" =>
+    case (req @ POST -> Root / "api" / "v1" / "feedback") as principal =>
       for {
         body <- req.as[QueryFeedbackRequest]
         result <- (

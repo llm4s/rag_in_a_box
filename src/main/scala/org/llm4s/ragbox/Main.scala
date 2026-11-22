@@ -1,27 +1,19 @@
 package org.llm4s.ragbox
 
-import cats.effect.{ExitCode, IO, IOApp, Ref, Resource}
+import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.syntax.all._
 import com.comcast.ip4s._
 import org.http4s.ember.server.EmberServerBuilder
-import org.http4s.implicits._
-import org.http4s.server.Router
-import org.http4s.server.middleware.{CORS, Logger => HttpLogger}
 import org.typelevel.log4cats.LoggerFactory
 import org.typelevel.log4cats.slf4j.Slf4jFactory
 import org.typelevel.log4cats.Logger
 import cats.effect.std.Supervisor
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
-import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
+import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.db.ConnectionPool
-import org.llm4s.ragbox.ingestion.{IngestionScheduler, IngestionService}
-import org.llm4s.ragbox.service.{ChunkingService, ExperimentService, SuggestionService}
-import org.llm4s.ragbox.middleware.{AuthMiddleware, RateLimitMiddleware, RequestSizeMiddleware}
-import org.llm4s.ragbox.registry.{ChatSessionRegistry, ExperimentRegistry, PgCollectionConfigRegistry, QueryLogRegistry}
-import org.llm4s.ragbox.routes._
+import org.llm4s.ragbox.ingestion.IngestionService
 import org.llm4s.ragbox.service.RAGService
-import org.llm4s.ragbox.auth.{AuthService, UserRegistry, AccessTokenRegistry}
 
 import javax.sql.DataSource
 import scala.concurrent.duration._
@@ -53,7 +45,7 @@ object Main extends IOApp {
       _ <- logger.info(s"LLM model: ${config.llm.model}")
       _ <- logger.info(s"Database: ${config.database.effectiveHost}:${config.database.effectivePort}/${config.database.effectiveDatabase}${if (config.database.parsedUrl.isDefined) " (from DATABASE_URL)" else ""}")
       _ <- logger.info("Document registry: PostgreSQL (persistent)")
-      _ <- logger.info(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}")
+      _ <- logger.info(s"Authentication: mode=${config.security.auth.mode.toString.toLowerCase}, API key ${if (config.security.apiKey.exists(_.nonEmpty)) "set" else "not set"}${if (!config.security.isEnabled) " (open: every request is an anonymous administrator)" else ""}")
       _ <- logger.info(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}")
       _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}")
       _ <- logger.info(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}")
@@ -88,113 +80,8 @@ object Main extends IOApp {
           Resource.make(RAGService.create(config, dbPool))(_.close())
       }
 
-      // Create Runtime Config Manager
-      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, dbPool))(_.close())
-
-      // Create Collection Config Registry
-      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(dbPool))(_.close())
-
-      // Create Query Log Registry for analytics
-      queryLogRegistry <- Resource.make(QueryLogRegistry(dbPool))(_.close())
-
-      // Create Auth services
-      userRegistry <- Resource.make(UserRegistry(dbPool))(_.close())
-      tokenRegistry <- Resource.make(AccessTokenRegistry(dbPool))(_.close())
-      authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
-
-      // Create Ingestion service and scheduler
-      ingestionService = IngestionService(ragService, config.ingestion)
-      scheduler = IngestionScheduler(ingestionService, config.ingestion)
-
-      // Create Chunking service
-      chunkingService = ChunkingService(config)
-
-      // Create Suggestion service for optimization recommendations
-      suggestionService = SuggestionService(queryLogRegistry, config)
-
-      // Create Experiment service for A/B testing
-      experimentRegistry <- Resource.eval(ExperimentRegistry(dbPool))
-      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, dbPool)
-
-      // Create Chat Session Registry for persistent conversations
-      chatSessionRegistry <- Resource.eval(ChatSessionRegistry(dbPool))
-
-      // Base routes
-      baseRoutes = Seq(
-        "/" -> HealthRoutes.routes(ragService),
-        "/" -> DocumentRoutes.routes(ragService),
-        "/" -> QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config), Some(experimentService)),
-        "/" -> ConfigRoutes.routes(ragService),
-        "/" -> IngestionRoutes.routes(ingestionService),
-        "/" -> VisibilityRoutes.routes(ragService),
-        "/" -> ChunkingRoutes.routes(chunkingService),
-        "/" -> RuntimeConfigRoutes.routes(runtimeConfigManager),
-        "/" -> CollectionConfigRoutes.routes(collectionConfigRegistry, ragService.getDocumentRegistry, runtimeConfigManager),
-        "/" -> AnalyticsRoutes.routes(queryLogRegistry),
-        "/" -> SuggestionRoutes.routes(suggestionService),
-        "/" -> ExperimentRoutes.routes(experimentService),
-        "/" -> ChatRoutes.routes(chatSessionRegistry, ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config)),
-        "/" -> AuthRoutes.routes(authService, userRegistry, config.security.auth.jwtExpiration),
-        "/" -> TokenRoutes.routes(tokenRegistry, authService),
-        "/" -> StaticRoutes.routes
-      )
-
-      // Permission routes (only when SearchIndex is available)
-      permissionRoutes = (ragService.principals, ragService.collections) match {
-        case (Some(ps), Some(cs)) =>
-          Seq(
-            "/" -> PrincipalRoutes.routes(ps),
-            "/" -> CollectionPermissionRoutes.routes(cs, ps)
-          )
-        case _ => Seq.empty
-      }
-
-      metricsRoute = if (config.metrics.enabled) Seq("/" -> MetricsRoutes.routes(ragService)) else Seq.empty
-      allRoutes = Router((baseRoutes ++ permissionRoutes ++ metricsRoute)*)
-
-      // Create rate limit state
-      rateLimitState <- Resource.eval(RateLimitMiddleware.createState)
-
-      // Configure rate limiting
-      rateLimitConfig = RateLimitMiddleware.Config(
-        maxRequests = config.production.rateLimit.maxRequests,
-        window = config.production.rateLimit.windowSeconds.seconds,
-        enabled = config.production.rateLimit.enabled
-      )
-
-      // Configure request size limits
-      requestSizeConfig = RequestSizeMiddleware.Config(
-        maxBodySize = config.production.requestSize.maxBodySizeBytes,
-        enabled = config.production.requestSize.enabled
-      )
-
-      // Apply production middlewares (rate limiting, request size)
-      productionRoutes = RateLimitMiddleware(rateLimitConfig, rateLimitState)(
-        RequestSizeMiddleware(requestSizeConfig)(allRoutes)
-      )
-
-      // Apply authentication middleware
-      authedRoutes = AuthMiddleware(config.security)(productionRoutes).orNotFound
-
-      // Configure CORS policy based on settings
-      corsPolicy = if (config.production.cors.isAllowAll) {
-        CORS.policy.withAllowOriginAll
-      } else {
-        // Create CORS policy with specific allowed origins
-        val allowedOrigins = config.production.cors.allowedOrigins.map(_.toLowerCase).toSet
-        CORS.policy.withAllowOriginHostCi { origin =>
-          val originStr = origin.toString.toLowerCase
-          allowedOrigins.exists(allowed =>
-            originStr == allowed || originStr.endsWith(s"://$allowed")
-          )
-        }
-      }
-
-      // Add CORS and logging middleware
-      httpApp = HttpLogger.httpApp(
-        logHeaders = false,
-        logBody = false
-      )(corsPolicy(authedRoutes))
+      // Registries, services, routes and the middleware stack (shared with the full-stack tests)
+      app <- RagboxApp.resource(config, dbPool, ragService)
 
       // Parse host and port
       host = Host.fromString(config.server.host).getOrElse(host"0.0.0.0")
@@ -204,18 +91,17 @@ object Main extends IOApp {
       shutdownTimeout = config.production.shutdown.timeoutSeconds.seconds
       drainConnectionsTime = config.production.shutdown.drainConnectionsSeconds.seconds
 
-      // Start server with graceful shutdown
+      // Start server with graceful shutdown (WebSocket-capable app: /ws)
       _ <- EmberServerBuilder.default[IO]
         .withHost(host)
         .withPort(port)
-        .withHttpApp(httpApp)
+        .withHttpWebSocketApp(app.httpApp)
         .withShutdownTimeout(shutdownTimeout)
         .build
         .evalTap(_ => logger.info(s"Server started on http://${config.server.host}:${config.server.port}"))
         .evalTap(_ => logEndpoints())
-        .evalTap(_ => runOnStartupIngestion(config, ingestionService))
-        .evalTap(_ => startScheduler(scheduler, config, supervisor))
-        .evalTap(_ => startRateLimitCleanup(rateLimitState, rateLimitConfig, supervisor))
+        .evalTap(_ => runOnStartupIngestion(config, app.ingestionService))
+        .evalTap(_ => app.startBackgroundTasks(supervisor))
         .evalTap(_ => logger.info("Server ready. Press Ctrl+C to stop"))
         .onFinalize(
           logger.info("Initiating graceful shutdown...") *>
@@ -304,44 +190,6 @@ object Main extends IOApp {
     }
 
     Resource.make(acquire)(_.traverse_(si => IO.blocking(si.close())))
-  }
-
-  /**
-   * Start the ingestion scheduler if configured.
-   */
-  private def startScheduler(scheduler: IngestionScheduler, config: AppConfig, supervisor: Supervisor[IO]): IO[Unit] = {
-    if (config.ingestion.enabled && config.ingestion.schedule.isDefined) {
-      logger.info(s"Starting ingestion scheduler (schedule: ${config.ingestion.schedule.get})...") *>
-        scheduler.start(supervisor)
-    } else {
-      IO.unit
-    }
-  }
-
-  /**
-   * Start periodic cleanup of rate limiter state to prevent memory leaks.
-   * Runs every 5 minutes, cleaning up entries older than 2x the rate limit window.
-   */
-  private def startRateLimitCleanup(
-    state: Ref[IO, RateLimitMiddleware.RateLimitState],
-    config: RateLimitMiddleware.Config,
-    supervisor: Supervisor[IO]
-  ): IO[Unit] = {
-    if (!config.enabled) {
-      IO.unit
-    } else {
-      val cleanupInterval = 5.minutes
-      val maxAge = config.window * 2  // Keep entries for 2x the window duration
-
-      val cleanupLoop: IO[Unit] = (
-        IO.sleep(cleanupInterval) *>
-        RateLimitMiddleware.cleanup(state, maxAge) *>
-        logger.debug("Rate limiter cleanup completed")
-      ).foreverM
-
-      supervisor.supervise(cleanupLoop).void *>
-        logger.info(s"Rate limiter cleanup started (interval: $cleanupInterval, maxAge: $maxAge)")
-    }
   }
 
   /**
