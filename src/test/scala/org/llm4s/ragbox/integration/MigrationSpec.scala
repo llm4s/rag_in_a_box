@@ -98,9 +98,9 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
   "Migrating an empty database" should "create ragbox's full schema" in withContainers { pg =>
     val db = freshDatabase(pg, migrate = false)
     val result = migrate(db)
-    result.applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2")
-    result.schemaVersion shouldBe Some("2")
-    history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true))
+    result.applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2", "V3")
+    result.schemaVersion shouldBe Some("3")
+    history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
 
     val s = schema(db)
     s.tables shouldBe RagboxTables
@@ -121,6 +121,9 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     )
     // V2: redundant / unselective indexes are gone
     indexes should contain noneOf ("idx_chunk_registry_document", "idx_chat_sessions_archived")
+    // V3: username lookups use the UNIQUE constraint's index alone
+    indexes should not contain "idx_users_username"
+    s.indexes.find(_._2 == "users_username_key").map(_._3).get should include("UNIQUE INDEX users_username_key ON public.users USING btree (username)")
     s.indexes.find(_._2 == "uq_experiments_single_running").map(_._3).get should include("WHERE ((status)::text = 'running'::text)")
 
     val constraints = s.constraints.map(c => (c._1, c._2))
@@ -142,16 +145,16 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     val before = schema(db)
     val again = migrate(db)
     again.applied shouldBe empty
-    again.schemaVersion shouldBe Some("2")
-    history(db) should have size 2
+    again.schemaVersion shouldBe Some("3")
+    history(db) should have size 3
     schema(db) shouldBe before
   }
 
   it should "apply each migration once when several instances start together" in withContainers { pg =>
     val db = freshDatabase(pg, migrate = false)
     val results = run((1 to 4).toList.parTraverse(_ => Migrations.migrate(dataSource(db))))
-    results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2")
-    history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true))
+    results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2", "V3")
+    history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
     schema(db) shouldBe freshSchema
   }
 
@@ -191,8 +194,8 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
       llm4sTables should not be empty // llm4s's own tables, which the migrations leave alone
 
       val result = migrate(db)
-      result.applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2")
-      history(db) shouldBe Seq(("0", "BASELINE", true), ("1", "SQL", true), ("2", "SQL", true))
+      result.applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2", "V3")
+      history(db) shouldBe Seq(("0", "BASELINE", true), ("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
 
       // Same schema as a fresh database, same data; llm4s's tables untouched
       val adopted = schema(db)
@@ -244,7 +247,7 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         |INSERT INTO oauth_auth_state (state, code_verifier, expires_at) VALUES ('stale', 'v', NOW() + INTERVAL '1 hour');
         |""".stripMargin)
 
-    migrate(db).applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2")
+    migrate(db).applied.map(_.takeWhile(_ != ' ')) shouldBe Seq("V1", "V2", "V3")
     schema(db) shouldBe freshSchema
 
     // New columns get their defaults on existing rows
