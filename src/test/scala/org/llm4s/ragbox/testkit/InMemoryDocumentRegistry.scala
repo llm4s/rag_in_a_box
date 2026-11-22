@@ -42,6 +42,9 @@ class InMemoryDocumentRegistry extends DocumentRegistry {
   override def listIdsByCollection(collection: String): IO[Seq[String]] =
     IO.pure(documents.values.filter(_.collection.contains(collection)).map(_.documentId).toSeq)
 
+  override def listIdsBySource(sourceId: String): IO[Seq[String]] =
+    IO.pure(documents.values.filter(_.sourceId.contains(sourceId)).map(_.documentId).toSeq)
+
   override def listCollections(): IO[Seq[String]] =
     IO.pure(documents.values.flatMap(_.collection).toSeq.distinct)
 

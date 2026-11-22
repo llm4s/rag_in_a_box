@@ -88,8 +88,10 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
   /**
    * A permission-mode RAGService over `db`, built the way `Main` builds one: a `PgSearchIndex`
    * with its schema initialised, then `RAGService.createWithPermissions`.
+   *
+   * Pass the same `embeddings` to several services to count embedding work across them.
    */
-  def permissionService(db: DatabaseConfig): Resource[IO, RAGService] =
+  def permissionService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
     for {
       index <- Resource.make(
         IO.blocking {
@@ -101,11 +103,11 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
         }
       )(si => IO.blocking(si.close()))
       service <- Resource.make(
-        RAGService.createWithPermissions(testConfig(db), index, FakeEmbeddings.registry)
+        RAGService.createWithPermissions(testConfig(db), index, embeddings.registry)
       )(_.close())
     } yield service
 
   /** A RAGService over `db` without permissions (no `SearchIndex`), as `Main` falls back to. */
-  def plainService(db: DatabaseConfig): Resource[IO, RAGService] =
-    Resource.make(RAGService.create(testConfig(db), FakeEmbeddings.registry))(_.close())
+  def plainService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
+    Resource.make(RAGService.create(testConfig(db), embeddings.registry))(_.close())
 }

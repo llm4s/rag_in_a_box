@@ -6,7 +6,7 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.llm4s.ragbox.ingestion.{IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
+import org.llm4s.ragbox.ingestion.{IngestionAlreadyRunning, IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 
@@ -66,6 +66,8 @@ object IngestionRoutes {
         response <- results match {
           case Right(ingestionResults) =>
             Ok(ingestionResults.map(toIngestResponse).asJson)
+          case Left(e: IngestionAlreadyRunning) =>
+            Conflict(ErrorResponse("conflict", e.getMessage).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to run ingestion",
@@ -84,6 +86,8 @@ object IngestionRoutes {
             if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
           case Right(None) =>
             NotFound(ErrorResponse.notFound(s"Source '$sourceName' not found").asJson)
+          case Left(e: IngestionAlreadyRunning) =>
+            Conflict(ErrorResponse("conflict", e.getMessage).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               s"Failed to run source '$sourceName'",

@@ -17,6 +17,9 @@ import java.time.Instant
  *                   restricted to when ingested in permission mode; empty means "inherit from
  *                   the collection". Part of the upsert change check, so an access-list-only
  *                   change is re-applied.
+ * @param sourceId The configured ingestion source that owns the document, if any. A source's
+ *                 sync removes only documents it owns, so sources never delete each other's
+ *                 documents (or ones uploaded through the API).
  */
 final case class DocumentEntry(
   documentId: String,
@@ -26,7 +29,8 @@ final case class DocumentEntry(
   collection: Option[String],
   indexedAt: Instant,
   updatedAt: Instant,
-  readableBy: Set[Int] = Set.empty
+  readableBy: Set[Int] = Set.empty,
+  sourceId: Option[String] = None
 )
 
 /**
@@ -90,6 +94,11 @@ trait DocumentRegistry {
    * List document IDs in a specific collection.
    */
   def listIdsByCollection(collection: String): IO[Seq[String]]
+
+  /**
+   * List the IDs of documents owned by an ingestion source.
+   */
+  def listIdsBySource(sourceId: String): IO[Seq[String]]
 
   /**
    * List all unique collection names.

@@ -120,6 +120,7 @@ class CollectionConfigRoutesSpec extends AnyFlatSpec with Matchers {
     override def contains(documentId: String): IO[Boolean] = IO.pure(false)
     override def findOrphans(keepIds: Set[String]): IO[Seq[String]] = IO.pure(Seq.empty)
     override def listIdsByCollection(collection: String): IO[Seq[String]] = IO.pure(Seq.empty)
+    override def listIdsBySource(sourceId: String): IO[Seq[String]] = IO.pure(Seq.empty)
     override def clear(): IO[Unit] = IO.unit
     override def getSyncInfo(): IO[SyncInfo] = IO.pure(SyncInfo(None))
     override def markSyncComplete(): IO[Unit] = IO.unit
