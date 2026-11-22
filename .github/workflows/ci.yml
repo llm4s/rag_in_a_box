@@ -7,28 +7,22 @@ on:
     branches: [main]
 
 jobs:
-  # Security scanning for Scala dependencies (non-blocking)
+  # OWASP dependency check. Blocking: fails the build on any dependency with a
+  # CVSS score >= 9 that is not suppressed in suppression.xml.
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    continue-on-error: true  # Don't fail PR on security scan issues
     permissions:
       security-events: write
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
+      - uses: actions/checkout@v7
 
       - name: Run dependency check
-        uses: dependency-check/Dependency-Check_Action@main
+        # Pinned to a commit: the action's only release tags date from 2021
+        uses: dependency-check/Dependency-Check_Action@1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c # main @ 2025-12-10
         id: depcheck
-        continue-on-error: true
         with:
           project: 'rag-in-a-box'
           path: '.'
@@ -41,7 +35,7 @@ jobs:
 
       - name: Upload SARIF report
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && steps.depcheck.outcome == 'success'
+        if: always() && hashFiles('reports/dependency-check-report.sarif') != ''
         with:
           sarif_file: reports/dependency-check-report.sarif
 
@@ -54,10 +48,10 @@ jobs:
         working-directory: admin-ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -79,7 +73,7 @@ jobs:
         run: npm run build
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: admin-ui-dist
           path: admin-ui/dist
@@ -92,19 +86,22 @@ jobs:
     needs: admin-ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # sbt-dynver derives the version from git tags
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'sbt'
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
 
       - name: Download admin-ui build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: admin-ui-dist
           path: admin-ui/dist
@@ -116,24 +113,76 @@ jobs:
         run: sbt clean coverage test coverageReport coverageAggregate
         # Coverage minimum (20%) enforced via coverageFailOnMinimum in build.sbt
 
-      - name: Debug - List coverage files
+      - name: Locate coverage report
+        id: coverage
         if: always()
         run: |
-          echo "Looking for scoverage reports..."
-          find target -name "scoverage.xml" 2>/dev/null || echo "No scoverage.xml found"
-          find target -name "*.xml" -path "*scoverage*" 2>/dev/null || echo "No scoverage XML files found"
-          ls -la target/scala-3.7.1/ 2>/dev/null || echo "No scala-3.7.1 directory"
+          report=$(find target -path '*/scoverage-report/scoverage.xml' | head -n 1)
+          echo "Coverage report: ${report:-<none>}"
+          echo "report=${report}" >> "$GITHUB_OUTPUT"
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        if: steps.coverage.outputs.report != ''
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: target/scala-3.7.1/scoverage-report/scoverage.xml
+          files: ${{ steps.coverage.outputs.report }}
           fail_ci_if_error: false
           verbose: true
 
       - name: Build assembly JAR
         run: sbt assembly
+
+  # Lint and render the Helm chart
+  helm:
+    name: Helm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v5
+
+      - name: Lint chart
+        run: |
+          helm lint deploy/helm/ragbox \
+            --set secrets.security.jwtSecret=ci-jwt-secret-0123456789abcdef0123456789 \
+            --set secrets.security.adminPassword=ci-admin-password \
+            --set postgresql.auth.password=ci-db-password
+
+      - name: Render chart
+        run: |
+          helm template ragbox deploy/helm/ragbox \
+            --set secrets.security.jwtSecret=ci-jwt-secret-0123456789abcdef0123456789 \
+            --set secrets.security.adminPassword=ci-admin-password \
+            --set postgresql.auth.password=ci-db-password \
+            > /tmp/ragbox-rendered.yaml
+          echo "Rendered $(grep -c '^kind:' /tmp/ragbox-rendered.yaml) manifests"
+
+  # Check the Python SDK installs and imports (it has no test suite yet)
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK
+        run: pip install .
+
+      - name: Byte-compile and import
+        run: |
+          python -m compileall -q ragbox examples
+          python -c "import ragbox; print('ragbox SDK imported OK')"
 
   # Build and push Docker image
   docker:
@@ -147,16 +196,16 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -164,7 +213,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -172,7 +221,7 @@ jobs:
             type=sha,prefix=
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -183,7 +232,8 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run container security scan
-        uses: anchore/scan-action@v4
+        id: scan
+        uses: anchore/scan-action@v7
         with:
           image: ghcr.io/${{ github.repository }}:latest
           fail-build: false
@@ -191,6 +241,6 @@ jobs:
 
       - name: Upload scan results
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && steps.scan.outputs.sarif != ''
         with:
-          sarif_file: results.sarif
+          sarif_file: ${{ steps.scan.outputs.sarif }}
