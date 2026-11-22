@@ -21,11 +21,12 @@ import org.llm4s.ragbox.registry.{CollectionConfigRegistry, DocumentRegistry}
  */
 object CollectionConfigRoutes {
 
+  // Changing collection configuration (including previews) is admin-only.
   def routes(
     collectionConfigRegistry: CollectionConfigRegistry,
     documentRegistry: DocumentRegistry,
     runtimeConfigManager: RuntimeConfigManager
-  ): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  ): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/collections")(req))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/collections/{name}/config - Get collection chunking config
     case GET -> Root / "api" / "v1" / "collections" / collection / "config" as principal =>
@@ -169,7 +170,7 @@ object CollectionConfigRoutes {
           configResolutionPath = resolutionPath
         ).asJson)
       } yield response
-  }
+  })
 
   private val validStrategies = Set("simple", "sentence", "markdown", "semantic")
 

@@ -84,6 +84,20 @@ Everything else, including unknown paths, answers `401` without a valid credenti
 | Access token | if it has the `admin` scope |
 | SSO user (oauth) | if they are in one of `OAUTH_ADMIN_GROUPS` |
 
+### What administrators can do that users cannot
+
+Administrative endpoints answer `403` to everyone else: collections (create, delete,
+permissions), principals, runtime and collection configuration, experiments, ingestion, clearing
+all documents, users, tokens, the sync API, `/visibility/*` and `/analytics/*`. Non-admin users
+only see collections, documents and chat sessions they are allowed to; see
+[Permissions](permissions.md#what-non-admin-users-can-see-and-do).
+
+### Acting for end users behind a gateway
+
+`X-User-Id` / `X-Group-Ids` are ignored (stripped) unless `AUTH_TRUSTED_PROXY_HEADERS=true`, and
+even then only honoured on requests authenticated as an administrator. See
+[trusted proxy headers](permissions.md#trusted-proxy-headers).
+
 ### Discovering the mode
 
 `GET /api/v1/auth/mode` (public) tells clients how to log in. The admin UI uses it to choose

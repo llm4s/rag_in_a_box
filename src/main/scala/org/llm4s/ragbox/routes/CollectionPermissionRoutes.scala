@@ -6,7 +6,7 @@ import io.circe.syntax._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto._
 import org.http4s._
-import org.llm4s.ragbox.auth.Principal
+import org.llm4s.ragbox.auth.{PermissionContext, Principal}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -14,7 +14,6 @@ import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model.ErrorResponse
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.middleware.UserContextMiddleware
 
 /**
  * HTTP routes for collection management with permission controls.
@@ -96,7 +95,8 @@ object CollectionPermissionRoutes {
       )
     }.map(_.toSet)
 
-  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Creating and deleting collections and changing their permissions is admin-only; reads are filtered.
+  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/collections")(req))(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/collections - Create collection
     case (req @ POST -> Root / "api" / "v1" / "collections") as principal =>
@@ -138,10 +138,7 @@ object CollectionPermissionRoutes {
         .getOrElse(CollectionPattern.All)
 
       for {
-        result <- IO.fromEither(
-          collectionStore.list(pattern)
-            .left.map(e => new RuntimeException(e.message))
-        ).attempt
+        result <- visibleCollections(collectionStore, principalStore, principal, pattern).attempt
         response <- result match {
           case Right(collections) =>
             Ok(CollectionListResponse(collections.map(toResponse)).asJson)
@@ -154,13 +151,13 @@ object CollectionPermissionRoutes {
       } yield response
 
     // GET /api/v1/collections/accessible - List collections accessible to current user
-    case (req @ GET -> Root / "api" / "v1" / "collections" / "accessible" :? PatternParam(patternOpt)) as principal =>
+    case GET -> Root / "api" / "v1" / "collections" / "accessible" :? PatternParam(patternOpt) as principal =>
       val pattern = patternOpt
         .flatMap(p => CollectionPattern.parse(p).toOption)
         .getOrElse(CollectionPattern.All)
 
       for {
-        auth <- UserContextMiddleware.extractAuth(req, principalStore)
+        auth <- PermissionContext.authorization(principal, principalStore)
         result <- IO.fromEither(
           collectionStore.findAccessible(auth, pattern)
             .left.map(e => new RuntimeException(e.message))
@@ -180,7 +177,7 @@ object CollectionPermissionRoutes {
     // Note: path can contain slashes, so we match the remainder
     // Exclude "configs" which is handled by CollectionConfigRoutes
     case GET -> Root / "api" / "v1" / "collections" / path as principal if !path.contains("/") && path != "configs" =>
-      getCollection(collectionStore, path)
+      ifVisible(collectionStore, principalStore, principal, path)(getCollection(collectionStore, path))
 
     // Paths ending in /config belong to CollectionConfigRoutes (GET /collections/{c}/config);
     // this catch-all is mounted later in the Router and would otherwise shadow it.
@@ -188,7 +185,7 @@ object CollectionPermissionRoutes {
         if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" &&
           !(rest.segments.size > 1 && rest.segments.last.decoded() == "config") =>
       val path = rest.segments.mkString("/")
-      getCollection(collectionStore, path)
+      ifVisible(collectionStore, principalStore, principal, path)(getCollection(collectionStore, path))
 
     // PUT /api/v1/collections/:path/permissions - Update collection permissions
     case (req @ PUT -> Root / "api" / "v1" / "collections" / path / "permissions") as principal =>
@@ -200,8 +197,38 @@ object CollectionPermissionRoutes {
 
     // GET /api/v1/collections/:path/stats - Get collection statistics
     case GET -> Root / "api" / "v1" / "collections" / path / "stats" as principal =>
-      getCollectionStats(collectionStore, path)
-  }
+      ifVisible(collectionStore, principalStore, principal, path)(getCollectionStats(collectionStore, path))
+  })
+
+  /**
+   * Collections `principal` may see: all of them for administrators, otherwise only those its
+   * permissions let it query (so restricted collections, and who may query them, stay hidden).
+   */
+  private def visibleCollections(
+    collectionStore: CollectionStore,
+    principalStore: PrincipalStore,
+    principal: Principal,
+    pattern: CollectionPattern
+  ): IO[Seq[Collection]] =
+    if (principal.isAdmin) IO.fromEither(collectionStore.list(pattern).left.map(e => new RuntimeException(e.message)))
+    else
+      PermissionContext.authorization(principal, principalStore).flatMap { auth =>
+        IO.fromEither(collectionStore.findAccessible(auth, pattern).left.map(e => new RuntimeException(e.message)))
+      }.map(_.filter(c => principal.canAccessCollection(c.path.value)))
+
+  /** Run `operation` if `principal` may see collection `path`, else 404 (existence is not revealed). */
+  private def ifVisible(
+    collectionStore: CollectionStore,
+    principalStore: PrincipalStore,
+    principal: Principal,
+    path: String
+  )(operation: => IO[Response[IO]]): IO[Response[IO]] =
+    if (principal.isAdmin) operation
+    else
+      visibleCollections(collectionStore, principalStore, principal, CollectionPattern.All).flatMap { visible =>
+        if (visible.exists(_.path.value == path)) operation
+        else NotFound(ErrorResponse.notFound(s"Collection not found: $path").asJson)
+      }
 
   private def getCollection(collectionStore: CollectionStore, pathStr: String): IO[Response[IO]] =
     for {

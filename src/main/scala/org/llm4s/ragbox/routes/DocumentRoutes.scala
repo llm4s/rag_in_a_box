@@ -5,7 +5,7 @@ import cats.syntax.all._
 import io.circe.Decoder
 import io.circe.syntax._
 import org.http4s._
-import org.llm4s.ragbox.auth.{Principal, TokenScope}
+import org.llm4s.ragbox.auth.{AuthMethod, PermissionContext, Principal, TokenScope}
 import org.llm4s.ragbox.registry.DocumentEntry
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
@@ -259,27 +259,59 @@ object DocumentRoutes {
     else entries
 
   /**
-   * For a collection-restricted token: run `operation` only if every one of `ids` that exists is
-   * in an allowed collection.
+   * Which collections `principal` may see and change documents in:
+   *  - administrators: all
+   *  - access tokens: their collection restriction
+   *  - other users: the collections their permissions let them query (permission mode; without
+   *    permissions every collection is open)
    */
+  private def accessFilter(ragService: RAGService, principal: Principal): IO[String => Boolean] =
+    if (principal.isAdmin) IO.pure(_ => true)
+    else if (principal.method == AuthMethod.AccessToken) IO.pure(principal.canAccessCollection)
+    else
+      (ragService.collections, ragService.principals) match {
+        case (Some(collections), Some(principals)) =>
+          for {
+            auth <- PermissionContext.authorization(principal, principals)
+            accessible <- IO.blocking(collections.findAccessible(auth, CollectionPattern.All)).flatMap(r =>
+              IO.fromEither(r.left.map(e => new RuntimeException(e.message))))
+            paths = accessible.map(_.path.value).toSet
+          } yield (c: String) => paths.contains(c)
+        case _ => IO.pure(_ => true)
+      }
+
+  /** `principal` may write to `collection` (see [[accessFilter]]). */
+  private def requireCollectionAccess(ragService: RAGService, principal: Principal, collection: String)(
+    operation: => IO[Response[IO]]
+  ): IO[Response[IO]] =
+    accessFilter(ragService, principal).flatMap { allowed =>
+      if (allowed(collection)) operation
+      else Authz.forbidden(s"Not allowed to use collection '$collection'")
+    }
+
+  /** Run `operation` only if every one of `ids` that exists is in a collection `principal` may use. */
   private def requireDocumentsAccessible(ragService: RAGService, principal: Principal, ids: Seq[String])(
     operation: => IO[Response[IO]]
   ): IO[Response[IO]] =
-    if (!principal.isCollectionRestricted) operation
+    if (principal.isAdmin) operation
     else
-      ragService.getDocumentEntries(ids).flatMap { entries =>
-        entries.find(e => !principal.canAccessCollection(collectionOf(e))) match {
-          case Some(e) => Authz.forbidden(s"Access token is not allowed to use collection '${collectionOf(e)}'")
+      for {
+        allowed <- accessFilter(ragService, principal)
+        entries <- ragService.getDocumentEntries(ids)
+        response <- entries.find(e => !allowed(collectionOf(e))) match {
+          case Some(e) => Authz.forbidden(s"Not allowed to use collection '${collectionOf(e)}'")
           case None => operation
         }
-      }
+      } yield response
 
   /**
    * Document, sync and stats endpoints.
    *
    * Access tokens need `documents:read` / `documents:write` / `sync:read` / `sync:write` as
    * appropriate, and a token restricted to collections only sees and changes documents in them.
-   * Clearing every document needs the `admin` scope.
+   * Other non-admin users only see and change documents in collections they can query. The sync
+   * API is for ingesters: access tokens (with the sync scopes) and administrators. Clearing
+   * every document is admin-only.
    */
   def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
 
@@ -287,9 +319,10 @@ object DocumentRoutes {
     case GET -> Root / "api" / "v1" / "collections" as principal =>
       Authz.requireScope(principal, TokenScope.DocumentsRead) { for {
         collections <- ragService.listCollections.attempt
+        allowed <- accessFilter(ragService, principal)
         response <- collections match {
           case Right(cols) =>
-            Ok(Map("collections" -> cols.filter(principal.canAccessCollection)).asJson)
+            Ok(Map("collections" -> cols.filter(allowed)).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to list collections",
@@ -312,7 +345,7 @@ object DocumentRoutes {
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
           case None =>
-            Authz.requireCollection(principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
+            requireCollectionAccess(ragService, principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
               createDocument(ragService, body.content, body.filename, body.metadata.getOrElse(Map.empty), body.collection, body.readableBy)
             }
         }
@@ -363,7 +396,7 @@ object DocumentRoutes {
                         InputValidation.toResponse(InputValidation.validateDocumentContent(text)) match {
                           case Some(errorResponse) => errorResponse
                           case None =>
-                            Authz.requireCollection(principal, collection.getOrElse(RAGService.DefaultCollection)) {
+                            requireCollectionAccess(ragService, principal, collection.getOrElse(RAGService.DefaultCollection)) {
                               createDocument(ragService, text, Some(filename), extracted ++ userMetadata, collection, readableBy)
                             }
                         }
@@ -383,9 +416,10 @@ object DocumentRoutes {
         :? PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) +& CollectionParam(collectionOpt) +& SearchParam(searchOpt) as principal =>
       Authz.requireScope(principal, TokenScope.DocumentsRead) { for {
         entries <- ragService.listDocumentEntries.attempt
+        allowed <- accessFilter(ragService, principal)
         response <- entries match {
           case Right(docs) =>
-            Ok(buildListResponse(visibleTo(principal, docs), pageOpt, pageSizeOpt, collectionOpt, searchOpt).asJson)
+            Ok(buildListResponse(docs.filter(e => allowed(collectionOf(e))), pageOpt, pageSizeOpt, collectionOpt, searchOpt).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to list documents",
@@ -408,7 +442,7 @@ object DocumentRoutes {
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
           // The target collection must be allowed, and so must the one an existing document is in
-          case None => Authz.requireCollection(principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
+          case None => requireCollectionAccess(ragService, principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
             requireDocumentsAccessible(ragService, principal, Seq(id)) {
             val metadata = body.metadata.getOrElse(Map.empty) ++
               body.collection.map("collection" -> _).toMap
@@ -462,13 +496,13 @@ object DocumentRoutes {
     // GET /api/v1/documents/:id - Get document details
     // Returns registry metadata; chunk content is served by /api/v1/visibility/chunks/:id
     case GET -> Root / "api" / "v1" / "documents" / id as principal =>
-      Authz.requireScope(principal, TokenScope.DocumentsRead)(ragService.getDocumentEntries(Seq(id)).attempt.flatMap {
-        case Right(entries) =>
-          visibleTo(principal, entries).find(_.documentId == id) match {
+      Authz.requireScope(principal, TokenScope.DocumentsRead)((ragService.getDocumentEntries(Seq(id)).attempt, accessFilter(ragService, principal)).flatMapN {
+        case (Right(entries), allowed) =>
+          entries.filter(e => allowed(collectionOf(e))).find(_.documentId == id) match {
             case Some(entry) => Ok(toDocumentInfo(entry).asJson)
             case None => NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
           }
-        case Left(e) =>
+        case (Left(e), _) =>
           InternalServerError(ErrorResponse.internalError(
             s"Failed to get document $id",
             Some(e.getMessage)
@@ -492,7 +526,7 @@ object DocumentRoutes {
 
     // GET /api/v1/sync/status - Get sync status
     case GET -> Root / "api" / "v1" / "sync" / "status" as principal =>
-      Authz.requireScope(principal, TokenScope.SyncRead) { for {
+      Authz.requireIngester(principal, TokenScope.SyncRead) { for {
         status <- ragService.getSyncStatus.attempt
         response <- status match {
           case Right(s) => Ok(s.asJson)
@@ -507,7 +541,7 @@ object DocumentRoutes {
     // POST /api/v1/sync - Mark sync complete and optionally prune
     // Supports dryRun to preview what would be deleted
     case (req @ POST -> Root / "api" / "v1" / "sync") as principal =>
-      Authz.requireScope(principal, TokenScope.SyncWrite) { for {
+      Authz.requireIngester(principal, TokenScope.SyncWrite) { for {
         body <- decodeOptionalBody[SyncPruneRequest](req)
         response <- body match {
           case Left(err) => invalidBody(err)
@@ -561,7 +595,7 @@ object DocumentRoutes {
     //   - include=hash,updatedAt - Include additional fields
     //   - since=2024-01-01T00:00:00Z - Only documents modified since this time
     case GET -> Root / "api" / "v1" / "sync" / "documents" :? IncludeParam(includeOpt) +& SinceParam(sinceOpt) as principal =>
-      Authz.requireScope(principal, TokenScope.SyncRead) { for {
+      Authz.requireIngester(principal, TokenScope.SyncRead) { for {
         allEntries <- sinceOpt match {
           case Some(since) => ragService.listDocumentEntriesSince(since)
           case None => ragService.listDocumentEntries
@@ -581,7 +615,7 @@ object DocumentRoutes {
 
     // GET /api/v1/sync/documents/:id - Get single document state
     case GET -> Root / "api" / "v1" / "sync" / "documents" / id as principal =>
-      Authz.requireScope(principal, TokenScope.SyncRead) { for {
+      Authz.requireIngester(principal, TokenScope.SyncRead) { for {
         entries <- ragService.getDocumentEntries(Seq(id))
         response <- visibleTo(principal, entries).headOption match {
           case Some(entry) =>
@@ -598,7 +632,7 @@ object DocumentRoutes {
 
     // POST /api/v1/sync/check - Batch check document states
     case (req @ POST -> Root / "api" / "v1" / "sync" / "check") as principal =>
-      Authz.requireScope(principal, TokenScope.SyncRead) { for {
+      Authz.requireIngester(principal, TokenScope.SyncRead) { for {
         body <- req.as[SyncCheckRequest]
         entries <- ragService.getDocumentEntries(body.documentIds).map(visibleTo(principal, _))
         foundIds = entries.map(_.documentId).toSet
@@ -632,7 +666,7 @@ object DocumentRoutes {
               "Specify either ?all=true or a documentIds body, not both"
             ).asJson)
           case (Some(Right(true)), Right(None)) =>
-            Authz.requireScope(principal, TokenScope.Admin)(clearAllDocuments(ragService))
+            Authz.requireAdmin(principal)(clearAllDocuments(ragService))
           case (_, Right(None)) =>
             BadRequest(ErrorResponse.badRequest(
               "Request body with documentIds is required. To delete every document use DELETE /api/v1/documents?all=true"

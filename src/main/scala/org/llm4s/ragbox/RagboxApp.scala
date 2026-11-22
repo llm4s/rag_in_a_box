@@ -62,7 +62,8 @@ final class RagboxApp private (
    * wrapped in request-size and rate limits, CORS and request logging.
    */
   def httpApp(wsb: WebSocketBuilder2[IO]): HttpApp[IO] = {
-    val all: HttpRoutes[IO] = routes.public <+> authenticator(routes.authed <+> WebSocketRoutes.routes(wsb, hub))
+    val all: HttpRoutes[IO] =
+      routes.public <+> authenticator(Authz.tokenAllowlist(routes.authed <+> WebSocketRoutes.routes(wsb, hub)))
 
     val limited = RateLimitMiddleware(rateLimitConfig, rateLimitState)(
       RequestSizeMiddleware(RequestSizeMiddleware.Config(
@@ -82,7 +83,10 @@ final class RagboxApp private (
         }
       }
 
-    HttpLogger.httpApp(logHeaders = false, logBody = false)(corsPolicy(limited))
+    // Identity headers only count in trusted-proxy mode; otherwise nothing downstream sees them
+    Authenticator.stripIdentityHeaders(config.security.auth.trustedProxyHeaders)(
+      HttpLogger.httpApp(logHeaders = false, logBody = false)(corsPolicy(limited))
+    )
   }
 
   /**
@@ -172,7 +176,7 @@ object RagboxApp {
       // Order matters where paths overlap (e.g. /collections/...): same order as before
       val authed = (Seq(
         DocumentRoutes.routes(ragService),
-        QueryRoutes.routes(ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config), Some(experimentService)),
+        QueryRoutes.routes(ragService, queryLogRegistry, Some(config), Some(experimentService)),
         ConfigRoutes.routes(ragService),
         IngestionRoutes.routes(ingestionService),
         VisibilityRoutes.routes(ragService),
@@ -182,7 +186,7 @@ object RagboxApp {
         AnalyticsRoutes.routes(queryLogRegistry),
         SuggestionRoutes.routes(suggestionService),
         ExperimentRoutes.routes(experimentService),
-        ChatRoutes.routes(chatSessionRegistry, ragService, queryLogRegistry, config.security.isAdminHeaderAllowed, Some(config)),
+        ChatRoutes.routes(chatSessionRegistry, ragService, queryLogRegistry, Some(config)),
         AuthRoutes.routes(authService, userRegistry),
         TokenRoutes.routes(tokenRegistry)
       ) ++ permissionRoutes).reduce(_ <+> _)

@@ -40,7 +40,8 @@ object AnalyticsRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(queryLogRegistry: QueryLogRegistryBase): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Query analytics contain every user's query text: admin-only. POST /feedback stays open to any authenticated caller.
+  def routes(queryLogRegistry: QueryLogRegistryBase): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/analytics"))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/analytics/queries - List query logs with pagination
     // Query params: from, to, collection, page, pageSize
@@ -138,5 +139,5 @@ object AnalyticsRoutes {
             ).asJson)
         }
       } yield response
-  }
+  })
 }

@@ -40,7 +40,8 @@ object SuggestionRoutes {
   object TypeParam extends OptionalQueryParamDecoderMatcher[String]("type")
   object SeverityParam extends OptionalQueryParamDecoderMatcher[String]("severity")
 
-  def routes(suggestionService: SuggestionService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Suggestions are derived from every user's queries: admin-only.
+  def routes(suggestionService: SuggestionService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/analytics"))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/analytics/suggestions - Get optimization suggestions
     // Query params: from, to, collection, type, severity
@@ -105,7 +106,7 @@ object SuggestionRoutes {
             ).asJson)
         }
       } yield response
-  }
+  })
 
   /**
    * Filter suggestions by type and/or severity.

@@ -60,6 +60,13 @@ class ChatSessionRegistry(dataSource: DataSource) {
         """CREATE INDEX IF NOT EXISTS idx_chat_sessions_archived
           |    ON chat_sessions(is_archived)""".stripMargin
       )
+      // Session owner (the authenticated principal's id). Sessions created before owners
+      // existed keep NULL and are visible to administrators only.
+      stmt.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS owner_id VARCHAR(255)")
+      stmt.execute(
+        """CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner
+          |    ON chat_sessions(owner_id, updated_at DESC)""".stripMargin
+      )
       stmt.execute(
         """CREATE TABLE IF NOT EXISTS chat_messages (
           |    id VARCHAR(64) PRIMARY KEY,
@@ -113,15 +120,18 @@ class ChatSessionRegistry(dataSource: DataSource) {
 
   /**
    * Create a new chat session.
+   *
+   * @param ownerId the owning principal's id; the session is only visible to its owner and to
+   *                administrators
    */
-  def createSession(request: CreateChatSessionRequest): IO[ChatSession] = ConnectionPool.withConnection(dataSource) { conn =>
+  def createSession(request: CreateChatSessionRequest, ownerId: Option[String] = None): IO[ChatSession] = ConnectionPool.withConnection(dataSource) { conn =>
     val id = s"chat-${UUID.randomUUID()}"
     val now = Instant.now()
 
     val sql =
       """INSERT INTO chat_sessions
-        |    (id, title, collection_pattern, message_count, created_at, updated_at, is_archived)
-        |VALUES (?, ?, ?, 0, ?, ?, FALSE)""".stripMargin
+        |    (id, title, collection_pattern, message_count, created_at, updated_at, is_archived, owner_id)
+        |VALUES (?, ?, ?, 0, ?, ?, FALSE, ?)""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
       stmt.setString(1, id)
@@ -129,6 +139,7 @@ class ChatSessionRegistry(dataSource: DataSource) {
       stmt.setString(3, request.collectionPattern.getOrElse("*"))
       stmt.setTimestamp(4, Timestamp.from(now))
       stmt.setTimestamp(5, Timestamp.from(now))
+      stmt.setString(6, ownerId.orNull)
       stmt.executeUpdate()
 
       ChatSession(
@@ -138,7 +149,8 @@ class ChatSessionRegistry(dataSource: DataSource) {
         messageCount = 0,
         createdAt = now,
         updatedAt = now,
-        isArchived = false
+        isArchived = false,
+        ownerId = ownerId
       )
     } finally {
       stmt.close()
@@ -154,24 +166,26 @@ class ChatSessionRegistry(dataSource: DataSource) {
   /**
    * List sessions, most recently updated first.
    *
-   * @param limit  maximum number of sessions to return
-   * @param offset number of sessions to skip
+   * @param limit   maximum number of sessions to return
+   * @param offset  number of sessions to skip
+   * @param ownerId only this owner's sessions; None lists every session (administrators)
    */
   def listSessions(
     includeArchived: Boolean = false,
     limit: Int = DefaultSessionLimit,
-    offset: Int = 0
+    offset: Int = 0,
+    ownerId: Option[String] = None
   ): IO[Seq[ChatSession]] = ConnectionPool.withConnection(dataSource) { conn =>
-    val whereClause = if (includeArchived) "" else "WHERE is_archived = FALSE"
     val sql =
       s"""SELECT $SessionColumns
-         |FROM chat_sessions $whereClause
+         |FROM chat_sessions ${whereClause(includeArchived, ownerId)}
          |ORDER BY updated_at DESC, id
          |LIMIT ? OFFSET ?""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
-      stmt.setInt(1, math.max(0, limit))
-      stmt.setInt(2, math.max(0, offset))
+      val next = ownerId.fold(1) { o => stmt.setString(1, o); 2 }
+      stmt.setInt(next, math.max(0, limit))
+      stmt.setInt(next + 1, math.max(0, offset))
       collect(stmt.executeQuery())(rowToSession)
     } finally {
       stmt.close()
@@ -181,10 +195,10 @@ class ChatSessionRegistry(dataSource: DataSource) {
   /**
    * Count sessions (the `total` for [[listSessions]] pages).
    */
-  def countSessions(includeArchived: Boolean = false): IO[Int] = ConnectionPool.withConnection(dataSource) { conn =>
-    val whereClause = if (includeArchived) "" else "WHERE is_archived = FALSE"
-    val stmt = conn.prepareStatement(s"SELECT COUNT(*) FROM chat_sessions $whereClause")
+  def countSessions(includeArchived: Boolean = false, ownerId: Option[String] = None): IO[Int] = ConnectionPool.withConnection(dataSource) { conn =>
+    val stmt = conn.prepareStatement(s"SELECT COUNT(*) FROM chat_sessions ${whereClause(includeArchived, ownerId)}")
     try {
+      ownerId.foreach(stmt.setString(1, _))
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getInt(1) else 0
     } finally {
@@ -416,6 +430,12 @@ class ChatSessionRegistry(dataSource: DataSource) {
     }
   }
 
+  private def whereClause(includeArchived: Boolean, ownerId: Option[String]): String = {
+    val conditions = (if (includeArchived) Nil else List("is_archived = FALSE")) ++
+      ownerId.map(_ => "owner_id = ?").toList
+    if (conditions.isEmpty) "" else conditions.mkString("WHERE ", " AND ", "")
+  }
+
   private def collect[A](rs: ResultSet)(row: ResultSet => A): Seq[A] = {
     val out = Vector.newBuilder[A]
     while (rs.next()) out += row(rs)
@@ -430,7 +450,8 @@ class ChatSessionRegistry(dataSource: DataSource) {
       messageCount = rs.getInt("message_count"),
       createdAt = rs.getTimestamp("created_at").toInstant,
       updatedAt = rs.getTimestamp("updated_at").toInstant,
-      isArchived = rs.getBoolean("is_archived")
+      isArchived = rs.getBoolean("is_archived"),
+      ownerId = Option(rs.getString("owner_id"))
     )
   }
 
@@ -473,7 +494,7 @@ object ChatSessionRegistry {
   private val MessageIndexConstraint = "uq_chat_messages_session_index"
 
   private val SessionColumns =
-    "id, title, collection_pattern, message_count, created_at, updated_at, is_archived"
+    "id, title, collection_pattern, message_count, created_at, updated_at, is_archived, owner_id"
 
   private val MessageColumns =
     "id, session_id, role, content, contexts, usage_info, rating, query_log_id, created_at, message_index"

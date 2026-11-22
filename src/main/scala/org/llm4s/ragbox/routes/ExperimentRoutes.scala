@@ -26,7 +26,8 @@ object ExperimentRoutes {
   object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
   object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
 
-  def routes(experimentService: ExperimentService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Experiments are admin-only: they change how queries are answered and expose query statistics.
+  def routes(experimentService: ExperimentService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/experiments"))(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/experiments - Create a new experiment
     case (req @ POST -> Root / "api" / "v1" / "experiments") as principal =>
@@ -120,5 +121,5 @@ object ExperimentRoutes {
           case None => NotFound(ErrorResponse.notFound(s"Experiment '$id' not found").asJson)
         }
       } yield response
-  }
+  })
 }
