@@ -13,7 +13,13 @@ const notification = useNotification()
 
 const tab = ref('text')
 const content = ref('')
+const pastedFilename = ref('')
 const collection = ref('')
+
+/** e.g. `pasted-2024-01-31T12-00-00.txt` — readable and unique enough for a demo. */
+function defaultPastedFilename(): string {
+  return `pasted-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`
+}
 const metadata = ref<{ key: string; value: string }[]>([])
 const loading = ref(false)
 const error = ref<AppError | null>(null)
@@ -123,6 +129,7 @@ async function submitText() {
 
     await documentsStore.createDocument({
       content: content.value,
+      filename: pastedFilename.value.trim() || defaultPastedFilename(),
       collection: collection.value || undefined,
       metadata: Object.keys(metadataObj).length > 0 ? metadataObj : undefined
     })
@@ -232,6 +239,7 @@ async function submit() {
 
 function reset() {
   content.value = ''
+  pastedFilename.value = ''
   collection.value = ''
   metadata.value = []
   files.value = []
@@ -277,6 +285,15 @@ function formatFileSize(bytes: number): string {
         <v-window v-model="tab">
           <!-- Text Content Tab -->
           <v-window-item value="text">
+            <v-text-field
+              v-model="pastedFilename"
+              label="Filename (optional)"
+              placeholder="e.g. release-notes.md"
+              hint="Used as the document's display name; a .md extension enables markdown chunking"
+              persistent-hint
+              class="mb-4"
+              :disabled="loading || success"
+            ></v-text-field>
             <v-textarea
               v-model="content"
               label="Content"

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, computed } from 'vue'
 import type { QueryLogListResponse, QueryAnalyticsSummary, QueryLogEntry } from '@/types/api'
 import * as analyticsApi from '@/api/analytics'
@@ -49,7 +50,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       const { from, to } = dateRange.value
       summary.value = await analyticsApi.getQuerySummary(from, to)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch analytics summary'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -68,7 +69,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         pageSize
       })
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch query list'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -80,7 +81,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     try {
       selectedQuery.value = await analyticsApi.getQueryById(id)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch query details'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -93,7 +94,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       await fetchQueryById(queryId)
       return true
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to submit feedback'
+      error.value = getErrorMessage(e)
       return false
     }
   }

@@ -78,7 +78,7 @@ function goBack() {
             <v-expansion-panel v-for="chunk in chunks" :key="chunk.id">
               <v-expansion-panel-title>
                 <div class="d-flex align-center">
-                  <v-chip size="x-small" class="mr-2">#{{ chunk.chunkIndex }}</v-chip>
+                  <v-chip size="x-small" class="mr-2">#{{ chunk.index }}</v-chip>
                   <span class="text-truncate">{{ chunk.content.substring(0, 100) }}...</span>
                 </div>
               </v-expansion-panel-title>

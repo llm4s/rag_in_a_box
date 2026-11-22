@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, computed } from 'vue'
 import type {
   SuggestionsResponse,
@@ -111,7 +112,7 @@ export const useSuggestionsStore = defineStore('suggestions', () => {
         severity: selectedSeverity.value || undefined
       })
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch suggestions'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -124,7 +125,7 @@ export const useSuggestionsStore = defineStore('suggestions', () => {
       const { from, to } = dateRange.value
       summary.value = await suggestionsApi.getSuggestionsSummary(from, to)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch suggestions summary'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -137,7 +138,7 @@ export const useSuggestionsStore = defineStore('suggestions', () => {
       const { from, to } = dateRange.value
       suggestions.value = await suggestionsApi.getCollectionSuggestions(collectionName, from, to)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch collection suggestions'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }

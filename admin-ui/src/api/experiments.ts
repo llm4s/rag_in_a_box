@@ -1,4 +1,5 @@
 import client from './client'
+import { isHttpStatus } from '@/composables/useApiError'
 import type {
   Experiment,
   ExperimentListResponse,
@@ -41,8 +42,9 @@ export async function getRunningExperiment(): Promise<Experiment | null> {
   try {
     const response = await client.get<Experiment>('/experiments/running')
     return response.data
-  } catch (error: any) {
-    if (error.response?.status === 404) {
+  } catch (error: unknown) {
+    // The client interceptor rejects with an AppError, not an AxiosError
+    if (isHttpStatus(error, 404)) {
       return null
     }
     throw error

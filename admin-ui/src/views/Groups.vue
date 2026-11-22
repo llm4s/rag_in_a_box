@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, onMounted, computed } from 'vue'
 import type { Principal } from '@/types/api'
 import * as principalsApi from '@/api/principals'
@@ -39,7 +40,7 @@ async function loadPrincipals() {
     userPrincipals.value = users.principals
     groupPrincipals.value = groups.principals
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load principals'
+    error.value = getErrorMessage(e)
   } finally {
     loading.value = false
   }
@@ -64,7 +65,7 @@ async function handleCreate() {
     createDialog.value = false
     await loadPrincipals()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to create principal'
+    error.value = getErrorMessage(e)
   } finally {
     createLoading.value = false
   }
@@ -87,7 +88,7 @@ async function handleDelete() {
     deleteDialog.value = false
     await loadPrincipals()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to delete principal'
+    error.value = getErrorMessage(e)
   } finally {
     deleteLoading.value = false
   }

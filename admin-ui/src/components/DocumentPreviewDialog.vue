@@ -156,7 +156,7 @@ function close() {
               <v-expansion-panels v-if="chunks.length > 0">
                 <v-expansion-panel v-for="chunk in chunks" :key="chunk.id">
                   <v-expansion-panel-title>
-                    <v-chip size="x-small" class="mr-2">{{ chunk.chunkIndex }}</v-chip>
+                    <v-chip size="x-small" class="mr-2">{{ chunk.index }}</v-chip>
                     <span class="text-truncate">{{ chunk.content.substring(0, 60) }}...</span>
                     <v-spacer />
                     <v-chip size="x-small" variant="outlined" class="mr-4">

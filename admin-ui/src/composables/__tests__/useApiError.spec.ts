@@ -4,6 +4,8 @@ import {
   transformAxiosError,
   isAppError,
   getErrorMessage,
+  toAppError,
+  isHttpStatus,
   ErrorCodes,
   type AppError
 } from '../useApiError'
@@ -192,5 +194,39 @@ describe('getErrorMessage', () => {
     expect(getErrorMessage(undefined)).toBe('An unexpected error occurred')
     expect(getErrorMessage({})).toBe('An unexpected error occurred')
     expect(getErrorMessage(123)).toBe('An unexpected error occurred')
+  })
+})
+
+describe('backend ErrorResponse handling', () => {
+  it('prefers message and details over the machine-readable error code', () => {
+    const error = createAxiosError(400, {
+      error: 'validation_failed',
+      message: 'Configuration validation failed',
+      details: 'topK: topK must be at most 100'
+    })
+    expect(transformAxiosError(error).message).toBe(
+      'Configuration validation failed: topK: topK must be at most 100'
+    )
+  })
+
+  it('uses message alone when details are absent or null', () => {
+    const error = createAxiosError(404, { error: 'not_found', message: 'Document x not found', details: null })
+    expect(transformAxiosError(error).message).toBe('Document x not found')
+  })
+})
+
+describe('toAppError / isHttpStatus', () => {
+  it('passes AppErrors through and wraps other values', () => {
+    const appError: AppError = { code: ErrorCodes.NOT_FOUND, message: 'gone', statusCode: 404, retryable: false }
+    expect(toAppError(appError)).toBe(appError)
+    const wrapped = toAppError(new Error('boom'))
+    expect(wrapped.message).toBe('boom')
+    expect(wrapped.code).toBe(ErrorCodes.UNKNOWN)
+  })
+
+  it('matches status codes only on AppErrors', () => {
+    expect(isHttpStatus(transformAxiosError(createAxiosError(404)), 404)).toBe(true)
+    expect(isHttpStatus(transformAxiosError(createAxiosError(500)), 404)).toBe(false)
+    expect(isHttpStatus({ response: { status: 404 } }, 404)).toBe(false)
   })
 })

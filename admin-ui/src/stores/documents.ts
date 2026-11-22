@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Document, Chunk } from '@/types/api'
 import * as documentsApi from '@/api/documents'
-import { type AppError, getErrorMessage, isAppError } from '@/composables/useApiError'
+import { type AppError, toAppError } from '@/composables/useApiError'
 
 export const useDocumentsStore = defineStore('documents', () => {
   const documents = ref<Document[]>([])
@@ -37,11 +37,7 @@ export const useDocumentsStore = defineStore('documents', () => {
       documents.value = response.documents
       total.value = response.total
     } catch (e) {
-      error.value = isAppError(e) ? e : {
-        code: 'UNKNOWN_ERROR',
-        message: getErrorMessage(e),
-        retryable: true
-      }
+      error.value = toAppError(e, true)
     } finally {
       loading.value = false
     }
@@ -55,14 +51,20 @@ export const useDocumentsStore = defineStore('documents', () => {
     loading.value = true
     error.value = null
     try {
-      currentDocument.value = await documentsApi.getDocument(id)
-      currentChunks.value = await documentsApi.getDocumentChunks(id)
+      const [doc, chunks] = await Promise.all([
+        documentsApi.getDocument(id),
+        // Chunks are a secondary view; don't fail the whole page if they can't load
+        documentsApi.getDocumentChunks(id).catch((e: unknown) => {
+          console.error('Failed to load chunks for', id, e)
+          return []
+        })
+      ])
+      currentDocument.value = doc
+      currentChunks.value = chunks
     } catch (e) {
-      error.value = isAppError(e) ? e : {
-        code: 'UNKNOWN_ERROR',
-        message: getErrorMessage(e),
-        retryable: true
-      }
+      currentDocument.value = null
+      currentChunks.value = []
+      error.value = toAppError(e)
     } finally {
       loading.value = false
     }
@@ -72,16 +74,11 @@ export const useDocumentsStore = defineStore('documents', () => {
     loading.value = true
     error.value = null
     try {
-      const doc = await documentsApi.createDocument(data)
-      documents.value.unshift(doc)
-      total.value++
-      return doc
+      // The upload response only carries the id and chunk count; the list is
+      // refreshed from the server the next time the Documents page loads.
+      return await documentsApi.createDocument(data)
     } catch (e) {
-      error.value = isAppError(e) ? e : {
-        code: 'UNKNOWN_ERROR',
-        message: getErrorMessage(e),
-        retryable: false
-      }
+      error.value = toAppError(e, false)
       throw e
     } finally {
       loading.value = false
@@ -100,11 +97,7 @@ export const useDocumentsStore = defineStore('documents', () => {
         currentChunks.value = []
       }
     } catch (e) {
-      error.value = isAppError(e) ? e : {
-        code: 'UNKNOWN_ERROR',
-        message: getErrorMessage(e),
-        retryable: false
-      }
+      error.value = toAppError(e, false)
       throw e
     } finally {
       loading.value = false

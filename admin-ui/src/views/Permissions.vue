@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, onMounted, computed } from 'vue'
 import type { CollectionPermission, Principal } from '@/types/api'
 import * as permissionsApi from '@/api/permissions'
@@ -57,7 +58,7 @@ async function loadData() {
     collections.value = collectionsRes.collections
     allPrincipals.value = [...users.principals, ...groups.principals]
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load data'
+    error.value = getErrorMessage(e)
   } finally {
     loading.value = false
   }
@@ -81,7 +82,7 @@ async function handleCreate() {
     createDialog.value = false
     await loadData()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to create collection'
+    error.value = getErrorMessage(e)
   } finally {
     createLoading.value = false
   }
@@ -107,7 +108,7 @@ async function handleUpdatePermissions() {
     editDialog.value = false
     await loadData()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to update permissions'
+    error.value = getErrorMessage(e)
   } finally {
     editLoading.value = false
   }
@@ -127,7 +128,7 @@ async function handleDelete() {
     deleteDialog.value = false
     await loadData()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to delete collection'
+    error.value = getErrorMessage(e)
   } finally {
     deleteLoading.value = false
   }

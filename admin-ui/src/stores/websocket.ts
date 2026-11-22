@@ -1,52 +1,99 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { WebSocketMessage, StatsUpdate, IngestionProgress } from '@/composables/useWebSocket'
+
+// Message shapes sent by the backend's WebSocketRoutes (`/ws`)
+export interface WebSocketMessage {
+  type: 'stats_update' | 'document_added' | 'document_deleted' | 'ingestion_progress' | 'error'
+  payload: unknown
+  timestamp: string
+}
+
+export interface StatsUpdate {
+  documentCount: number
+  chunkCount: number
+  collectionCount: number
+}
+
+export interface IngestionProgress {
+  source: string
+  status: 'running' | 'completed' | 'failed'
+  progress: number
+  message?: string | null
+}
+
+/** Reconnect delay for the given (1-based) attempt: exponential with jitter, capped. */
+export function reconnectDelay(attempt: number, baseMs = 1000, maxMs = 30000): number {
+  const exp = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempt - 1)))
+  // +/-20% jitter so many tabs don't reconnect in lockstep after a restart
+  const jitter = exp * 0.2 * (Math.random() * 2 - 1)
+  return Math.max(0, Math.min(maxMs, Math.round(exp + jitter)))
+}
+
+export const MAX_RECONNECT_ATTEMPTS = 10
 
 export const useWebSocketStore = defineStore('websocket', () => {
   const connected = ref(false)
   const error = ref<string | null>(null)
   const latestStats = ref<StatsUpdate | null>(null)
   const ingestionProgress = ref<Map<string, IngestionProgress>>(new Map())
+  const reconnectAttempts = ref(0)
+  /** True once automatic retries are exhausted; cleared by `reconnect()` or a resume event. */
+  const gaveUp = ref(false)
 
   let ws: WebSocket | null = null
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
-  const maxReconnectAttempts = 5
-  let reconnectAttempts = 0
+  // Set by disconnect() so onclose doesn't schedule a reconnect
+  let manuallyClosed = false
+  let resumeListenersInstalled = false
 
   const isConnected = computed(() => connected.value)
 
+  function clearReconnectTimer() {
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout)
+      reconnectTimeout = null
+    }
+  }
+
   function connect() {
-    if (ws?.readyState === WebSocket.OPEN) {
+    manuallyClosed = false
+    installResumeListeners()
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return
     }
+    clearReconnectTimer()
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/ws`
 
     try {
-      ws = new WebSocket(wsUrl)
+      const socket = new WebSocket(wsUrl)
+      ws = socket
 
-      ws.onopen = () => {
+      socket.onopen = () => {
         connected.value = true
         error.value = null
-        reconnectAttempts = 0
+        reconnectAttempts.value = 0
+        gaveUp.value = false
       }
 
-      ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
         try {
-          const message: WebSocketMessage = JSON.parse(event.data)
-          handleMessage(message)
+          handleMessage(JSON.parse(event.data) as WebSocketMessage)
         } catch (e) {
           console.error('[WebSocket] Parse error:', e)
         }
       }
 
-      ws.onclose = () => {
+      socket.onclose = () => {
+        // Ignore close events from a socket we've already replaced
+        if (ws !== socket) return
         connected.value = false
-        scheduleReconnect()
+        ws = null
+        if (!manuallyClosed) scheduleReconnect()
       }
 
-      ws.onerror = () => {
+      socket.onerror = () => {
         error.value = 'Connection error'
       }
     } catch {
@@ -56,29 +103,48 @@ export const useWebSocketStore = defineStore('websocket', () => {
   }
 
   function disconnect() {
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout)
-      reconnectTimeout = null
-    }
+    manuallyClosed = true
+    clearReconnectTimer()
     if (ws) {
-      ws.close()
+      const socket = ws
       ws = null
+      socket.close()
     }
     connected.value = false
   }
 
+  /** Manually retry now, resetting the backoff (e.g. from a "Reconnect" button). */
+  function reconnect() {
+    reconnectAttempts.value = 0
+    gaveUp.value = false
+    connect()
+  }
+
   function scheduleReconnect() {
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      error.value = 'Max reconnection attempts reached'
+    if (manuallyClosed || reconnectTimeout) return
+    if (reconnectAttempts.value >= MAX_RECONNECT_ATTEMPTS) {
+      gaveUp.value = true
+      error.value = 'Live updates disconnected. Will retry when the page regains focus or the network returns.'
       return
     }
-
-    reconnectAttempts++
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000)
-
+    reconnectAttempts.value++
     reconnectTimeout = setTimeout(() => {
+      reconnectTimeout = null
       connect()
-    }, delay)
+    }, reconnectDelay(reconnectAttempts.value))
+  }
+
+  // After giving up, resume when the user comes back or the network returns
+  function installResumeListeners() {
+    if (resumeListenersInstalled || typeof window === 'undefined') return
+    resumeListenersInstalled = true
+    const resume = () => {
+      if (!manuallyClosed && !connected.value && gaveUp.value) reconnect()
+    }
+    window.addEventListener('online', resume)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') resume()
+    })
   }
 
   function handleMessage(message: WebSocketMessage) {
@@ -114,8 +180,11 @@ export const useWebSocketStore = defineStore('websocket', () => {
     error,
     latestStats,
     ingestionProgress,
+    reconnectAttempts,
+    gaveUp,
     connect,
     disconnect,
+    reconnect,
     clearIngestionProgress,
   }
 })

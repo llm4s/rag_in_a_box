@@ -32,7 +32,7 @@ POST /api/v1/documents
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `content` | string | Yes | Document text content |
-| `filename` | string | Yes | Filename for the document |
+| `filename` | string | No | Filename for the document. Defaults to `untitled-<id prefix>.txt` (e.g. for pasted text) |
 | `metadata` | object | No | Key-value metadata pairs |
 | `collection` | string | No | Collection path (e.g., "docs/guides") |
 | `readableBy` | string[] | No | Principals who can read this document |
@@ -121,28 +121,57 @@ curl -X PUT http://localhost:8080/api/v1/documents/my-doc-001 \
 
 ## List Documents {#list}
 
-List all documents in the system.
+List documents, most recently updated first, with optional filtering and pagination.
 
 ```
 GET /api/v1/documents
+```
+
+### Query Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `page` | `1` | 1-based page number (values below 1 are treated as 1) |
+| `pageSize` | `50` | Items per page, capped at `500` |
+| `collection` | | Only documents in this collection (exact match) |
+| `search` | | Case-insensitive substring match on id, filename or `title` metadata |
+
+### Example
+
+```bash
+curl "http://localhost:8080/api/v1/documents?collection=docs/guides&search=install&page=1&pageSize=20"
 ```
 
 ### Response
 
 ```json
 {
-  "documents": [],
-  "total": 150
+  "documents": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "filename": "install.md",
+      "chunkCount": 3,
+      "metadata": { "filename": "install.md", "collection": "docs/guides" },
+      "createdAt": "2024-01-01T00:00:00Z",
+      "collection": "docs/guides",
+      "updatedAt": "2024-01-02T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "hasMore": false
 }
 ```
 
-Note: Currently returns count only. Use sync endpoints for document details.
+`total` is the number of documents matching the filters across all pages.
 
 ---
 
 ## Get Document {#get}
 
-Get a specific document by ID.
+Get a specific document's registry entry by ID. Chunk content is available from
+`GET /api/v1/visibility/chunks/:id`.
 
 ```
 GET /api/v1/documents/:id
@@ -156,7 +185,8 @@ GET /api/v1/documents/:id
 
 ### Response
 
-Returns `404 Not Found` if the document doesn't exist.
+Same shape as an entry in the list response above. Returns `404 Not Found` if
+the document doesn't exist.
 
 ---
 

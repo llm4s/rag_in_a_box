@@ -483,8 +483,7 @@ rag-in-a-box/
 │   │   │   └── config.ts
 │   │   └── api/
 │   │       └── client.ts
-│   ├── public/
-│   └── Dockerfile
+│   └── public/                  # built into the backend JAR (see root Dockerfile)
 │
 ├── chat-ui/                     # Vue.js Chat UI
 │   ├── package.json

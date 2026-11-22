@@ -16,7 +16,7 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
   "DocumentUploadRequest" should "serialize to JSON correctly" in {
     val request = DocumentUploadRequest(
       content = "Hello world",
-      filename = "test.txt",
+      filename = Some("test.txt"),
       metadata = Some(Map("author" -> "test")),
       collection = Some("docs")
     )
@@ -34,7 +34,7 @@ class ApiModelsSpec extends AnyFlatSpec with Matchers {
 
     result.isRight `shouldBe` true
     result.toOption.get.content `shouldBe` "test content"
-    result.toOption.get.filename `shouldBe` "doc.md"
+    result.toOption.get.filename `shouldBe` Some("doc.md")
     result.toOption.get.metadata `shouldBe` None
     result.toOption.get.collection `shouldBe` None
   }

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref } from 'vue'
 import type { Stats, VisibilityStats } from '@/types/api'
 import * as visibilityApi from '@/api/visibility'
@@ -22,7 +23,7 @@ export const useStatsStore = defineStore('stats', () => {
         collections: visibilityStats.value.collections ?? []
       }
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch stats'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }

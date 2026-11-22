@@ -37,10 +37,19 @@ onMounted(() => {
   documentsStore.fetchDocuments()
 })
 
+// Filters are applied server-side; debounce so typing doesn't fire a request per keystroke
+let filterTimeout: ReturnType<typeof setTimeout> | null = null
 watch([search, collection], () => {
-  documentsStore.setPage(1)
-  documentsStore.fetchDocuments({ search: search.value, collection: collection.value })
+  if (filterTimeout) clearTimeout(filterTimeout)
+  filterTimeout = setTimeout(() => {
+    documentsStore.setPage(1)
+    documentsStore.fetchDocuments(currentFilters())
+  }, 300)
 })
+
+function currentFilters() {
+  return { search: search.value || undefined, collection: collection.value || undefined }
+}
 
 function viewDocument(id: string) {
   router.push(`/documents/${id}`)
@@ -86,7 +95,7 @@ function clearSelection() {
 
 function onPageChange(page: number) {
   documentsStore.setPage(page)
-  documentsStore.fetchDocuments({ search: search.value, collection: collection.value })
+  documentsStore.fetchDocuments(currentFilters())
 }
 </script>
 

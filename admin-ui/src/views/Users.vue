@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, onMounted, computed } from 'vue'
 import type { User } from '@/types/api'
 import * as usersApi from '@/api/users'
@@ -44,7 +45,7 @@ async function loadUsers() {
     const response = await usersApi.getUsers()
     users.value = response.users
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load users'
+    error.value = getErrorMessage(e)
   } finally {
     loading.value = false
   }
@@ -68,7 +69,7 @@ async function handleCreate() {
     createDialog.value = false
     await loadUsers()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to create user'
+    error.value = getErrorMessage(e)
   } finally {
     createLoading.value = false
   }
@@ -88,7 +89,7 @@ async function handleResetPassword() {
     await usersApi.resetPassword(resetUserId.value, resetPassword.value)
     resetDialog.value = false
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to reset password'
+    error.value = getErrorMessage(e)
   } finally {
     resetLoading.value = false
   }
@@ -108,7 +109,7 @@ async function handleDelete() {
     deleteDialog.value = false
     await loadUsers()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to delete user'
+    error.value = getErrorMessage(e)
   } finally {
     deleteLoading.value = false
   }

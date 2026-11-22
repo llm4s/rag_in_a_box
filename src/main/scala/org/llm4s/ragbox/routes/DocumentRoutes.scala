@@ -15,6 +15,7 @@ import java.time.format.DateTimeParseException
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
+import org.llm4s.ragbox.registry.DocumentEntry
 import org.llm4s.ragbox.service.{InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
 
@@ -30,6 +31,69 @@ object DocumentRoutes {
 
   // Query param matchers
   object CollectionParam extends OptionalQueryParamDecoderMatcher[String]("collection")
+  object SearchParam extends OptionalQueryParamDecoderMatcher[String]("search")
+  object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
+  object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
+
+  /** Default and maximum page sizes for GET /api/v1/documents. */
+  val DefaultPageSize: Int = 50
+  val MaxPageSize: Int = 500
+
+  private[routes] def toDocumentInfo(entry: DocumentEntry): DocumentInfo =
+    DocumentInfo(
+      id = entry.documentId,
+      filename = entry.metadata.getOrElse("filename", entry.documentId),
+      chunkCount = entry.chunkCount,
+      metadata = entry.metadata,
+      createdAt = Some(entry.indexedAt),
+      collection = entry.collection.orElse(entry.metadata.get("collection")),
+      updatedAt = Some(entry.updatedAt)
+    )
+
+  /**
+   * Filter, sort (most recently updated first) and paginate registry entries.
+   * Out-of-range page/pageSize values are clamped rather than rejected.
+   *
+   * Filtering happens in memory over the registry listing, which is fine for
+   * the admin UI at demo scale; pushing it into SQL is a follow-up.
+   */
+  private[routes] def buildListResponse(
+    entries: Seq[DocumentEntry],
+    pageOpt: Option[Int],
+    pageSizeOpt: Option[Int],
+    collectionOpt: Option[String],
+    searchOpt: Option[String]
+  ): DocumentListResponse = {
+    val pageSize = pageSizeOpt.getOrElse(DefaultPageSize).max(1).min(MaxPageSize)
+    val page = pageOpt.getOrElse(1).max(1)
+    val collection = collectionOpt.map(_.trim).filter(_.nonEmpty)
+    val search = searchOpt.map(_.trim.toLowerCase).filter(_.nonEmpty)
+
+    val filtered = entries
+      .map(toDocumentInfo)
+      .filter(d => collection.forall(c => d.collection.contains(c)))
+      .filter { d =>
+        search.forall { q =>
+          d.id.toLowerCase.contains(q) ||
+          d.filename.toLowerCase.contains(q) ||
+          d.metadata.get("title").exists(_.toLowerCase.contains(q))
+        }
+      }
+      .sortBy(d => (-d.updatedAt.orElse(d.createdAt).map(_.toEpochMilli).getOrElse(0L), d.id))
+
+    val offset = (page - 1).toLong * pageSize
+    val pageItems =
+      if (offset >= filtered.size) Seq.empty
+      else filtered.slice(offset.toInt, offset.toInt + pageSize)
+
+    DocumentListResponse(
+      documents = pageItems,
+      total = filtered.size,
+      page = page,
+      pageSize = pageSize,
+      hasMore = offset + pageItems.size < filtered.size
+    )
+  }
 
   // Query params for enhanced sync endpoint
   object IncludeParam extends OptionalQueryParamDecoderMatcher[String]("include")
@@ -151,15 +215,18 @@ object DocumentRoutes {
         // Validate inputs
         validation = InputValidation.all(
           InputValidation.validateDocumentContent(body.content),
-          InputValidation.validateFilename(body.filename),
+          body.filename.map(InputValidation.validateFilename(_)).getOrElse(InputValidation.Valid),
           body.metadata.map(InputValidation.validateMetadata(_)).getOrElse(InputValidation.Valid)
         )
         response <- InputValidation.toResponse(validation) match {
           case Some(errorResponse) => errorResponse
           case None =>
             val documentId = UUID.randomUUID().toString
+            // Filename is optional (e.g. pasted text); fall back to a stable placeholder
+            val filename = body.filename.map(_.trim).filter(_.nonEmpty)
+              .getOrElse(s"untitled-${documentId.take(8)}.txt")
             val metadata = body.metadata.getOrElse(Map.empty) +
-              ("filename" -> body.filename) ++
+              ("filename" -> filename) ++
               body.collection.map("collection" -> _).toMap
             val ingestIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
               // Permission-aware ingestion when SearchIndex is available; no collection means the default one
@@ -199,25 +266,19 @@ object DocumentRoutes {
         }
       } yield response
 
-    // GET /api/v1/documents - List documents
-    case GET -> Root / "api" / "v1" / "documents" =>
+    // GET /api/v1/documents - List documents (paginated, filterable)
+    // Query params:
+    //   - page: 1-based page number (default 1)
+    //   - pageSize: items per page (default 50, max 500)
+    //   - collection: exact collection match
+    //   - search: case-insensitive substring of id, filename or title
+    case GET -> Root / "api" / "v1" / "documents"
+        :? PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) +& CollectionParam(collectionOpt) +& SearchParam(searchOpt) =>
       for {
         entries <- ragService.listDocumentEntries.attempt
         response <- entries match {
           case Right(docs) =>
-            val documentInfos = docs.map { entry =>
-              DocumentInfo(
-                id = entry.documentId,
-                filename = entry.metadata.getOrElse("filename", entry.documentId),
-                chunkCount = entry.chunkCount,
-                metadata = entry.metadata,
-                createdAt = Some(entry.indexedAt)
-              )
-            }
-            Ok(DocumentListResponse(
-              documents = documentInfos,
-              total = documentInfos.size
-            ).asJson)
+            Ok(buildListResponse(docs, pageOpt, pageSizeOpt, collectionOpt, searchOpt).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to list documents",
@@ -288,10 +349,20 @@ object DocumentRoutes {
       } yield response
 
     // GET /api/v1/documents/:id - Get document details
+    // Returns registry metadata; chunk content is served by /api/v1/visibility/chunks/:id
     case GET -> Root / "api" / "v1" / "documents" / id =>
-      // Note: llm4s RAG doesn't expose individual document retrieval
-      // This would need document registry integration
-      NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
+      ragService.getDocumentEntries(Seq(id)).attempt.flatMap {
+        case Right(entries) =>
+          entries.find(_.documentId == id) match {
+            case Some(entry) => Ok(toDocumentInfo(entry).asJson)
+            case None => NotFound(ErrorResponse.notFound(s"Document $id not found").asJson)
+          }
+        case Left(e) =>
+          InternalServerError(ErrorResponse.internalError(
+            s"Failed to get document $id",
+            Some(e.getMessage)
+          ).asJson)
+      }
 
     // DELETE /api/v1/documents/:id - Delete document
     case DELETE -> Root / "api" / "v1" / "documents" / id =>
