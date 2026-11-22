@@ -50,6 +50,7 @@ At least the keys for the configured LLM and embedding providers are needed.
 | `ANTHROPIC_API_KEY` | Anthropic API key (for `anthropic/...` LLM models) | `sk-ant-...` |
 | `VOYAGE_API_KEY` | Voyage AI key (for `EMBEDDING_PROVIDER=voyage`) | |
 | `COHERE_API_KEY` | Cohere key (for `RAG_RERANKING_STRATEGY=cohere`) | |
+| `<PROVIDER>_API_KEY` | Key of any other llm4s provider (e.g. `MISTRAL_API_KEY`) | |
 
 ### Database
 

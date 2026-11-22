@@ -348,6 +348,13 @@ Required for the respective providers.
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `VOYAGE_API_KEY` | Voyage AI API key |
 | `COHERE_API_KEY` | Cohere API key, for `RAG_RERANKING_STRATEGY=cohere` |
+| `<PROVIDER>_API_KEY` | The key of any other llm4s provider, e.g. `MISTRAL_API_KEY` |
+
+Keys are resolved by llm4s provider id, so any provider module on the classpath works without
+ragbox knowing it. A provider's key is, highest precedence first: ragbox's
+`api-keys.<id>` (HOCON), the variable the llm4s module binds for its vendor
+(`llm4s.credentials.<id>.apiKey` in the module's `reference.conf`, e.g. `GEMINI_API_KEY`), and
+finally `<ID>_API_KEY` (the id upper-cased, other characters as `_`).
 
 ---
 

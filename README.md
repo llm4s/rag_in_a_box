@@ -198,7 +198,7 @@ lists every variable with its default; the
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY` | - | Provider API keys |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY`, `<PROVIDER>_API_KEY` | - | Provider API keys (any llm4s provider) |
 | `LLM_MODEL` | `openai/gpt-4o` | Answer model, `<provider>/<model>` |
 | `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` | `openai` / `text-embedding-3-small` | Embeddings (changing them needs a re-index) |
 | `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` | `localhost`, `15432`, `ragdb`, `rag`, `rag` | Database; or `DATABASE_URL` |

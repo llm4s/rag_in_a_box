@@ -1,7 +1,7 @@
 package org.llm4s.ragbox.config
 
 import cats.effect.IO
-import com.typesafe.config.{Config, ConfigFactory}
+import com.typesafe.config.{Config, ConfigFactory, ConfigUtil}
 import org.llm4s.chunking.ChunkerFactory
 import org.llm4s.security.Secret
 import org.llm4s.vectorstore.FusionStrategy
@@ -118,9 +118,9 @@ final case class AppConfig(
 
     // Embedding provider requires API key
     embedding.provider.toLowerCase match {
-      case "openai" if apiKeys.openai.isEmpty =>
+      case "openai" if apiKeys.getKey("openai").isEmpty =>
         errors += "OPENAI_API_KEY required when using OpenAI embedding provider"
-      case "voyage" if apiKeys.voyage.isEmpty =>
+      case "voyage" if apiKeys.getKey("voyage").isEmpty =>
         errors += "VOYAGE_API_KEY required when using Voyage embedding provider"
       case _ => // OK
     }
@@ -128,7 +128,7 @@ final case class AppConfig(
     // Unknown reranking / query-transform strategies fail at startup, not on the first query
     rag.reranking.normalizedStrategy.left.foreach(errors += _)
     rag.queryTransform.normalizedStrategy.left.foreach(errors += _)
-    if (rag.reranking.normalizedStrategy.contains("cohere") && apiKeys.cohere.isEmpty) {
+    if (rag.reranking.normalizedStrategy.contains("cohere") && apiKeys.getKey("cohere").isEmpty) {
       errors += "COHERE_API_KEY required when RAG_RERANKING_STRATEGY=cohere"
     }
     if (rag.reranking.candidates < 1) {
@@ -335,27 +335,69 @@ final case class SearchSettings(
   }
 }
 
+/**
+ * Provider API keys, resolved for any llm4s provider id - nothing here names a provider.
+ *
+ * A provider's key is, highest precedence first:
+ *  1. ragbox's `api-keys.<id>` (application.conf; `OPEN_AI_KEY` is bound there as an alias of
+ *     `OPENAI_API_KEY`);
+ *  2. llm4s's shared `llm4s.credentials.<id>.apiKey`, which each llm4s provider module binds to
+ *     its vendor's variable in its `reference.conf` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+ *     `VOYAGE_API_KEY`, `COHERE_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, ...);
+ *  3. the environment variable `<ID>_API_KEY` ([[ApiKeysConfig.envVarFor]]), for a provider
+ *     whose module binds none.
+ *
+ * @param keys    keys from (1) and (2), by lower-cased provider id
+ * @param envKeys every `<ID>_API_KEY` environment variable, by variable name
+ */
 final case class ApiKeysConfig(
-  openai: Option[Secret],
-  anthropic: Option[Secret],
-  voyage: Option[Secret],
-  cohere: Option[Secret] = None
+  keys: Map[String, Secret] = Map.empty,
+  envKeys: Map[String, Secret] = Map.empty
 ) {
-  /**
-   * Get API key for the specified provider.
-   */
-  def getKey(provider: String): Option[Secret] = provider.toLowerCase match {
-    case "openai" => openai
-    case "anthropic" => anthropic
-    case "voyage" => voyage
-    case "cohere" => cohere
-    case _ => None
+  /** The API key for llm4s provider `provider` (an id such as `openai` or `mistral`). */
+  def getKey(provider: String): Option[Secret] =
+    keys.get(ApiKeysConfig.normalize(provider)).orElse(envKeys.get(ApiKeysConfig.envVarFor(provider)))
+
+  /** This config with `key` as `provider`'s key. */
+  def withKey(provider: String, key: Secret): ApiKeysConfig =
+    copy(keys = keys + (ApiKeysConfig.normalize(provider) -> key))
+
+  /** Whether any provider key is configured. */
+  def hasAnyKey: Boolean = keys.nonEmpty || envKeys.nonEmpty
+}
+
+object ApiKeysConfig {
+
+  private[config] def normalize(provider: String): String = provider.trim.toLowerCase
+
+  /** `<ID>_API_KEY`: the provider id upper-cased, with anything but letters and digits as `_`. */
+  def envVarFor(provider: String): String =
+    normalize(provider).map(c => if (c.isLetterOrDigit) c.toUpper else '_') + "_API_KEY"
+
+  /** Keys given directly, by provider id (`None` and blank keys are left out). */
+  def of(keys: (String, Option[Secret])*): ApiKeysConfig =
+    ApiKeysConfig(keys.collect { case (id, Some(key)) if key.reveal.trim.nonEmpty => normalize(id) -> key }.toMap)
+
+  /** Load from `api-keys.*` and `llm4s.credentials.*.apiKey` in `config`, and `*_API_KEY` in `env`. */
+  def load(config: Config, env: Map[String, String] = sys.env): ApiKeysConfig = {
+    import scala.jdk.CollectionConverters._
+    def ids(path: String): Seq[String] =
+      if (config.hasPath(path)) config.getObject(path).keySet().asScala.toSeq else Nil
+    def nonBlank(path: String): Option[Secret] =
+      Try(config.getString(path)).toOption.map(_.trim).filter(_.nonEmpty).map(Secret(_))
+
+    val llm4sCredentials = ids("llm4s.credentials").flatMap { id =>
+      nonBlank(ConfigUtil.joinPath("llm4s", "credentials", id, "apiKey")).map(normalize(id) -> _)
+    }
+    val ragbox = ids("api-keys").flatMap(id => nonBlank(ConfigUtil.joinPath("api-keys", id)).map(normalize(id) -> _))
+    val fromEnv = env.collect {
+      case (name, value) if name.endsWith(EnvSuffix) && name.length > EnvSuffix.length && value.trim.nonEmpty =>
+        name -> Secret(value.trim)
+    }
+    ApiKeysConfig(keys = (llm4sCredentials ++ ragbox).toMap, envKeys = fromEnv)
   }
 
-  /**
-   * Check if any API key is configured.
-   */
-  def hasAnyKey: Boolean = openai.isDefined || anthropic.isDefined || voyage.isDefined
+  private val EnvSuffix = "_API_KEY"
 }
 
 /**
@@ -676,12 +718,7 @@ object AppConfig {
           historyMessages = getOptionalInt(config, "rag.chat.history-messages").getOrElse(ChatSettings().historyMessages)
         )
       ),
-      apiKeys = ApiKeysConfig(
-        openai = getOptionalString(config, "api-keys.openai").map(Secret(_)),
-        anthropic = getOptionalString(config, "api-keys.anthropic").map(Secret(_)),
-        voyage = getOptionalString(config, "api-keys.voyage").map(Secret(_)),
-        cohere = getOptionalString(config, "api-keys.cohere").map(Secret(_))
-      ),
+      apiKeys = ApiKeysConfig.load(config),
       ingestion = {
         // Load from config file first, then merge with environment variables
         val configIngestion = IngestionConfig.fromConfig(config)

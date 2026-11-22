@@ -21,7 +21,7 @@ class Llm4sPipelineSpec extends AnyFlatSpec with Matchers {
   private def withLlm(model: String, baseUrl: Option[String] = None, keys: ApiKeysConfig = base.apiKeys): AppConfig =
     base.copy(llm = base.llm.copy(model = model, baseUrl = baseUrl), apiKeys = keys)
 
-  private val noKeys = ApiKeysConfig(None, None, None)
+  private val noKeys = ApiKeysConfig()
 
   "llmClient" should "resolve every provider through the default llm4s registry, Ollama included" in {
     val registry = ProviderRegistry.default
@@ -77,7 +77,7 @@ class Llm4sPipelineSpec extends AnyFlatSpec with Matchers {
 
     val cohere = base.copy(
       rag = base.rag.copy(reranking = base.rag.reranking.copy(strategy = "cohere")),
-      apiKeys = base.apiKeys.copy(cohere = Some(Secret("co-key")))
+      apiKeys = base.apiKeys.withKey("cohere", Secret("co-key"))
     )
     Llm4sPipeline.ragConfig(cohere, None, None, new NoOpTracing).map(_.rerankingStrategy) shouldBe
       Right(RerankingStrategy.Cohere("rerank-english-v3.0"))
