@@ -1,0 +1,43 @@
+# Codecov settings for the Scala server's scoverage report (uploaded by the CI "test" job).
+#
+# The build itself fails below `coverageMinimumStmtTotal` (build.sbt), so a regression of the
+# total is caught without Codecov. These checks are about pull requests:
+#
+# - project: the total may not drop by more than half a point against the base commit
+#   (noise from timing-dependent branches stays inside that).
+# - patch: the lines a pull request adds or changes must be 70% covered. Codecov's default
+#   target is the project's coverage (~80%), which fails pull requests whose changes are mostly
+#   startup wiring or integration paths that are exercised through the real app but not line by
+#   line. 70% still flags new code that comes without tests.
+#
+# Main (process entry point) and the generated BuildInfo are excluded from instrumentation in
+# build.sbt (coverageExcludedPackages), so they are not in the report at all; they are ignored
+# here as well in case a report ever includes them.
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
+    patch:
+      default:
+        target: 70%
+        threshold: 0%
+
+ignore:
+  - "src/main/scala/org/llm4s/ragbox/Main.scala"
+  - "**/BuildInfo.scala"
+  - "src/test/**"
+  - "admin-ui/**"
+  - "sdk/**"
+  - "docs/**"
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: true

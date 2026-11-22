@@ -52,5 +52,13 @@ PostgreSQL is deployed as part of this release.
 Using external PostgreSQL at: {{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}
 {{- end }}
 
+{{- if and (not .Values.database.migrateOnStart) (not (contains "pre-install" (include "ragbox.migrations.hooks" .))) .Release.IsInstall }}
+
+WARNING: database.migrateOnStart is false, and nothing applied the schema migrations before
+this first install{{ if .Values.migrations.job.enabled }} (the migration job runs before upgrades only, as the chart creates the
+database or its credentials){{ end }}. Run `helm upgrade` with migrations.job.enabled=true, or
+install with database.migrateOnStart=true first.
+{{- end }}
+
 For more information, visit:
   https://github.com/llm4s/rag-in-a-box

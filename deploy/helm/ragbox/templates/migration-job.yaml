@@ -1,0 +1,86 @@
+{{- if .Values.migrations.job.enabled }}
+{{- /*
+Schema migrations as a Helm hook: the server image with --migrate-only, which applies the
+pending Flyway migrations and exits. Hooks run before the release's own resources are created
+or updated, so the job takes its settings inline rather than from the chart's ConfigMap, and
+credentials from the same secrets as the deployment (see ragbox.migrations.hooks for when they
+exist).
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ragbox.fullname" . }}-migrate
+  labels:
+    {{- include "ragbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: {{ include "ragbox.migrations.hooks" . }}
+    helm.sh/hook-weight: "0"
+    # Keep a failed job for its logs; replace it on the next attempt
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    {{- with .Values.migrations.job.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.migrations.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "ragbox.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* The chart's service account does not exist yet before the first install */}}
+      {{- if or (not .Values.serviceAccount.create) .Release.IsUpgrade }}
+      serviceAccountName: {{ include "ragbox.serviceAccountName" . }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--migrate-only"]
+          env:
+            - name: PG_HOST
+              value: {{ include "ragbox.postgresql.host" . | quote }}
+            - name: PG_PORT
+              value: {{ include "ragbox.postgresql.port" . | quote }}
+            - name: PG_DATABASE
+              value: {{ include "ragbox.postgresql.database" . | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logging.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logging.format | quote }}
+            # Database credentials
+            {{- include "ragbox.databaseCredentialsEnv" . | trim | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.migrations.job.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            # Writable scratch space for the JVM; the root filesystem is read-only by default
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -398,6 +398,31 @@ externalDatabase:
   passwordKey: "pg-password"
 
 # =============================================================================
+# Schema Migrations
+# =============================================================================
+
+database:
+  # -- Apply pending schema migrations when a server starts (DB_MIGRATE_ON_START). Replicas
+  # starting together are serialised by Flyway's lock. Set false when migrations.job runs them
+  # instead; the servers then expect the schema to be up to date.
+  migrateOnStart: true
+
+migrations:
+  job:
+    # -- Run the migrations in a Job (the image with --migrate-only) before each upgrade, and
+    # before the first install when the database is external with credentials in
+    # externalDatabase.existingSecret. See docs/guide/helm-deployment.md.
+    enabled: false
+    # -- Retries before the job, and so the upgrade, fails
+    backoffLimit: 2
+    # -- Longest the migrations may run, in seconds (the upgrade fails after it)
+    activeDeadlineSeconds: 900
+    # -- Job resources (empty: the server's `resources`)
+    resources: {}
+    # -- Extra annotations for the job
+    annotations: {}
+
+# =============================================================================
 # Probes Configuration
 # =============================================================================
 

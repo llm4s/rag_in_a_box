@@ -111,7 +111,7 @@ jobs:
 
       - name: Run tests with coverage
         run: sbt clean coverage test coverageReport coverageAggregate
-        # Coverage minimum (20%) enforced via coverageFailOnMinimum in build.sbt
+        # Coverage minimum (83%) enforced via coverageFailOnMinimum in build.sbt
 
       - name: Locate coverage report
         id: coverage
@@ -249,6 +249,22 @@ jobs:
             --set postgresql.auth.password=ci-db-password \
             > /tmp/ragbox-rendered.yaml
           echo "Rendered $(grep -c '^kind:' /tmp/ragbox-rendered.yaml) manifests"
+
+      - name: Lint and render chart with the migration job
+        run: |
+          set -euo pipefail
+          common="--set secrets.security.jwtSecret=ci-jwt-secret-0123456789abcdef0123456789 --set secrets.security.adminPassword=ci-admin-password"
+          helm lint deploy/helm/ragbox $common --set postgresql.auth.password=ci-db-password \
+            --set migrations.job.enabled=true --set database.migrateOnStart=false
+          # Bundled database: the job runs before upgrades only
+          helm template ragbox deploy/helm/ragbox $common --set postgresql.auth.password=ci-db-password \
+            --set migrations.job.enabled=true --show-only templates/migration-job.yaml \
+            | grep -q 'helm.sh/hook: pre-upgrade$'
+          # External database with an existing credentials secret: before the install too
+          helm template ragbox deploy/helm/ragbox $common --set postgresql.enabled=false \
+            --set externalDatabase.host=db --set externalDatabase.existingSecret=db-credentials \
+            --set migrations.job.enabled=true --show-only templates/migration-job.yaml \
+            | grep -q 'helm.sh/hook: pre-install,pre-upgrade$'
 
   # Install the Python SDK and run its tests (HTTP mocked with `responses`)
   python-sdk:

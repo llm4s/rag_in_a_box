@@ -93,7 +93,7 @@ PostgreSQL port
 */}}
 {{- define "ragbox.postgresql.port" -}}
 {{- if .Values.postgresql.enabled }}
-5432
+{{- 5432 }}
 {{- else }}
 {{- .Values.externalDatabase.port }}
 {{- end }}
@@ -200,4 +200,47 @@ PostgreSQL username - returns the database username
 {{- else }}
 {{- .Values.externalDatabase.username | default "rag" }}
 {{- end }}
+{{- end }}
+
+{{/*
+Database credential env vars (PG_USER, PG_PASSWORD), shared by the deployment and the
+migration job
+*/}}
+{{- define "ragbox.databaseCredentialsEnv" -}}
+{{- if .Values.postgresql.enabled }}
+# Bundled PostgreSQL - username from values, password from the chart-generated secret
+- name: PG_USER
+  value: {{ include "ragbox.postgresql.username" . | quote }}
+- name: PG_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ragbox.postgresql.secretName" . }}
+      key: {{ include "ragbox.postgresql.passwordKey" . }}
+{{- else }}
+# External database - credentials from secret
+- name: PG_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ragbox.postgresql.secretName" . }}
+      key: {{ include "ragbox.postgresql.userKey" . }}
+- name: PG_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ragbox.postgresql.secretName" . }}
+      key: {{ include "ragbox.postgresql.passwordKey" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+The Helm hooks the migration job runs as. Before an upgrade it can always run: the database
+and its credentials exist from the previous release. Before the first install only when the
+chart creates neither - an external database whose credentials are in an existing secret -
+since hooks run before the release's own resources exist.
+*/}}
+{{- define "ragbox.migrations.hooks" -}}
+{{- if and (not .Values.postgresql.enabled) .Values.externalDatabase.existingSecret -}}
+pre-install,pre-upgrade
+{{- else -}}
+pre-upgrade
+{{- end -}}
 {{- end }}

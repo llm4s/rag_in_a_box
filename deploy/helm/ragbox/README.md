@@ -130,6 +130,15 @@ externalDatabase:
   passwordKey: "password"
 ```
 
+### Schema Migrations
+
+The servers apply pending migrations at startup (`database.migrateOnStart: true`). To run them
+once in a Helm hook Job (the image with `--migrate-only`) before each upgrade instead, set
+`migrations.job.enabled: true` and, optionally, `database.migrateOnStart: false`. With an
+external database whose credentials are in `externalDatabase.existingSecret` the job also runs
+before the first install; otherwise the servers migrate on the first install. See
+[docs/guide/helm-deployment.md](../../../docs/guide/helm-deployment.md#schema-migrations).
+
 ### Ingress Configuration
 
 Enable ingress with TLS:
