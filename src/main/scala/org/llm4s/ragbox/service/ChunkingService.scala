@@ -2,7 +2,7 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk, MarkdownChunker}
-import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.config.{AppConfig, ChunkingSettings, RuntimeSettings}
 import org.llm4s.ragbox.model._
 
 /**
@@ -12,9 +12,17 @@ import org.llm4s.ragbox.model._
  * `ChunkerFactory`, which has no embedding provider: semantic chunking (which embeds every
  * sentence) is not previewed, and is never labelled as such - a semantic preview shows the
  * sentence chunking `ChunkerFactory.create("semantic")` falls back to, labelled `sentence`.
+ *
+ * Defaults (and the "current" preset) are the runtime chunking settings, which ingestion uses.
  */
-class ChunkingService(config: AppConfig) {
+class ChunkingService(config: AppConfig, runtime: RuntimeSettings) {
   import ChunkingService._
+
+  /** The runtime chunking settings. */
+  private def chunking: ChunkingSettings = {
+    val current = runtime.current
+    ChunkingSettings(current.chunkingStrategy, current.chunkSize, current.chunkOverlap)
+  }
 
   // Token estimation: ~4 chars per token on average
   private val CharsPerToken = 4
@@ -30,9 +38,9 @@ class ChunkingService(config: AppConfig) {
 
     // Build chunking config
     val chunkingConfig = ChunkingConfig(
-      targetSize = request.targetSize.getOrElse(config.rag.chunking.size),
-      maxSize = request.maxSize.getOrElse((config.rag.chunking.size * 1.5).toInt),
-      overlap = request.overlap.getOrElse(config.rag.chunking.overlap)
+      targetSize = request.targetSize.getOrElse(chunking.size),
+      maxSize = request.maxSize.getOrElse((chunking.size * 1.5).toInt),
+      overlap = request.overlap.getOrElse(chunking.overlap)
     )
 
     // Get chunker
@@ -78,9 +86,9 @@ class ChunkingService(config: AppConfig) {
     }
 
     val chunkingConfig = ChunkingConfig(
-      targetSize = request.targetSize.getOrElse(config.rag.chunking.size),
-      maxSize = request.targetSize.map(t => (t * 1.5).toInt).getOrElse((config.rag.chunking.size * 1.5).toInt),
-      overlap = request.overlap.getOrElse(config.rag.chunking.overlap)
+      targetSize = request.targetSize.getOrElse(chunking.size),
+      maxSize = request.targetSize.map(t => (t * 1.5).toInt).getOrElse((chunking.size * 1.5).toInt),
+      overlap = request.overlap.getOrElse(chunking.overlap)
     )
 
     val results = strategies.flatMap { strategyName =>
@@ -155,7 +163,7 @@ class ChunkingService(config: AppConfig) {
           requiresEmbeddings = true
         )
       ),
-      currentDefault = config.rag.chunking.strategy
+      currentDefault = chunking.strategy
     )
   }
 
@@ -197,9 +205,9 @@ class ChunkingService(config: AppConfig) {
       name = "current",
       displayName = "Current Configuration",
       description = "Currently active chunking configuration",
-      targetSize = config.rag.chunking.size,
-      maxSize = (config.rag.chunking.size * 1.5).toInt,
-      overlap = config.rag.chunking.overlap,
+      targetSize = chunking.size,
+      maxSize = (chunking.size * 1.5).toInt,
+      overlap = chunking.overlap,
       bestFor = Seq()
     )
 
@@ -221,7 +229,7 @@ class ChunkingService(config: AppConfig) {
           case Some(f) if f.endsWith(".json") || f.endsWith(".xml") =>
             ("simple", "auto-detect")
           case _ =>
-            (config.rag.chunking.strategy, "default")
+            (chunking.strategy, "default")
         }
     }
   }
@@ -334,7 +342,10 @@ class ChunkingService(config: AppConfig) {
 }
 
 object ChunkingService {
-  def apply(config: AppConfig): ChunkingService = new ChunkingService(config)
+  def apply(config: AppConfig, runtime: RuntimeSettings): ChunkingService = new ChunkingService(config, runtime)
+
+  /** A service whose defaults are the configuration file's chunking settings. */
+  def apply(config: AppConfig): ChunkingService = new ChunkingService(config, RuntimeSettings.fixed(config))
 
   private val SemanticStrategy = "semantic"
   private val SentenceStrategy = "sentence"

@@ -113,7 +113,13 @@ object CollectionConfigRegistry {
 
       case Some(config) =>
         val fileExtension = filename.flatMap(extractExtension)
-        fileExtension.flatMap(ext => config.fileTypeStrategies.get(ext)) match {
+        // Keys are stored lower-cased; ones saved before that was enforced are matched the same way
+        val fileTypeStrategy = fileExtension.flatMap { ext =>
+          config.fileTypeStrategies.get(ext).orElse(config.fileTypeStrategies.collectFirst {
+            case (key, strategy) if key.trim.toLowerCase == ext => strategy
+          })
+        }
+        fileTypeStrategy match {
           case Some(strategy) =>
             EffectiveCollectionConfig(
               strategy = strategy,
@@ -134,10 +140,14 @@ object CollectionConfigRegistry {
         }
     }
 
-  /** File extension of `filename` (lower-cased, with leading dot). */
-  private def extractExtension(filename: String): Option[String] = {
-    val lastDot = filename.lastIndexOf('.')
-    if (lastDot > 0 && lastDot < filename.length - 1) Some(filename.substring(lastDot).toLowerCase)
-    else None
+  /**
+   * File extension of `filename` (lower-cased, with leading dot). `filename` may be a path or
+   * URL: only its last segment is looked at, so `https://example.com/page` has none.
+   */
+  def extractExtension(filename: String): Option[String] = {
+    val name = filename.substring(filename.lastIndexWhere(c => c == '/' || c == '\\') + 1)
+    val lastDot = name.lastIndexOf('.')
+    val ext = if (lastDot > 0 && lastDot < name.length - 1) Some(name.substring(lastDot).toLowerCase) else None
+    ext.filter(_.drop(1).forall(_.isLetterOrDigit))
   }
 }

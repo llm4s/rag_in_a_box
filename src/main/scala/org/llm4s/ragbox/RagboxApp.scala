@@ -135,25 +135,34 @@ object RagboxApp {
    *
    * @param oidcHttpClient HTTP client for the OIDC token endpoint (oauth mode); defaults to an
    *                       Ember client
+   * @param runtimeConfigManager the runtime settings `ragService` reads (created when not given)
+   * @param collectionConfigRegistry the collection chunking configs `ragService` reads (created when not given)
    */
   def resource(
     config: AppConfig,
     pool: HikariDataSource,
     ragService: RAGService,
-    oidcHttpClient: Resource[IO, Client[IO]] = EmberClientBuilder.default[IO].build
+    oidcHttpClient: Resource[IO, Client[IO]] = EmberClientBuilder.default[IO].build,
+    runtimeConfigManager: Option[RuntimeConfigManager] = None,
+    collectionConfigRegistry: Option[PgCollectionConfigRegistry] = None
   ): Resource[IO, RagboxApp] =
     for {
       logger <- Resource.eval(Slf4jLogger.create[IO])
-      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, pool))(_.close())
-      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(pool))(_.close())
+      // The ones ragService reads, when the caller built it with them (as Main does); otherwise new
+      runtimeConfigManager <- runtimeConfigManager.fold(
+        Resource.make(RuntimeConfigManager(config, pool, permissionMode = ragService.hasPermissions))(_.close())
+      )(Resource.pure(_))
+      collectionConfigRegistry <- collectionConfigRegistry.fold(
+        Resource.make(PgCollectionConfigRegistry(pool))(_.close())
+      )(Resource.pure(_))
       queryLogRegistry <- Resource.make(QueryLogRegistry(pool))(_.close())
       userRegistry <- Resource.make(UserRegistry(pool))(_.close())
       tokenRegistry <- Resource.make(AccessTokenRegistry(pool))(_.close())
       authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
       hub <- Resource.eval(BroadcastHub.create)
       ingestionService = IngestionService(ragService, config.ingestion, broadcastIngestion(hub, ragService))
-      chunkingService = ChunkingService(config)
-      suggestionService = SuggestionService(queryLogRegistry, config)
+      chunkingService = ChunkingService(config, runtimeConfigManager)
+      suggestionService = SuggestionService(queryLogRegistry, config, runtimeConfigManager)
       experimentRegistry <- Resource.eval(ExperimentRegistry(pool))
       experimentService = ExperimentService(experimentRegistry, queryLogRegistry, pool)
       chatSessionRegistry <- Resource.eval(ChatSessionRegistry(pool))

@@ -10,7 +10,8 @@ import org.typelevel.log4cats.Logger
 import cats.effect.std.Supervisor
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
-import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
+import org.llm4s.ragbox.registry.PgCollectionConfigRegistry
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.ingestion.IngestionService
 import org.llm4s.ragbox.service.RAGService
@@ -71,17 +72,30 @@ object Main extends IOApp {
         case None => logger.warn("Permission-based RAG: DISABLED (legacy mode, queries ignore permissions)")
       })
 
+      // Runtime settings (restored from the database) and per-collection chunking configs, which
+      // the RAG service reads on every query and ingest
+      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, dbPool, permissionMode = searchIndexOpt.isDefined))(_.close())
+      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(dbPool))(_.close())
+
       // Create RAG service with PostgreSQL-backed document registry
       // Use permission-aware mode if SearchIndex is available
       ragService <- searchIndexOpt match {
         case Some(si) =>
-          Resource.make(RAGService.createWithPermissions(config, dbPool, si))(_.close())
+          Resource.make(RAGService.createWithPermissions(
+            config, dbPool, si, runtimeSettings = Some(runtimeConfigManager), collectionConfigs = Some(collectionConfigRegistry)
+          ))(_.close())
         case None =>
-          Resource.make(RAGService.create(config, dbPool))(_.close())
+          Resource.make(RAGService.create(
+            config, dbPool, runtimeSettings = Some(runtimeConfigManager), collectionConfigs = Some(collectionConfigRegistry)
+          ))(_.close())
       }
 
       // Registries, services, routes and the middleware stack (shared with the full-stack tests)
-      app <- RagboxApp.resource(config, dbPool, ragService)
+      app <- RagboxApp.resource(
+        config, dbPool, ragService,
+        runtimeConfigManager = Some(runtimeConfigManager),
+        collectionConfigRegistry = Some(collectionConfigRegistry)
+      )
 
       // Parse host and port
       host = Host.fromString(config.server.host).getOrElse(host"0.0.0.0")

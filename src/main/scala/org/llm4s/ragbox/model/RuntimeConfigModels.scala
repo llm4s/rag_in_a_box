@@ -45,13 +45,19 @@ final case class RuntimeConfigUpdateRequest(
 
 /**
  * Result of updating a single setting.
+ *
+ * @param effectiveImmediately whether the next request the setting applies to uses the new value
+ *                             (no restart, no rebuild to wait for)
+ * @param note                 where the setting does not apply, when there is such a case (for
+ *                             example `llmTemperature` on `/query` answers)
  */
 final case class SettingUpdateResult(
   field: String,
   oldValue: String,
   newValue: String,
   changeability: String,  // "hot" or "warm"
-  effectiveImmediately: Boolean
+  effectiveImmediately: Boolean,
+  note: Option[String] = None
 )
 
 /**

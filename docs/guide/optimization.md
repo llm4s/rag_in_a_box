@@ -177,22 +177,18 @@ Each suggestion includes:
 Update chunking configuration via the Runtime Config API:
 
 ```bash
-# Update chunk size
+# Update chunk size (applies to documents ingested from now on)
 curl -X PUT http://localhost:8080/api/v1/config/runtime \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-token" \
-  -d '{
-    "settings": {
-      "defaultChunkSize": "500"
-    }
-  }'
+  -d '{"chunkSize": 500}'
 ```
 
 Or configure per-collection:
 
 ```bash
 # Set collection-specific chunking
-curl -X PUT http://localhost:8080/api/v1/config/collections/docs \
+curl -X PUT http://localhost:8080/api/v1/collections/docs/config \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-token" \
   -d '{
@@ -210,12 +206,11 @@ Update search settings:
 curl -X PUT http://localhost:8080/api/v1/config/runtime \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-token" \
-  -d '{
-    "settings": {
-      "topK": "5"
-    }
-  }'
+  -d '{"topK": 5}'
 ```
+
+The new value applies to the next query, and survives a restart (see
+[Runtime Settings](configuration.md#runtime-settings)).
 
 ### Re-indexing After Changes
 

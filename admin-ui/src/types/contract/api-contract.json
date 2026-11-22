@@ -491,9 +491,10 @@
       {
         "changeability" : "hot",
         "effectiveImmediately" : true,
-        "field" : "topK",
-        "newValue" : "8",
-        "oldValue" : "5"
+        "field" : "llmTemperature",
+        "newValue" : "0.2",
+        "note" : "Applies to chat answers.",
+        "oldValue" : "0.7"
       }
     ],
     "current" : {
@@ -528,9 +529,10 @@
   "SettingUpdateResult" : {
     "changeability" : "hot",
     "effectiveImmediately" : true,
-    "field" : "topK",
-    "newValue" : "8",
-    "oldValue" : "5"
+    "field" : "llmTemperature",
+    "newValue" : "0.2",
+    "note" : "Applies to chat answers.",
+    "oldValue" : "0.7"
   },
   "SettingValidation" : {
     "currentValue" : "5",

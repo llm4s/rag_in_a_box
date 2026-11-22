@@ -2,10 +2,11 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import cats.syntax.all._
-import org.llm4s.chunking.{DocumentChunk, DocumentChunker}
+import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk, DocumentChunker}
 import org.llm4s.extract.TikaDocumentExtractor
-import org.llm4s.llmconnect.LLMClient
-import org.llm4s.llmconnect.model.CompletionOptions
+import org.llm4s.llmconnect.{EmbeddingClient, LLMClient}
+import org.llm4s.llmconnect.config.EmbeddingModelConfig
+import org.llm4s.llmconnect.model.{CompletionOptions, EmbeddingError, EmbeddingRequest}
 import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.model.ModelRegistryService
 import org.llm4s.rag.{RAG, RAGSearchResult, RAGAnswerResult}
@@ -14,17 +15,19 @@ import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSchemaManager
 import org.llm4s.trace.TracingLLMClient
 import org.llm4s.types.Result
-import org.llm4s.ragbox.config.AppConfig
-import org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn
+import org.llm4s.ragbox.config.{AppConfig, RuntimeSettings}
+import org.llm4s.ragbox.service.Llm4sPipeline.{ChatTurn, PipelineSettings}
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentRegistry}
+import org.llm4s.ragbox.registry.{CollectionConfigRegistry, DocumentEntry, DocumentRegistry, PgDocumentRegistry}
 import org.llm4s.ragbox.store.{ChunkStore, PgChunkStore}
 
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 import javax.sql.DataSource
+import scala.collection.concurrent.TrieMap
+import scala.concurrent.duration._
 
 /**
  * A request the service rejects because its input is invalid, such as a malformed collection
@@ -45,15 +48,31 @@ final case class InvalidRequestError(message: String) extends RuntimeException(m
  * All llm4s RAG calls are synchronous (embedding and LLM HTTP calls, JDBC), so they run on the
  * blocking pool through [[blockingResult]], never on the compute pool.
  *
- * The llm4s [[RAG]] instance is built on first use and memoised only once it has been built: a
- * failure (database or embedding provider unreachable at startup, say) is not cached, so a later
- * call retries - at most once per [[RAGService.RetryCooldownMillis]] - instead of the service
- * staying broken until restart. The factories try to build it eagerly and log a failure.
+ * '''Runtime settings.''' Every query, chat message and ingest reads the current
+ * [[RuntimeSettings]] (topK, fusion, system prompt, temperature, chunking), so a change made
+ * through the runtime config API applies to the next request without a restart. topK is passed
+ * to llm4s on each call. The settings an llm4s [[RAG]] bakes in when it is built
+ * ([[PipelineSettings]]: fusion, system prompt, reranking, query transform) select a pipeline
+ * from a [[PipelinePool]], keyed by those settings: a change builds a new pipeline on the next
+ * query, and the previous one is retired - closed once the requests still using it finish.
  *
- * @param providerRegistry where the embedding provider is resolved; tests pass one holding a
- *                         deterministic in-process embedder
- * @param dataSource the application's shared connection pool, for the permission-mode schema
- *                   setup in [[ensureDefaultCollection]]
+ * '''Chunking.''' Each document is chunked once, with the chunking its collection resolves to
+ * (`CollectionConfigRegistry.getEffective`: a file-type override, the collection's config, or
+ * the runtime settings), and those chunks are what llm4s indexes and the chunk store keeps.
+ *
+ * A pipeline is built on first use and kept only once it has been built: a failure (database or
+ * embedding provider unreachable at startup, say) is not cached, so a later call retries - at
+ * most once per [[RAGService.RetryCooldownMillis]] - instead of the service staying broken until
+ * restart. The factories try to build it eagerly and log a failure.
+ *
+ * @param providerRegistry  where the embedding provider is resolved; tests pass one holding a
+ *                          deterministic in-process embedder
+ * @param dataSource        the application's shared connection pool, for the permission-mode
+ *                          schema setup in [[ensureDefaultCollection]]
+ * @param runtimeSettings   the runtime-modifiable settings; `Main` passes the
+ *                          `RuntimeConfigManager`. By default the configuration file's, fixed.
+ * @param collectionConfigs per-collection chunking configs; without them every document is
+ *                          chunked with the runtime settings
  */
 class RAGService(
   config: AppConfig,
@@ -61,7 +80,9 @@ class RAGService(
   chunkStore: ChunkStore,
   val searchIndex: Option[SearchIndex] = None,
   providerRegistry: ProviderRegistry = ProviderRegistry.default,
-  dataSource: Option[DataSource] = None
+  dataSource: Option[DataSource] = None,
+  runtimeSettings: Option[RuntimeSettings] = None,
+  collectionConfigs: Option[CollectionConfigRegistry] = None
 ) {
   import RAGService.DefaultCollection
 
@@ -118,76 +139,126 @@ class RAGService(
     }
   }
 
-  // The RAG instance once built, and the last build failure (time, message) while it is not.
-  private val ragRef = new AtomicReference[Option[RAG]](None)
-  private val lastRagFailure = new AtomicReference[Option[(Long, String)]](None)
-  private val ragLock = new Object
-  @volatile private var closed = false
+  /** The runtime settings requests read. */
+  private val settings: RuntimeSettings = runtimeSettings.getOrElse(RuntimeSettings.fixed(config))
 
-  private def buildRag(): Result[RAG] =
-    for {
-      registry <- modelRegistry
-      ragConfig <- Llm4sPipeline.ragConfig(config, searchIndex, llmClient, metricsTracing)
-      rag <- {
-        given ModelRegistryService = registry
-        ragConfig.build(
-          Llm4sPipeline.embeddingProviderConfig(config, providerRegistry),
-          () => Llm4sPipeline.rerankerConfig(config)
-        )
-      }
-    } yield rag
+  /** The runtime settings in effect now. */
+  def currentSettings: RuntimeConfig = settings.current
 
-  /**
-   * The chunker documents are chunked with - the same one llm4s's pipeline is configured with.
-   * Each document is chunked once, here, and the chunks are both indexed and kept in the chunk
-   * store, so what the chunk store shows is exactly what was indexed.
-   */
-  private lazy val chunker: Result[DocumentChunker] =
-    modelRegistry.flatMap { registry =>
-      given ModelRegistryService = registry
-      Llm4sPipeline.chunker(config, providerRegistry)
-    }
-
-  /**
-   * Get the underlying RAG instance, building it if it has not been built yet.
-   *
-   * A build failure is not memoised: the next call after [[RAGService.RetryCooldownMillis]]
-   * tries again (calls within the cooldown fail fast with the last error). Builds are
-   * serialised, so concurrent callers never create two instances.
-   */
-  def rag: IO[RAG] =
-    ragRef.get() match {
-      case Some(r) => IO.pure(r)
-      case None =>
-        IO.blocking {
-          ragLock.synchronized {
-            if (closed) Left("RAG service is closed")
-            else
-              ragRef.get() match {
-                case Some(r) => Right(r)
-                case None =>
-                  val now = System.currentTimeMillis()
-                  lastRagFailure.get() match {
-                    case Some((at, message)) if now - at < RAGService.RetryCooldownMillis => Left(message)
-                    case _ =>
-                      scala.util.Try(buildRag()).toEither.left.map(e => Option(e.getMessage).getOrElse(e.toString))
-                        .flatMap(_.left.map(_.message)) match {
-                        case Right(r) =>
-                          ragRef.set(Some(r))
-                          lastRagFailure.set(None)
-                          Right(r)
-                        case Left(message) =>
-                          lastRagFailure.set(Some(now -> message))
-                          Left(message)
-                      }
-                  }
-              }
+  /** Build the llm4s pipeline for `pipelineSettings` (blocking: it connects to the stores). */
+  private def buildRag(pipelineSettings: PipelineSettings): IO[RAG] =
+    IO.blocking {
+      val effective = pipelineSettings.applyTo(config)
+      scala.util.Try(
+        for {
+          registry <- modelRegistry
+          ragConfig <- Llm4sPipeline.ragConfig(effective, searchIndex, llmClient, metricsTracing)
+          rag <- {
+            given ModelRegistryService = registry
+            ragConfig.build(
+              Llm4sPipeline.embeddingProviderConfig(config, providerRegistry),
+              () => Llm4sPipeline.rerankerConfig(effective)
+            )
           }
-        }.flatMap(result => IO.fromEither(result.left.map(new RuntimeException(_))))
+        } yield rag
+      ).toEither.left.map(e => Option(e.getMessage).getOrElse(e.toString)).flatMap(_.left.map(_.message))
+    }.flatMap(result => IO.fromEither(result.left.map(new RuntimeException(_))))
+
+  /** Pipelines by the settings they were built with (see the class description). */
+  private val pipelines: PipelinePool[PipelineSettings, RAG] = PipelinePool.unsafeCreate(
+    build = buildRag,
+    dispose = r => IO.blocking(r.close()),
+    maxEntries = RAGService.MaxPipelines,
+    retryCooldown = RAGService.RetryCooldownMillis.millis,
+    closedMessage = "RAG service is closed"
+  )
+
+  /** The pipeline settings the current runtime settings select. */
+  def currentPipelineSettings: PipelineSettings = {
+    val current = settings.current
+    PipelineSettings.from(config)
+      .copy(fusionStrategy = current.fusionStrategy, rrfK = current.rrfK, systemPrompt = current.systemPrompt)
+      .forMode(config, hasPermissions)
+  }
+
+  // The pipeline settings the runtime settings selected last, so the pipeline they replace is retired
+  private val lastCurrentSettings = new AtomicReference[Option[PipelineSettings]](None)
+
+  /** Run `f` with the pipeline for `pipelineSettings`, which stays open until `f` completes. */
+  private def withPipeline[B](pipelineSettings: PipelineSettings)(f: RAG => IO[B]): IO[B] =
+    pipelines.use(pipelineSettings)(f)
+
+  /**
+   * Run `f` with the pipeline the current runtime settings select. When the runtime settings
+   * have changed since the last call, the pipeline of the previous settings is retired: it takes
+   * no new requests and is closed when the ones still using it finish.
+   */
+  private def withCurrentPipeline[B](f: RAG => IO[B]): IO[B] = {
+    val current = currentPipelineSettings
+    IO(lastCurrentSettings.getAndSet(Some(current)))
+      .flatMap(_.filter(_ != current).traverse_(pipelines.retire)) *>
+      withPipeline(current)(f)
+  }
+
+  /**
+   * The pipeline for the current runtime settings, building it if it has not been built yet.
+   * For checks (readiness, warm-up): the instance is no longer leased once this returns, so
+   * requests use pipelines through [[withCurrentPipeline]] instead.
+   */
+  def rag: IO[RAG] = withCurrentPipeline(IO.pure)
+
+  /** Whether the pipeline for the current settings has been built (without trying to build it). */
+  private def ragReady: IO[Boolean] = pipelines.isBuilt(currentPipelineSettings)
+
+  // The embedding client and model, once built (a failure is retried on next use)
+  private val embedderRef = new AtomicReference[Option[(EmbeddingClient, EmbeddingModelConfig)]](None)
+
+  /** The embedding client permission-mode ingest embeds with, traced like the pipeline's. */
+  private def embedder: IO[(EmbeddingClient, EmbeddingModelConfig)] =
+    embedderRef.get() match {
+      case Some(built) => IO.pure(built)
+      case None =>
+        blockingResult(modelRegistry.flatMap { registry =>
+          given ModelRegistryService = registry
+          Llm4sPipeline.embedder(config, providerRegistry)
+        }).map { case (client, model) =>
+          val traced = (client.withTracing(metricsTracing), model)
+          embedderRef.compareAndSet(None, Some(traced))
+          embedderRef.get().getOrElse(traced)
+        }
     }
 
-  /** Whether the RAG instance has been built (without trying to build it). */
-  private def ragReady: Boolean = ragRef.get().isDefined
+  // Chunkers by strategy, once built (the semantic one needs the embedding provider)
+  private val chunkers = TrieMap.empty[ChunkerFactory.Strategy, DocumentChunker]
+
+  private def chunkerFor(strategyName: String): IO[DocumentChunker] =
+    IO.fromEither(Llm4sPipeline.chunkerStrategy(strategyName).left.map(e => new RuntimeException(e.message))).flatMap { strategy =>
+      chunkers.get(strategy) match {
+        case Some(chunker) => IO.pure(chunker)
+        case None =>
+          blockingResult(modelRegistry.flatMap { registry =>
+            given ModelRegistryService = registry
+            Llm4sPipeline.chunker(strategy, config, providerRegistry)
+          }).map(chunker => chunkers.putIfAbsent(strategy, chunker).getOrElse(chunker))
+      }
+    }
+
+  /**
+   * The chunking a document gets: its collection's file-type override or config when it has
+   * one (and a collection config registry is attached), otherwise the runtime settings.
+   */
+  def effectiveChunking(collection: Option[String], filename: Option[String]): IO[EffectiveCollectionConfig] = {
+    val current = settings.current
+    val defaultMaxSize = RuntimeSettings.defaultMaxSize(current.chunkSize)
+    (collection, collectionConfigs) match {
+      case (Some(c), Some(registry)) =>
+        registry.getEffective(c, filename, current.chunkingStrategy, current.chunkSize, defaultMaxSize, current.chunkOverlap)
+      case _ =>
+        IO.pure(CollectionConfigRegistry.resolveEffective(
+          None, filename, current.chunkingStrategy, current.chunkSize, defaultMaxSize, current.chunkOverlap
+        ))
+    }
+  }
 
   /** Run a synchronous llm4s call on the blocking pool and lift its `Result`. */
   private def blockingResult[A](call: => Result[A]): IO[A] =
@@ -257,7 +328,7 @@ class RAGService(
           deleteVectorsFromCollection(entry.flatMap(_.collection).getOrElse(DefaultCollection), documentId).void
         }
       } else {
-        rag.flatMap(r => blockingResult(r.deleteDocument(documentId)))
+        withCurrentPipeline(r => blockingResult(r.deleteDocument(documentId)))
       }
     deleteVectors *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
   }
@@ -271,13 +342,12 @@ class RAGService(
    */
   private def deleteVectorsFromCollection(collection: String, documentId: String): IO[Long] =
     for {
-      r <- rag
       existingPath <- CollectionPath.create(collection).toOption match {
         case Some(path) => collectionExists(path).map(exists => Option.when(exists)(path))
         case None => IO.pure(None)
       }
       path = existingPath.getOrElse(CollectionPath.unsafe(DefaultCollection))
-      deleted <- blockingResult(r.deleteFromCollection(path, documentId))
+      deleted <- withCurrentPipeline(r => blockingResult(r.deleteFromCollection(path, documentId)))
     } yield deleted
 
   private def collectionExists(path: CollectionPath): IO[Boolean] =
@@ -293,8 +363,7 @@ class RAGService(
    */
   def getStats: IO[StatsResponse] =
     for {
-      r <- rag
-      stats <- blockingResult(r.stats)
+      stats <- withCurrentPipeline(r => blockingResult(r.stats))
       // Use registries for accurate persistent counts
       docCount <- documentRegistry.count()
       chunkCount <- chunkStore.count()
@@ -310,7 +379,7 @@ class RAGService(
    * Clear all documents.
    */
   def clearAll: IO[Unit] =
-    rag.flatMap(r => blockingResult(r.clear())) *> chunkStore.clear() *> documentRegistry.clear()
+    withCurrentPipeline(r => blockingResult(r.clear())) *> chunkStore.clear() *> documentRegistry.clear()
 
   // ============================================================
   // Upsert Operations (SDK/Sidecar Pattern)
@@ -428,16 +497,24 @@ class RAGService(
     }
 
   /**
-   * Chunk a document once, with the pipeline's chunker and chunking config (`RAG.config`), on the
-   * blocking pool (the semantic chunker calls the embedding provider).
+   * Chunk a document once, with the chunking its collection and file name resolve to (see
+   * [[effectiveChunking]]), on the blocking pool (the semantic chunker calls the embedding
+   * provider).
    */
-  private def chunkContent(r: RAG, content: String, metadata: Map[String, String]): IO[Seq[DocumentChunk]] =
-    IO.fromEither(chunker.left.map(e => new RuntimeException(e.message))).flatMap { c =>
-      IO.blocking {
-        val chunks = c.chunk(content, r.config.chunkingConfig)
+  private def chunkContent(
+    documentId: String,
+    content: String,
+    metadata: Map[String, String],
+    collection: Option[String]
+  ): IO[Seq[DocumentChunk]] =
+    for {
+      effective <- effectiveChunking(collection, RAGService.sourceName(documentId, metadata))
+      chunker <- chunkerFor(effective.strategy)
+      chunks <- IO.blocking {
+        val chunks = chunker.chunk(content, RAGService.chunkingConfig(effective))
         metadata.get("filename").fold(chunks)(f => chunks.map(ch => ch.copy(metadata = ch.metadata.withSource(f))))
       }
-    }
+    } yield chunks
 
   /**
    * Ingest a document without permissions: chunk it once and hand exactly those chunks to llm4s
@@ -452,9 +529,8 @@ class RAGService(
     sourceId: Option[String]
   ): IO[DocumentUpsertResponse] =
     for {
-      r <- rag
-      chunks <- chunkContent(r, content, metadata)
-      chunkCount <- blockingResult(r.ingestChunks(documentId, chunks.map(_.content), metadata))
+      chunks <- chunkContent(documentId, content, metadata, metadata.get("collection"))
+      chunkCount <- withCurrentPipeline(r => blockingResult(r.ingestChunks(documentId, chunks.map(_.content), metadata)))
       collection = metadata.get("collection")
       _ <- recordIngest(
         documentId = documentId,
@@ -641,8 +717,8 @@ class RAGService(
    * Search for relevant chunks (no LLM answer generation).
    */
   def search(query: String, topK: Option[Int]): IO[SearchResponse] =
-    rag.flatMap { r =>
-      blockingResult(r.query(query, topK)).map { results =>
+    withCurrentPipeline { r =>
+      blockingResult(r.query(query, Some(resolveTopK(topK)))).map { results =>
         SearchResponse(
           results = results.map(toContextItem),
           count = results.size
@@ -655,7 +731,7 @@ class RAGService(
    * query's per-stage latencies, token usage and cost, from what llm4s traced while answering.
    */
   def queryWithAnswer(question: String, topK: Option[Int]): IO[QueryResponse] =
-    rag.flatMap(r => measured(r.queryWithAnswer(question, topK))).map { case (result, collected, nanos) =>
+    withCurrentPipeline(r => measured(r.queryWithAnswer(question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
       toQueryResponse(result, collected, nanos)
     }
 
@@ -681,8 +757,8 @@ class RAGService(
     collectionPattern: String,
     topK: Option[Int]
   ): IO[SearchResponse] =
-    (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
-      blockingResult(r.queryWithPermissions(auth, pattern, query, topK)).map { results =>
+    parseCollectionPattern(collectionPattern).flatMap { pattern =>
+      withCurrentPipeline(r => blockingResult(r.queryWithPermissions(auth, pattern, query, Some(resolveTopK(topK))))).map { results =>
         SearchResponse(
           results = results.map(toContextItem),
           count = results.size
@@ -699,8 +775,8 @@ class RAGService(
     collectionPattern: String,
     topK: Option[Int]
   ): IO[QueryResponse] =
-    (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
-      measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)).map { case (result, collected, nanos) =>
+    parseCollectionPattern(collectionPattern).flatMap { pattern =>
+      withCurrentPipeline(r => measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
         toQueryResponse(result, collected, nanos)
       }
     }
@@ -710,8 +786,8 @@ class RAGService(
    *
    * llm4s's `queryWithAnswer` takes a single question (llm4s/llm4s#2733), so ragbox composes the two llm4s steps
    * itself: retrieval through the pipeline (`RAG.query`, or `RAG.queryWithPermissions` when
-   * `permissions` is given), then the answer LLM with the history, the retrieved context and the
-   * configured `llm.temperature` (see [[Llm4sPipeline.chatConversation]]).
+   * `permissions` is given), then the answer LLM with the history, the retrieved context, and the
+   * runtime system prompt and temperature (see [[Llm4sPipeline.chatConversation]]).
    *
    * @param history     earlier messages, oldest first; the caller bounds how many
    * @param permissions the user's authorization and collection pattern, in permission mode
@@ -723,23 +799,29 @@ class RAGService(
     topK: Option[Int]
   ): IO[QueryResponse] =
     for {
-      r <- rag
       client <- IO.fromOption(llmClient)(new RuntimeException(RAGService.LlmRequiredMessage))
       pattern <- permissions.traverse { case (auth, p) => parseCollectionPattern(p).map(auth -> _) }
-      measuredAnswer <- measured {
-        for {
-          contexts <- pattern match {
-            case Some((auth, p)) => r.queryWithPermissions(auth, p, question, topK)
-            case None => r.query(question, topK)
-          }
-          conversation = Llm4sPipeline.chatConversation(config.rag.systemPrompt, history, contexts, question)
-          completion <- client.complete(conversation, CompletionOptions(temperature = config.llm.temperature))
-        } yield RAGAnswerResult(answer = completion.content, question = question, contexts = contexts, usage = completion.usage)
+      current = settings.current
+      k = Some(topK.getOrElse(current.topK))
+      measuredAnswer <- withCurrentPipeline { r =>
+        measured {
+          for {
+            contexts <- pattern match {
+              case Some((auth, p)) => r.queryWithPermissions(auth, p, question, k)
+              case None => r.query(question, k)
+            }
+            conversation = Llm4sPipeline.chatConversation(current.systemPrompt, history, contexts, question)
+            completion <- client.complete(conversation, CompletionOptions(temperature = current.llmTemperature))
+          } yield RAGAnswerResult(answer = completion.content, question = question, contexts = contexts, usage = completion.usage)
+        }
       }
     } yield {
       val (result, collected, nanos) = measuredAnswer
       toQueryResponse(result, collected, nanos)
     }
+
+  /** topK for a call: the caller's, or the runtime setting. */
+  private def resolveTopK(topK: Option[Int]): Int = topK.getOrElse(settings.current.topK)
 
   /**
    * Run a synchronous llm4s call on the blocking pool, collecting what it traced and timing it.
@@ -821,12 +903,12 @@ class RAGService(
     ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, computeContentHash(content), None)
 
   /**
-   * Ingest into a collection through llm4s `RAG.ingestWithPermissions`, and keep the indexed
-   * chunks in the chunk store under the ids llm4s gave them (`coll-<collectionId>-<doc>-chunk-<n>`).
-   *
-   * llm4s has no pre-chunked permission ingest (llm4s/llm4s#2732), so it chunks the content itself - with the same
-   * chunker and config [[chunkContent]] uses, which gives the same chunks. A count that differs
-   * (possible only for the semantic chunker, whose boundaries depend on embeddings) is logged.
+   * Ingest into a collection: chunk the document once (with its collection's chunking, see
+   * [[chunkContent]]), embed the chunks and write them through llm4s's `SearchIndex.ingest` -
+   * the call `RAG.ingestWithPermissions` makes once it has chunked and embedded. ragbox does not
+   * call `RAG.ingestWithPermissions` itself, as that chunks with the pipeline's one chunking
+   * config (llm4s/llm4s#2732). The chunk store keeps the same chunks under the ids llm4s gave
+   * them (`coll-<collectionId>-<doc>-chunk-<n>`).
    */
   private def ingestIntoCollection(
     collectionPath: String,
@@ -839,12 +921,18 @@ class RAGService(
   ): IO[DocumentUploadResponse] =
     for {
       path <- parseCollectionPath(collectionPath)
-      r <- rag
-      chunks <- chunkContent(r, content, metadata)
-      chunkCount <- blockingResult(r.ingestWithPermissions(path, documentId, content, metadata, readableBy))
-      _ <- IO.whenA(chunkCount != chunks.size)(IO(RAGService.logger.warn(
-        s"Document '$documentId': llm4s indexed $chunkCount chunks, the chunk store has ${chunks.size}"
-      )))
+      index <- IO.fromOption(searchIndex)(new IllegalStateException("Permission-aware ingestion needs a SearchIndex"))
+      chunks <- chunkContent(documentId, content, metadata, Some(path.value))
+      embeddings <- embed(chunks.map(_.content))
+      chunkCount <- blockingResult(index.ingest(
+        collectionPath = path,
+        documentId = documentId,
+        chunks = chunks.zip(embeddings).zipWithIndex.map { case ((chunk, embedding), i) =>
+          ChunkWithEmbedding(content = chunk.content, embedding = embedding, chunkIndex = i, metadata = metadata)
+        },
+        metadata = metadata,
+        readableBy = readableBy
+      ))
       collectionId <- collections.traverse(store => blockingResult(store.get(path))).map(_.flatten.map(_.id))
       // The registry records documents in the default collection with no collection, which is
       // how it has always represented "default" (see PgDocumentRegistry.listIdsByCollection).
@@ -867,6 +955,20 @@ class RAGService(
       chunks = chunkCount,
       message = s"Successfully indexed $chunkCount chunks in ${path.value}"
     )
+
+  /** Embed `texts` in one request, as llm4s's `RAG` embeds a document's chunks. */
+  private def embed(texts: Seq[String]): IO[Seq[Array[Float]]] =
+    if (texts.isEmpty) IO.pure(Seq.empty)
+    else
+      embedder.flatMap { case (client, model) =>
+        blockingResult(client.embed(EmbeddingRequest(texts, model)).flatMap { response =>
+          Either.cond(
+            response.embeddings.size == texts.size,
+            response.embeddings.map(_.map(_.toFloat).toArray),
+            EmbeddingError(None, s"Embedding provider returned ${response.embeddings.size} embeddings for ${texts.size} texts", model.name)
+          )
+        })
+      }
 
   /**
    * Upsert a document with permission controls (idempotent create/update).
@@ -940,8 +1042,7 @@ class RAGService(
   def deleteFromCollection(collectionPath: String, documentId: String): IO[Long] =
     for {
       path <- parseCollectionPath(collectionPath)
-      r <- rag
-      deleted <- blockingResult(r.deleteFromCollection(path, documentId))
+      deleted <- withCurrentPipeline(r => blockingResult(r.deleteFromCollection(path, documentId)))
       _ <- chunkStore.deleteByDocument(documentId)
       _ <- documentRegistry.remove(documentId)
     } yield deleted
@@ -990,7 +1091,8 @@ class RAGService(
    * llm4s's permission-filtered search is vector-only, so the configured fusion strategy and RRF k,
    * reranking and query transforms do not apply there (llm4s/llm4s#2716).
    */
-  def getConfigInfo: IO[ConfigResponse] = IO.pure {
+  def getConfigInfo: IO[ConfigResponse] = ragReady.map { connected =>
+    val current = settings.current
     ConfigResponse(
       embedding = EmbeddingConfigInfo(
         provider = config.embedding.provider,
@@ -999,15 +1101,15 @@ class RAGService(
       ),
       llm = LLMConfigInfo(
         model = config.llm.model,
-        temperature = config.llm.temperature
+        temperature = current.llmTemperature
       ),
       rag = RAGConfigInfo(
-        chunkingStrategy = config.rag.chunking.strategy,
-        chunkSize = config.rag.chunking.size,
-        chunkOverlap = config.rag.chunking.overlap,
-        topK = config.rag.search.topK,
-        fusionStrategy = config.rag.search.fusionStrategy,
-        rrfK = config.rag.search.rrfK,
+        chunkingStrategy = current.chunkingStrategy,
+        chunkSize = current.chunkSize,
+        chunkOverlap = current.chunkOverlap,
+        topK = current.topK,
+        fusionStrategy = current.fusionStrategy,
+        rrfK = current.rrfK,
         searchMode = if (hasPermissions) "vector" else "hybrid",
         fusionApplies = !hasPermissions,
         reranking = config.rag.reranking.normalizedStrategy.getOrElse(config.rag.reranking.strategy),
@@ -1019,7 +1121,7 @@ class RAGService(
         port = config.database.effectivePort,
         database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
-        connected = ragReady
+        connected = connected
       )
     )
   }
@@ -1037,7 +1139,7 @@ class RAGService(
         )
       else Seq.empty
     permissionMode ++ Seq(
-      "llm.temperature applies to chat answers only: llm4s RAG.queryWithAnswer generates /query answers " +
+      "The LLM temperature applies to chat answers only: llm4s RAG.queryWithAnswer generates /query answers " +
         "at temperature 0.0 in llm4s 0.6.0 (llm4s/llm4s#2715, fixed upstream for the next release).",
       "Streaming endpoints send the answer in one event once it is complete: llm4s RAG has no streaming " +
         "answer API in 0.6.0 (llm4s/llm4s#2717, added upstream for the next release)."
@@ -1131,7 +1233,8 @@ class RAGService(
   /**
    * Get detailed configuration with changeability annotations.
    */
-  def getDetailedConfig: IO[DetailedConfigResponse] = IO.pure {
+  def getDetailedConfig: IO[DetailedConfigResponse] = ragReady.map { connected =>
+    val current = settings.current
     DetailedConfigResponse(
       embedding = VisibilityEmbeddingConfig(
         provider = config.embedding.provider,
@@ -1141,17 +1244,17 @@ class RAGService(
       ),
       llm = VisibilityLLMConfig(
         model = config.llm.model,
-        temperature = config.llm.temperature,
+        temperature = current.llmTemperature,
         changeability = ChangeabilityInfo.hot
       ),
       rag = DetailedRAGConfigInfo(
-        chunkingStrategy = ConfigSetting("chunkingStrategy", config.rag.chunking.strategy, ChangeabilityInfo.warm),
-        chunkSize = ConfigSetting("chunkSize", config.rag.chunking.size.toString, ChangeabilityInfo.warm),
-        chunkOverlap = ConfigSetting("chunkOverlap", config.rag.chunking.overlap.toString, ChangeabilityInfo.warm),
-        topK = ConfigSetting("topK", config.rag.search.topK.toString, ChangeabilityInfo.hot),
-        fusionStrategy = ConfigSetting("fusionStrategy", config.rag.search.fusionStrategy, ChangeabilityInfo.hot),
-        rrfK = ConfigSetting("rrfK", config.rag.search.rrfK.toString, ChangeabilityInfo.hot),
-        systemPrompt = Some(config.rag.systemPrompt),
+        chunkingStrategy = ConfigSetting("chunkingStrategy", current.chunkingStrategy, ChangeabilityInfo.warm),
+        chunkSize = ConfigSetting("chunkSize", current.chunkSize.toString, ChangeabilityInfo.warm),
+        chunkOverlap = ConfigSetting("chunkOverlap", current.chunkOverlap.toString, ChangeabilityInfo.warm),
+        topK = ConfigSetting("topK", current.topK.toString, ChangeabilityInfo.hot),
+        fusionStrategy = ConfigSetting("fusionStrategy", current.fusionStrategy, ChangeabilityInfo.hot),
+        rrfK = ConfigSetting("rrfK", current.rrfK.toString, ChangeabilityInfo.hot),
+        systemPrompt = Some(current.systemPrompt),
         searchMode = if (hasPermissions) "vector" else "hybrid",
         limitations = pipelineLimitations
       ),
@@ -1160,7 +1263,7 @@ class RAGService(
         port = config.database.effectivePort,
         database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
-        connected = ragReady
+        connected = connected
       ),
       runtimeConfigurable = RuntimeConfigurableInfo(
         hotSettings = Seq("topK", "fusionStrategy", "rrfK", "systemPrompt", "llmModel", "llmTemperature"),
@@ -1191,17 +1294,23 @@ class RAGService(
           collection = entry.flatMap(_.collection),
           chunkCount = chunks.size,
           chunks = chunks,
-          chunkingConfig = ChunkConfigSnapshot(
-            strategy = config.rag.chunking.strategy,
-            targetSize = config.rag.chunking.size,
-            maxSize = (config.rag.chunking.size * 1.5).toInt,
-            overlap = config.rag.chunking.overlap
-          )
+          chunkingConfig = currentChunkConfig
         ))
       } else {
         None
       }
     }
+
+  /** The runtime chunking settings, as the visibility API shows them. */
+  private def currentChunkConfig: ChunkConfigSnapshot = {
+    val current = settings.current
+    ChunkConfigSnapshot(
+      strategy = current.chunkingStrategy,
+      targetSize = current.chunkSize,
+      maxSize = RuntimeSettings.defaultMaxSize(current.chunkSize),
+      overlap = current.chunkOverlap
+    )
+  }
 
   /**
    * Get a specific chunk by document ID and index.
@@ -1231,12 +1340,7 @@ class RAGService(
         chunkSizeDistribution = chunkDist,
         indexedSince = firstIngestionTime,
         lastIngestion = lastIngestionTime,
-        currentConfig = ChunkConfigSnapshot(
-          strategy = config.rag.chunking.strategy,
-          targetSize = config.rag.chunking.size,
-          maxSize = (config.rag.chunking.size * 1.5).toInt,
-          overlap = config.rag.chunking.overlap
-        )
+        currentConfig = currentChunkConfig
       )
     }
 
@@ -1269,11 +1373,12 @@ class RAGService(
     for {
       detailedStats <- getDetailedCollectionStats
     } yield {
+      val chunking = currentChunkConfig
       val defaultConfig = EffectiveChunkingInfo(
-        strategy = config.rag.chunking.strategy,
-        targetSize = config.rag.chunking.size,
-        maxSize = (config.rag.chunking.size * 1.5).toInt,
-        overlap = config.rag.chunking.overlap,
+        strategy = chunking.strategy,
+        targetSize = chunking.targetSize,
+        maxSize = chunking.maxSize,
+        overlap = chunking.overlap,
         source = "default"
       )
 
@@ -1382,18 +1487,12 @@ class RAGService(
   def getDocumentRegistry: DocumentRegistry = documentRegistry
 
   /**
-   * Close resources: the RAG instance (if it was built), the document registry and the chunk
-   * store. Every one is closed even if closing another fails; the first failure is re-raised
+   * Close resources: the pipelines (each once the requests using it finish), the document
+   * registry and the chunk store. Every one is closed even if closing another fails; the first failure is re-raised
    * with the others attached as suppressed exceptions.
    */
-  def close(): IO[Unit] = {
-    val closeRag = IO.blocking {
-      ragLock.synchronized {
-        closed = true
-        ragRef.getAndSet(None).foreach(_.close())
-      }
-    }
-    List(closeRag, documentRegistry.close(), chunkStore.close())
+  def close(): IO[Unit] =
+    List(pipelines.close, documentRegistry.close(), chunkStore.close())
       .traverse(_.attempt)
       .flatMap { results =>
         results.collect { case Left(e) => e } match {
@@ -1401,7 +1500,6 @@ class RAGService(
           case first :: rest => IO(rest.foreach(first.addSuppressed)) *> IO.raiseError(first)
         }
       }
-  }
 }
 
 object RAGService {
@@ -1417,6 +1515,35 @@ object RAGService {
 
   /** Minimum time between attempts to build the RAG instance after a failure. */
   val RetryCooldownMillis: Long = 5000L
+
+  /**
+   * How many pipelines are kept at once: the current settings' and, while an experiment runs,
+   * its variants'. Each holds its own store connections, so the least recently used one beyond
+   * this is closed.
+   */
+  val MaxPipelines: Int = 4
+
+  /**
+   * The name a document's file-type chunking override is looked up by: its file name, else the
+   * path or source llm4s's loaders record, else its id.
+   */
+  def sourceName(documentId: String, metadata: Map[String, String]): Option[String] =
+    metadata.get("filename").orElse(metadata.get("path")).orElse(metadata.get("source")).orElse(Some(documentId))
+
+  /**
+   * The llm4s chunking config for an effective collection config. Sizes that validation rejects
+   * when a config is saved can still arise later - a collection that sets only `maxSize`, after
+   * the runtime chunk size grew past it - so they are brought within llm4s's bounds here rather
+   * than failing the ingest.
+   */
+  def chunkingConfig(effective: EffectiveCollectionConfig): ChunkingConfig = {
+    val target = math.max(1, effective.targetSize)
+    ChunkingConfig(
+      targetSize = target,
+      maxSize = math.max(effective.maxSize, target),
+      overlap = math.max(0, math.min(effective.overlap, target - 1))
+    )
+  }
 
   /** Tika metadata kept on an uploaded document (lower-cased keys; `dc:` is dropped). */
   private val ExtractedMetadataKeys: Set[String] = Set("dc:title", "title", "dc:creator", "author")
@@ -1437,12 +1564,14 @@ object RAGService {
   def create(
     config: AppConfig,
     dataSource: DataSource,
-    providerRegistry: ProviderRegistry = ProviderRegistry.default
+    providerRegistry: ProviderRegistry = ProviderRegistry.default,
+    runtimeSettings: Option[RuntimeSettings] = None,
+    collectionConfigs: Option[CollectionConfigRegistry] = None
   ): IO[RAGService] =
     for {
       registry <- PgDocumentRegistry(dataSource)
       chunks <- PgChunkStore(dataSource)
-      service = new RAGService(config, registry, chunks, None, providerRegistry, Some(dataSource))
+      service = new RAGService(config, registry, chunks, None, providerRegistry, Some(dataSource), runtimeSettings, collectionConfigs)
       _ <- warmUp(service)
     } yield service
 
@@ -1453,17 +1582,21 @@ object RAGService {
    * @param config Application configuration
    * @param dataSource The shared connection pool
    * @param searchIndex Pre-configured SearchIndex for permission-aware operations
+   * @param runtimeSettings the runtime-modifiable settings (see the class description)
+   * @param collectionConfigs per-collection chunking configs
    */
   def createWithPermissions(
     config: AppConfig,
     dataSource: DataSource,
     searchIndex: SearchIndex,
-    providerRegistry: ProviderRegistry = ProviderRegistry.default
+    providerRegistry: ProviderRegistry = ProviderRegistry.default,
+    runtimeSettings: Option[RuntimeSettings] = None,
+    collectionConfigs: Option[CollectionConfigRegistry] = None
   ): IO[RAGService] =
     for {
       registry <- PgDocumentRegistry(dataSource)
       chunks <- PgChunkStore(dataSource)
-      service = new RAGService(config, registry, chunks, Some(searchIndex), providerRegistry, Some(dataSource))
+      service = new RAGService(config, registry, chunks, Some(searchIndex), providerRegistry, Some(dataSource), runtimeSettings, collectionConfigs)
       // Every ingest in permission mode needs the default collection, and vectors left without
       // a collection by earlier versions are unsearchable until migrated into it.
       migrated <- service.ensureDefaultCollection
