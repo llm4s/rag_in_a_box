@@ -71,7 +71,10 @@ function formatConfigSnapshot(config: ExperimentConfigSnapshot): string {
   const parts: string[] = []
   if (config.topK !== undefined) parts.push(`topK: ${config.topK}`)
   if (config.fusionStrategy) parts.push(`fusion: ${config.fusionStrategy}`)
-  if (config.llmTemperature !== undefined) parts.push(`temp: ${config.llmTemperature}`)
+  if (config.rrfK !== undefined) parts.push(`rrfK: ${config.rrfK}`)
+  if (config.reranking) parts.push(`reranking: ${config.reranking}`)
+  if (config.systemPrompt) parts.push(`prompt: "${config.systemPrompt.slice(0, 40)}${config.systemPrompt.length > 40 ? '...' : ''}"`)
+  if (config.llmTemperature !== undefined) parts.push(`temp: ${config.llmTemperature} (chat only)`)
   return parts.length > 0 ? parts.join(', ') : 'Default'
 }
 
@@ -137,20 +140,30 @@ function getChangeColor(change: string): string {
   return 'grey'
 }
 
-function getSignificanceLabel(significance?: number): string {
-  if (significance === undefined) return 'Insufficient data'
-  if (significance >= 0.95) return 'Highly significant'
-  if (significance >= 0.90) return 'Significant'
-  if (significance >= 0.80) return 'Marginally significant'
-  return 'Not significant'
+const metricLabels: Record<string, string> = {
+  latencyMs: 'Latency (ms)',
+  rating: 'Rating',
+  errorRate: 'Error rate',
+  positiveRate: 'Positive ratings (4-5)',
 }
 
-function getSignificanceColor(significance?: number): string {
-  if (significance === undefined) return 'grey'
-  if (significance >= 0.95) return 'success'
-  if (significance >= 0.90) return 'primary'
-  if (significance >= 0.80) return 'warning'
-  return 'grey'
+const testLabels: Record<string, string> = {
+  'welch-t': "Welch's t-test",
+  'two-proportion-z': 'Two-proportion z-test',
+}
+
+function formatMetricValue(metric: string, value: number): string {
+  if (metric === 'errorRate' || metric === 'positiveRate') return `${(value * 100).toFixed(1)}%`
+  if (metric === 'latencyMs') return value.toFixed(0)
+  return value.toFixed(2)
+}
+
+function formatPValue(p: number): string {
+  return p < 0.001 ? '< 0.001' : p.toFixed(3)
+}
+
+function formatRate(rate?: number): string {
+  return rate === undefined ? '-' : `${(rate * 100).toFixed(1)}%`
 }
 
 onMounted(() => {
@@ -438,22 +451,35 @@ onMounted(() => {
               <v-select
                 v-model="newExperiment.variantConfig!.fusionStrategy"
                 label="Fusion Strategy"
-                :items="['rrf', 'weighted', 'simple']"
+                :items="['rrf', 'weighted', 'vector_only', 'keyword_only']"
                 density="compact"
                 clearable
               />
             </v-col>
             <v-col cols="12" md="4">
-              <v-text-field
-                v-model.number="newExperiment.variantConfig!.llmTemperature"
-                label="LLM Temperature"
-                type="number"
-                placeholder="0.7"
-                step="0.1"
+              <v-select
+                v-model="newExperiment.variantConfig!.reranking"
+                label="Reranking"
+                :items="['none', 'cohere', 'llm']"
                 density="compact"
+                clearable
+              />
+            </v-col>
+            <v-col cols="12">
+              <v-textarea
+                v-model="newExperiment.variantConfig!.systemPrompt"
+                label="System Prompt"
+                rows="2"
+                auto-grow
+                density="compact"
+                clearable
               />
             </v-col>
           </v-row>
+          <p class="text-caption text-grey">
+            Each group runs with its own settings. The LLM temperature is not tested: llm4s 0.6.0 answers
+            /query at temperature 0.0.
+          </p>
         </v-card-text>
 
         <v-card-actions>
@@ -502,6 +528,10 @@ onMounted(() => {
                         <td class="text-right">{{ currentResults.baseline.queryCount }}</td>
                       </tr>
                       <tr>
+                        <td>Error Rate</td>
+                        <td class="text-right">{{ formatRate(currentResults.baseline.errorRate) }}</td>
+                      </tr>
+                      <tr>
                         <td>Avg Latency</td>
                         <td class="text-right">{{ currentResults.baseline.avgLatencyMs.toFixed(0) }}ms</td>
                       </tr>
@@ -535,6 +565,10 @@ onMounted(() => {
                       <tr>
                         <td>Queries</td>
                         <td class="text-right">{{ currentResults.variant.queryCount }}</td>
+                      </tr>
+                      <tr>
+                        <td>Error Rate</td>
+                        <td class="text-right">{{ formatRate(currentResults.variant.errorRate) }}</td>
                       </tr>
                       <tr>
                         <td>Avg Latency</td>
@@ -593,13 +627,44 @@ onMounted(() => {
                 </v-col>
                 <v-col cols="12" sm="3">
                   <div class="text-center">
-                    <div class="text-h5" :class="`text-${getSignificanceColor(currentResults.analysis.statisticalSignificance)}`">
-                      {{ currentResults.analysis.statisticalSignificance ? `${(currentResults.analysis.statisticalSignificance * 100).toFixed(0)}%` : '-' }}
+                    <div class="text-h5 text-grey">
+                      {{ currentResults.analysis.errorRateChange || '-' }}
                     </div>
-                    <div class="text-caption">{{ getSignificanceLabel(currentResults.analysis.statisticalSignificance) }}</div>
+                    <div class="text-caption">Error Rate Change</div>
                   </div>
                 </v-col>
               </v-row>
+
+              <!-- Two-sample tests, variant against baseline -->
+              <v-table v-if="currentResults.analysis.tests?.length" density="compact" class="mt-4">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Test</th>
+                    <th class="text-right">Baseline</th>
+                    <th class="text-right">Variant</th>
+                    <th class="text-right">p-value</th>
+                    <th class="text-right">Significant (p &lt; 0.05)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="test in currentResults.analysis.tests" :key="test.metric">
+                    <td>{{ metricLabels[test.metric] || test.metric }}</td>
+                    <td>{{ testLabels[test.test] || test.test }}</td>
+                    <td class="text-right">{{ formatMetricValue(test.metric, test.baseline) }}</td>
+                    <td class="text-right">{{ formatMetricValue(test.metric, test.variant) }}</td>
+                    <td class="text-right">{{ formatPValue(test.pValue) }}</td>
+                    <td class="text-right">
+                      <v-chip :color="test.significant ? 'success' : 'grey'" size="small" variant="tonal">
+                        {{ test.significant ? 'Yes' : 'No' }}
+                      </v-chip>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+              <div v-else class="text-caption text-center mt-4">
+                Not enough data for a significance test yet.
+              </div>
             </v-card-text>
           </v-card>
         </v-card-text>

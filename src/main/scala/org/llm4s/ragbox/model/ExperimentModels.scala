@@ -10,24 +10,38 @@ import java.time.Instant
  */
 
 /**
- * Status of an experiment.
+ * Status of an experiment. In JSON and the database it is its [[value]] (`"draft"`, ...).
  */
+enum ExperimentStatus(val value: String) {
+  case Draft extends ExperimentStatus("draft")
+  case Running extends ExperimentStatus("running")
+  case Completed extends ExperimentStatus("completed")
+  case Archived extends ExperimentStatus("archived")
+}
+
 object ExperimentStatus {
-  val Draft: String = "draft"
-  val Running: String = "running"
-  val Completed: String = "completed"
-  val Archived: String = "archived"
+
+  /** The status whose [[ExperimentStatus.value]] is `value` (case-insensitive). */
+  def fromString(value: String): Option[ExperimentStatus] =
+    values.find(_.value == value.trim.toLowerCase)
 }
 
 /**
- * Configuration snapshot for an experiment variant.
- * These are the parameters that can be tested.
+ * Configuration for one group of an experiment: the settings that can be tested. Each one left
+ * out is the runtime setting; each one given is applied to the group's queries, through a
+ * pipeline built for (and cached by) the group's settings.
+ *
+ * @param llmTemperature recorded, but not applied to `/query` answers: llm4s 0.6.0
+ *                       `RAG.queryWithAnswer` answers at temperature 0.0 (llm4s/llm4s#2715)
+ * @param reranking      `none`, `cohere` or `llm` (see `RAG_RERANKING_STRATEGY`)
  */
 final case class ExperimentConfigSnapshot(
   topK: Option[Int] = None,
   fusionStrategy: Option[String] = None,
   systemPrompt: Option[String] = None,
-  llmTemperature: Option[Double] = None
+  llmTemperature: Option[Double] = None,
+  rrfK: Option[Int] = None,
+  reranking: Option[String] = None
 )
 
 /**
@@ -49,7 +63,7 @@ final case class Experiment(
   id: String,
   name: String,
   description: Option[String] = None,
-  status: String = ExperimentStatus.Draft,
+  status: ExperimentStatus = ExperimentStatus.Draft,
   baselineConfig: ExperimentConfigSnapshot = ExperimentConfigSnapshot(),
   variantConfig: ExperimentConfigSnapshot = ExperimentConfigSnapshot(),
   trafficSplit: Double = 0.5,
@@ -83,7 +97,15 @@ final case class UpdateExperimentRequest(
 )
 
 /**
- * Metrics for an experiment variant.
+ * Metrics for one group of an experiment. Latency, chunk and rating figures are over the
+ * queries that succeeded; `queryCount` and `errorRate` include the ones that failed.
+ *
+ * @param queryCount        every query routed to the group, failed ones included
+ * @param failedCount       queries that failed
+ * @param errorRate         `failedCount / queryCount` (0 with no queries)
+ * @param latencyStdDevMs   sample standard deviation of the successful queries' latency
+ * @param ratingStdDev      sample standard deviation of the ratings
+ * @param positiveCount     ratings of 4 or 5
  */
 final case class ExperimentVariantMetrics(
   queryCount: Int,
@@ -91,18 +113,54 @@ final case class ExperimentVariantMetrics(
   avgRating: Option[Double],
   ratedCount: Int,
   avgChunksUsed: Double,
-  avgChunksRetrieved: Double
+  avgChunksRetrieved: Double,
+  failedCount: Int = 0,
+  errorRate: Double = 0.0,
+  latencyStdDevMs: Option[Double] = None,
+  ratingStdDev: Option[Double] = None,
+  positiveCount: Int = 0
 )
 
 /**
- * Statistical analysis of experiment comparison.
+ * A two-sample test of one metric, variant against baseline.
+ *
+ * @param metric      `latencyMs`, `rating`, `errorRate` or `positiveRate`
+ * @param test        `welch-t` (Welch's unequal-variances t-test, for means) or
+ *                    `two-proportion-z` (pooled two-proportion z-test, for rates)
+ * @param statistic   the t or z statistic (positive when the variant's value is higher)
+ * @param pValue      two-sided p-value: the probability of a difference at least this large if
+ *                    the groups did not differ
+ * @param significant whether `pValue` is below [[ExperimentAnalysis.Alpha]]
+ */
+final case class SignificanceTest(
+  metric: String,
+  test: String,
+  baseline: Double,
+  variant: Double,
+  statistic: Double,
+  pValue: Double,
+  significant: Boolean
+)
+
+/**
+ * Comparison of an experiment's variant with its baseline.
+ *
+ * @param tests a test per metric that has enough data for one (two values in each group for
+ *              a t-test, one query in each group and both outcomes seen for a z-test)
  */
 final case class ExperimentAnalysis(
   latencyChange: String,
   ratingChange: Option[String],
   chunksUsedChange: String,
-  statisticalSignificance: Option[Double]
+  errorRateChange: String,
+  tests: Seq[SignificanceTest]
 )
+
+object ExperimentAnalysis {
+
+  /** The significance level tests are judged at. */
+  val Alpha: Double = 0.05
+}
 
 /**
  * Results of an experiment.
@@ -110,7 +168,7 @@ final case class ExperimentAnalysis(
 final case class ExperimentResults(
   experimentId: String,
   experimentName: String,
-  status: String,
+  status: ExperimentStatus,
   duration: Option[String],
   baseline: ExperimentVariantMetrics,
   variant: ExperimentVariantMetrics,

@@ -437,6 +437,15 @@ object Codecs {
   // Experiment Codecs
   // ============================================================
 
+  // The status is its JSON string ("draft", "running", ...), as before it was an enum
+  implicit val experimentStatusEncoder: Encoder[ExperimentStatus] = Encoder.encodeString.contramap(_.value)
+  implicit val experimentStatusDecoder: Decoder[ExperimentStatus] = Decoder.decodeString.emap { s =>
+    ExperimentStatus.fromString(s).toRight(s"Unknown experiment status: $s")
+  }
+
+  implicit val significanceTestEncoder: Encoder[SignificanceTest] = deriveEncoder
+  implicit val significanceTestDecoder: Decoder[SignificanceTest] = deriveDecoder
+
   implicit val experimentConfigSnapshotEncoder: Encoder[ExperimentConfigSnapshot] = deriveEncoder
   implicit val experimentConfigSnapshotDecoder: Decoder[ExperimentConfigSnapshot] = deriveDecoder
 
@@ -444,7 +453,11 @@ object Codecs {
   implicit val experimentDecoder: Decoder[Experiment] = deriveDecoder
 
   implicit val createExperimentRequestEncoder: Encoder[CreateExperimentRequest] = deriveEncoder
-  implicit val createExperimentRequestDecoder: Decoder[CreateExperimentRequest] = deriveDecoder
+  // A request without a baselineConfig (the admin UI leaves an empty one out) gets the default
+  implicit val createExperimentRequestDecoder: Decoder[CreateExperimentRequest] =
+    deriveDecoder[CreateExperimentRequest].prepare(_.withFocus(_.mapObject { o =>
+      if (o.contains("baselineConfig")) o else o.add("baselineConfig", Json.obj())
+    }))
 
   implicit val updateExperimentRequestEncoder: Encoder[UpdateExperimentRequest] = deriveEncoder
   implicit val updateExperimentRequestDecoder: Decoder[UpdateExperimentRequest] = deriveDecoder

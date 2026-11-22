@@ -34,6 +34,9 @@ trait QueryLogRegistryBase {
    * @param promptTokens LLM prompt tokens, over every completion the query made
    * @param embeddingTokens Tokens embedded for the query
    * @param costUsd Estimated cost of the query, when llm4s knows the models' pricing
+   * @param variant The experiment group (`baseline` or `variant`) the query was routed to
+   * @param failed Whether the query failed (its latency is then the time to failure)
+   * @param errorMessage Why it failed
    * @return The generated query log ID
    */
   def logQuery(
@@ -51,7 +54,10 @@ trait QueryLogRegistryBase {
     configSnapshot: Option[QueryConfigSnapshot] = None,
     promptTokens: Option[Int] = None,
     embeddingTokens: Option[Int] = None,
-    costUsd: Option[Double] = None
+    costUsd: Option[Double] = None,
+    variant: Option[String] = None,
+    failed: Boolean = false,
+    errorMessage: Option[String] = None
   ): IO[String]
 
   /**

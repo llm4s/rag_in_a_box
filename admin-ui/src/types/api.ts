@@ -438,6 +438,11 @@ export interface QueryLogEntry {
   promptTokens?: number | null
   embeddingTokens?: number | null
   costUsd?: number | null
+  /** Experiment group (`baseline` / `variant`) the query was routed to. */
+  variant?: string | null
+  /** Whether the query failed (failed queries count in experiment error rates). */
+  failed?: boolean
+  errorMessage?: string | null
 }
 
 export interface QueryLogListResponse {
@@ -732,7 +737,11 @@ export interface ExperimentConfigSnapshot {
   topK?: number
   fusionStrategy?: string
   systemPrompt?: string
+  /** Recorded only: llm4s 0.6.0 answers /query at temperature 0.0 (llm4s/llm4s#2715). */
   llmTemperature?: number
+  rrfK?: number
+  /** `none`, `cohere` or `llm`. */
+  reranking?: string
 }
 
 export interface Experiment {
@@ -766,6 +775,7 @@ export interface UpdateExperimentRequest {
   trafficSplit?: number
 }
 
+/** One experiment group's metrics; latency, chunks and ratings are over successful queries. */
 export interface ExperimentVariantMetrics {
   queryCount: number
   avgLatencyMs: number
@@ -773,13 +783,35 @@ export interface ExperimentVariantMetrics {
   ratedCount: number
   avgChunksUsed: number
   avgChunksRetrieved: number
+  failedCount?: number
+  errorRate?: number
+  latencyStdDevMs?: number | null
+  ratingStdDev?: number | null
+  positiveCount?: number
+}
+
+/** A two-sample test of one metric, variant against baseline. */
+export interface SignificanceTest {
+  /** `latencyMs`, `rating`, `errorRate` or `positiveRate`. */
+  metric: string
+  /** `welch-t` or `two-proportion-z`. */
+  test: string
+  baseline: number
+  variant: number
+  statistic: number
+  /** Two-sided p-value. */
+  pValue: number
+  /** pValue below 0.05. */
+  significant: boolean
 }
 
 export interface ExperimentAnalysis {
   latencyChange: string
   ratingChange?: string
   chunksUsedChange: string
-  statisticalSignificance?: number
+  errorRateChange?: string
+  /** A test per metric with enough data. */
+  tests?: SignificanceTest[]
 }
 
 export interface ExperimentResults {

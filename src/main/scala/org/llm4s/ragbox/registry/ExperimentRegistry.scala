@@ -108,7 +108,7 @@ class ExperimentRegistry(dataSource: DataSource) {
       stmt.setString(1, id)
       stmt.setString(2, request.name)
       stmt.setString(3, request.description.orNull)
-      stmt.setString(4, ExperimentStatus.Draft)
+      stmt.setString(4, ExperimentStatus.Draft.value)
       stmt.setString(5, request.baselineConfig.asJson.noSpaces)
       stmt.setString(6, request.variantConfig.asJson.noSpaces)
       stmt.setDouble(7, request.trafficSplit.getOrElse(0.5))
@@ -153,7 +153,7 @@ class ExperimentRegistry(dataSource: DataSource) {
    * @param offset number of experiments to skip
    */
   def list(
-    status: Option[String] = None,
+    status: Option[ExperimentStatus] = None,
     limit: Int = DefaultListLimit,
     offset: Int = 0
   ): IO[Seq[Experiment]] = ConnectionPool.withConnection(dataSource) { conn =>
@@ -167,7 +167,7 @@ class ExperimentRegistry(dataSource: DataSource) {
     try {
       var idx = 1
       status.foreach { s =>
-        stmt.setString(idx, s)
+        stmt.setString(idx, s.value)
         idx += 1
       }
       stmt.setInt(idx, math.max(0, limit))
@@ -186,11 +186,11 @@ class ExperimentRegistry(dataSource: DataSource) {
   /**
    * Count experiments, optionally filtered by status (the `total` for [[list]] pages).
    */
-  def count(status: Option[String] = None): IO[Int] = ConnectionPool.withConnection(dataSource) { conn =>
+  def count(status: Option[ExperimentStatus] = None): IO[Int] = ConnectionPool.withConnection(dataSource) { conn =>
     val whereClause = status.map(_ => "WHERE status = ?").getOrElse("")
     val stmt = conn.prepareStatement(s"SELECT COUNT(*) FROM experiments $whereClause")
     try {
-      status.foreach(stmt.setString(1, _))
+      status.foreach(s => stmt.setString(1, s.value))
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getInt(1) else 0
     } finally {
@@ -313,7 +313,8 @@ class ExperimentRegistry(dataSource: DataSource) {
       id = rs.getString("id"),
       name = rs.getString("name"),
       description = Option(rs.getString("description")),
-      status = rs.getString("status"),
+      status = ExperimentStatus.fromString(rs.getString("status"))
+        .getOrElse(throw new IllegalStateException(s"Experiment has an unknown status: ${rs.getString("status")}")),
       baselineConfig = baselineConfig,
       variantConfig = variantConfig,
       trafficSplit = rs.getDouble("traffic_split"),
