@@ -28,7 +28,10 @@ object Statistics {
       if (!(se2 > 0)) None
       else {
         val t = (mean2 - mean1) / math.sqrt(se2)
-        val df = se2 * se2 / (a * a / (n1 - 1) + b * b / (n2 - 1))
+        // Welch-Satterthwaite, (a + b)^2 / (a^2 / (n1 - 1) + b^2 / (n2 - 1)), on the shares of
+        // `se2` so that tiny variances cannot underflow it to 0 / 0 (#66)
+        val (sa, sb) = (a / se2, b / se2)
+        val df = 1.0 / (sa * sa / (n1 - 1) + sb * sb / (n2 - 1))
         Some(TestResult(t, studentTTwoSidedP(t, df)))
       }
     }
@@ -53,14 +56,18 @@ object Statistics {
 
   /** Two-sided p-value of `t` under Student's t with `df` degrees of freedom. */
   def studentTTwoSidedP(t: Double, df: Double): Double =
-    if (t.isInfinite) 0.0
-    else regularizedIncompleteBeta(df / (df + t * t), df / 2, 0.5)
+    // A |t| so large that t * t overflows is as significant as an infinite one
+    if ((t * t).isInfinite) 0.0
+    else probability(regularizedIncompleteBeta(df / (df + t * t), df / 2, 0.5))
 
   /** Two-sided p-value of `z` under the standard normal distribution. */
-  def normalTwoSidedP(z: Double): Double = erfc(math.abs(z) / math.sqrt(2.0))
+  def normalTwoSidedP(z: Double): Double = probability(erfc(math.abs(z) / math.sqrt(2.0)))
 
   /** Standard normal CDF. */
-  def normalCdf(z: Double): Double = 0.5 * erfc(-z / math.sqrt(2.0))
+  def normalCdf(z: Double): Double = probability(0.5 * erfc(-z / math.sqrt(2.0)))
+
+  /** `p` within [0, 1]: the approximations above can overshoot by their error (erfc(0) is 1 + 3e-8). */
+  private def probability(p: Double): Double = math.min(1.0, math.max(0.0, p))
 
   /** Complementary error function (Numerical Recipes `erfcc`, fractional error < 1.2e-7). */
   def erfc(x: Double): Double = {

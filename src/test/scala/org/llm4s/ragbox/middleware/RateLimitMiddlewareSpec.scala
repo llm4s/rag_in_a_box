@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.middleware
 
 import cats.effect.IO
+import cats.effect.testkit.TestControl
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import com.comcast.ip4s._
@@ -77,11 +78,13 @@ class RateLimitMiddlewareSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "start a new window once the old one has passed" in {
-    val result = (for {
-      counter <- WindowCounter.create(50.millis, maxKeys = 10)
+    // Virtual time (TestControl), so the window boundary is exact rather than wall-clock dependent
+    val result = TestControl.executeEmbed(for {
+      counter <- WindowCounter.create(1.minute, maxKeys = 10)
       a <- counter.tryAcquire("k", 1)
+      _ <- IO.sleep(1.minute - 1.milli)
       b <- counter.tryAcquire("k", 1)
-      _ <- IO.sleep(80.millis)
+      _ <- IO.sleep(1.milli)
       c <- counter.tryAcquire("k", 1)
     } yield (a, b, c)).unsafeRunSync()
     result shouldBe ((true, false, true))

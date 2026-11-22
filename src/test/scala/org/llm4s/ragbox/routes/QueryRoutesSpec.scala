@@ -122,10 +122,8 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
       .withEntity(body)
       .withContentType(`Content-Type`(MediaType.application.json))
 
+    // The query is logged before the response is returned, so no wait is needed
     routes.orNotFound.run(request).unsafeRunSync()
-
-    // Give async logging a moment
-    Thread.sleep(50)
 
     queryLogRegistry.logCount shouldBe 1
   }

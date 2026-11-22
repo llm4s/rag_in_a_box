@@ -487,7 +487,8 @@ export interface CollectionQueryStats {
   collection: string
   queryCount: number
   averageLatencyMs: number
-  averageRating?: number
+  /** null when no query in the collection was rated */
+  averageRating?: number | null
 }
 
 export interface QueryAnalyticsSummary {
@@ -498,12 +499,17 @@ export interface QueryAnalyticsSummary {
   p99LatencyMs: number
   averageChunksRetrieved: number
   averageChunksUsed: number
-  averageRating?: number
+  /** null when no query in the period was rated */
+  averageRating?: number | null
   ratedQueriesCount: number
   queriesWithFeedback: number
   topCollections: CollectionQueryStats[]
   periodStart: string
   periodEnd: string
+  /** p95 of retrieval latency (total minus answer generation); null when no LLM latency was recorded */
+  p95RetrievalLatencyMs?: number | null
+  /** Estimated cost of the period's queries; null when no cost is known */
+  totalCostUsd?: number | null
 }
 
 export interface QueryFeedbackRequest {
@@ -739,12 +745,12 @@ export interface OptimizationSuggestion {
   severity: SuggestionSeverity
   title: string
   description: string
-  collection?: string
+  collection?: string | null
   evidence: SuggestionEvidence
   recommendation: string
   estimatedImpact: string
-  currentValue?: string
-  suggestedValue?: string
+  currentValue?: string | null
+  suggestedValue?: string | null
   createdAt: string
 }
 

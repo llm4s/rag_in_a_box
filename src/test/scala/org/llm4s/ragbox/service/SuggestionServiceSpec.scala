@@ -6,7 +6,7 @@ import cats.syntax.all._
 import org.llm4s.ragbox.config.RuntimeSettings
 import org.llm4s.ragbox.model.{CollectionMetrics, OptimizationSuggestion, QueryAnalyticsSummary, RuntimeConfig}
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
-import org.llm4s.ragbox.testkit.{InMemoryQueryLogRegistry, TestFixtures}
+import org.llm4s.ragbox.testkit.{InMemoryQueryLogRegistry, NonFinite, TestFixtures}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -254,6 +254,21 @@ class SuggestionServiceSpec extends AnyFlatSpec with Matchers {
     fired(collections = collections, collection = Some("b")).map(_.title) shouldBe Seq("High Zero-Result Rate for 'b'")
     val response = crafted(healthy, collections).generateSuggestions().unsafeRunSync()
     (response.analyzedQueries, response.analyzedCollections) shouldBe (100, 2)
+  }
+
+  "With no logged queries, generateSuggestions" should "suggest waiting for data, with no NaN evidence" in {
+    // Averages over no queries are 0 or None, never 0.0 / 0 (#66)
+    val registry = InMemoryQueryLogRegistry()
+    val response = SuggestionService(registry, TestFixtures.testAppConfig).generateSuggestions().unsafeRunSync()
+    (response.analyzedQueries, response.analyzedCollections) shouldBe (0, 0)
+    NonFinite.paths(response) shouldBe empty
+  }
+
+  it should "find no NaN with only failed queries, or queries that retrieved nothing" in {
+    val registry = InMemoryQueryLogRegistry()
+    (1 to 12).toList.traverse_(i => log(registry, "docs", chunks = 0, failed = i % 2 == 0)).unsafeRunSync()
+    val response = SuggestionService(registry, TestFixtures.testAppConfig).generateSuggestions().unsafeRunSync()
+    NonFinite.paths(response) shouldBe empty
   }
 
   "getSuggestionsSummary" should "count suggestions by severity and name the top three" in {

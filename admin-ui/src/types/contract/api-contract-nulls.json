@@ -174,6 +174,12 @@
     },
     "message" : "Updated"
   },
+  "CollectionQueryStats" : {
+    "averageLatencyMs" : 640.0,
+    "averageRating" : null,
+    "collection" : "docs",
+    "queryCount" : 30
+  },
   "ConfigChange" : {
     "changedAt" : "2024-01-01T00:00:00Z",
     "changedBy" : null,
@@ -544,6 +550,26 @@
     "token" : "jwt",
     "username" : "admin"
   },
+  "OptimizationSuggestion" : {
+    "collection" : null,
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "currentValue" : null,
+    "description" : "Only 30% of retrieved chunks are used.",
+    "estimatedImpact" : "Better precision",
+    "evidence" : {
+      "currentValue" : 0.3,
+      "metric" : "chunk_utilization",
+      "sampleSize" : 42,
+      "threshold" : 0.4,
+      "timeRange" : "Last 7 days"
+    },
+    "id" : "s-1",
+    "recommendation" : "Reduce chunk size.",
+    "severity" : "warning",
+    "suggestedValue" : null,
+    "suggestionType" : "chunking",
+    "title" : "Low Chunk Utilization"
+  },
   "PresetInfo" : {
     "bestFor" : [
       "general"
@@ -603,6 +629,30 @@
     "scopes" : null,
     "userId" : null,
     "username" : "ingester"
+  },
+  "QueryAnalyticsSummary" : {
+    "averageChunksRetrieved" : 5.0,
+    "averageChunksUsed" : 3.5,
+    "averageLatencyMs" : 812.5,
+    "averageRating" : null,
+    "p50LatencyMs" : 700,
+    "p95LatencyMs" : 1900,
+    "p95RetrievalLatencyMs" : null,
+    "p99LatencyMs" : 2400,
+    "periodEnd" : "2024-01-01T00:00:00Z",
+    "periodStart" : "2024-01-01T00:00:00Z",
+    "queriesWithFeedback" : 10,
+    "ratedQueriesCount" : 10,
+    "topCollections" : [
+      {
+        "averageLatencyMs" : 640.0,
+        "averageRating" : 4.0,
+        "collection" : "docs",
+        "queryCount" : 30
+      }
+    ],
+    "totalCostUsd" : null,
+    "totalQueries" : 42
   },
   "QueryConfigSnapshot" : {
     "fusionStrategy" : null,
@@ -876,6 +926,49 @@
         "suggestion" : "Use smaller chunks"
       }
     ]
+  },
+  "SuggestionEvidence" : {
+    "currentValue" : 0.3,
+    "metric" : "chunk_utilization",
+    "sampleSize" : 42,
+    "threshold" : 0.4,
+    "timeRange" : "Last 7 days"
+  },
+  "SuggestionsResponse" : {
+    "analysisTimestamp" : "2024-01-01T00:00:00Z",
+    "analyzedCollections" : 2,
+    "analyzedQueries" : 42,
+    "suggestions" : [
+      {
+        "collection" : "docs",
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "currentValue" : "800 chars",
+        "description" : "Only 30% of retrieved chunks are used.",
+        "estimatedImpact" : "Better precision",
+        "evidence" : {
+          "currentValue" : 0.3,
+          "metric" : "chunk_utilization",
+          "sampleSize" : 42,
+          "threshold" : 0.4,
+          "timeRange" : "Last 7 days"
+        },
+        "id" : "s-1",
+        "recommendation" : "Reduce chunk size.",
+        "severity" : "warning",
+        "suggestedValue" : "600 chars",
+        "suggestionType" : "chunking",
+        "title" : "Low Chunk Utilization"
+      }
+    ]
+  },
+  "SuggestionsSummary" : {
+    "criticalCount" : 1,
+    "infoCount" : 3,
+    "topIssues" : [
+      "High Retrieval Latency"
+    ],
+    "total" : 6,
+    "warningCount" : 2
   },
   "UsageInfo" : {
     "completionTokens" : 80,
