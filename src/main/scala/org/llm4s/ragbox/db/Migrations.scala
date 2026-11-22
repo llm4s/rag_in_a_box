@@ -130,7 +130,7 @@ object Migrations {
    * connection it opens as its main connection and opens one more to migrate with, so Flyway runs
    * on the lock's connection plus one other, as many as it would use on its own.
    */
-  private final class LockedFirst(underlying: DataSource, first: Connection) extends DataSource {
+  private[db] final class LockedFirst(underlying: DataSource, first: Connection) extends DataSource {
     private val handedOut = new AtomicBoolean(false)
 
     override def getConnection(): Connection =
@@ -147,7 +147,7 @@ object Migrations {
   }
 
   /** `conn`, with `close()` a no-op. */
-  private def unclosable(conn: Connection): Connection = {
+  private[db] def unclosable(conn: Connection): Connection = {
     val handler = new InvocationHandler {
       override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef =
         if (method.getName == "close" && method.getParameterCount == 0) null
