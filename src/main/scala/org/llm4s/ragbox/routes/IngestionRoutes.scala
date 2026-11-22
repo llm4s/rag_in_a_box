@@ -6,12 +6,21 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.llm4s.ragbox.ingestion.{IngestionAlreadyRunning, IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
+import org.llm4s.ragbox.ingestion.{IngestionAlreadyRunning, IngestionRequestRejected, IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for document ingestion.
+ *
+ * The one-shot directory and URL endpoints are checked against the ingestion policy (allowed
+ * roots, URL rules; see [[org.llm4s.ragbox.ingestion.PathPolicy]] and
+ * [[org.llm4s.ragbox.ingestion.UrlPolicy]]); a refused request gets 400 Bad Request.
+ *
+ * TODO(#13): every route here is an admin operation (it reads server files, fetches URLs, or
+ * runs configured sources) and must require the admin role once the authorization rework in
+ * #12/#13 lands. Until then they are only as protected as the API key / auth mode in front of
+ * them. Wrap [[routes]] with the admin check at that point, e.g. `adminOnly(routes(...))`.
  */
 object IngestionRoutes {
 
@@ -31,6 +40,8 @@ object IngestionRoutes {
           case Right(ingestionResult) =>
             val resp = toIngestResponse(ingestionResult)
             if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
+          case Left(IngestionRequestRejected(reason)) =>
+            BadRequest(ErrorResponse.badRequest(reason).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to ingest directory",
@@ -51,6 +62,8 @@ object IngestionRoutes {
           case Right(ingestionResult) =>
             val resp = toIngestResponse(ingestionResult)
             if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
+          case Left(IngestionRequestRejected(reason)) =>
+            BadRequest(ErrorResponse.badRequest(reason).asJson)
           case Left(e) =>
             InternalServerError(ErrorResponse.internalError(
               "Failed to ingest URLs",
