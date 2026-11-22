@@ -1,8 +1,8 @@
 ---
 layout: page
 title: Helm Deployment
-parent: User Guide
-nav_order: 10
+parent: Operations
+nav_order: 2
 ---
 
 # Helm Deployment Guide
@@ -18,20 +18,26 @@ Deploy RAG in a Box to Kubernetes using the official Helm chart.
 
 ## Quick Start
 
-### 1. Add the Helm repository
+### 1. Get the chart
+
+The chart is not published to a Helm repository yet; install it from the repository checkout:
 
 ```bash
-helm repo add ragbox https://llm4s.github.io/rag-in-a-box
-helm repo update
+git clone https://github.com/llm4s/rag_in_a_box.git
+cd rag_in_a_box
 ```
 
 ### 2. Create a values file
 
+`jwtSecret`, `adminPassword` and the database password may be left empty: they are then generated
+on install and kept across upgrades.
+
 ```bash
 cat > my-values.yaml <<EOF
-secrets:
-  database:
+postgresql:
+  auth:
     password: "your-secure-db-password"
+secrets:
   security:
     jwtSecret: "<output of: openssl rand -base64 32>"     # placeholders are rejected
     adminPassword: "<a password of 12+ characters>"
@@ -43,7 +49,7 @@ EOF
 ### 3. Install the chart
 
 ```bash
-helm install ragbox ragbox/ragbox -f my-values.yaml
+helm install ragbox ./deploy/helm/ragbox -f my-values.yaml
 ```
 
 ### 4. Access the application
@@ -52,7 +58,8 @@ helm install ragbox ragbox/ragbox -f my-values.yaml
 kubectl port-forward svc/ragbox 8080:80
 ```
 
-Visit [http://localhost:8080](http://localhost:8080) to access the application.
+The admin UI is at [http://localhost:8080/admin](http://localhost:8080/admin) (the image
+includes the built UI); the API is under `/api/v1`.
 
 ## Configuration
 
@@ -118,10 +125,13 @@ externalDatabase:
   host: "your-postgres-host"
   port: 5432
   database: "ragdb"
-  existingSecret: "your-db-secret"
-  userKey: "username"
-  passwordKey: "password"
+  existingSecret: "your-db-secret"   # or set username / password directly
+  userKey: "pg-user"                  # keys in that secret (these are the defaults)
+  passwordKey: "pg-password"
 ```
+
+The database needs the `vector` extension (pgvector). The server applies its schema migrations
+(Flyway) at startup; see [Configuration](configuration.md#schema-migrations).
 
 ### Ingress Configuration
 
@@ -186,21 +196,25 @@ autoscaling:
 | `postgresql.enabled` | Deploy bundled PostgreSQL + pgvector StatefulSet | `true` |
 | `postgresql.persistence.size` | PVC size | `10Gi` |
 | `ingress.enabled` | Enable ingress | `false` |
+| `secrets.security.jwtSecret` | JWT signing secret (32+ characters) | generated if empty |
 | `secrets.security.adminPassword` | Admin password (basic auth, 12+ characters) | generated if empty |
+| `postgresql.auth.password` | Bundled PostgreSQL password | generated if empty |
 | `secrets.security.apiKey` | Static administrator API key | none |
 | `secrets.oauth.clientSecret` | OAuth client secret (oauth mode) | none |
 | `config.auth.oauth.*` | OAuth provider, client ID, redirect URI, scopes, admin groups, ... | see values.yaml |
 | `config.cors.allowedOrigins` | Origins allowed to call the API from a browser (`*` for any) | same-origin only |
 | `config.rateLimit.trustedProxies` | Proxies whose `X-Forwarded-For` is believed | private ranges |
 | `config.rateLimit.loginMaxAttempts` | Failed logins per IP and per username per window | `10` |
+| `config.metrics.enabled` | Enable `/metrics` | `true` |
 | `config.metrics.requireAuth` | `/metrics` for administrators only | `true` |
+| `config.logging.format` | `json` or `text` (`LOG_FORMAT`) | `json` |
 
-See the [values.yaml](https://github.com/llm4s/rag-in-a-box/blob/main/deploy/helm/ragbox/values.yaml) for all configuration options.
+See the [values.yaml](https://github.com/llm4s/rag_in_a_box/blob/main/deploy/helm/ragbox/values.yaml) for all configuration options.
 
 ## Upgrading
 
 ```bash
-helm upgrade ragbox ragbox/ragbox -f my-values.yaml
+helm upgrade ragbox ./deploy/helm/ragbox -f my-values.yaml
 ```
 
 ## Uninstalling

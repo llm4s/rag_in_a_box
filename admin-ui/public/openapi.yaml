@@ -1,51 +1,203 @@
 openapi: 3.0.3
 info:
   title: RAG in a Box API
-  description: REST API for RAG in a Box - a complete RAG (Retrieval-Augmented Generation) system
+  description: |
+    REST API of RAG in a Box, a RAG (retrieval-augmented generation) server built on
+    [llm4s](https://github.com/llm4s/llm4s).
+
+    ## Authentication
+
+    Which credentials are accepted depends on `AUTH_MODE`:
+
+    | Credential | open | open + `API_KEY` | basic | oauth |
+    |---|---|---|---|---|
+    | none (every request is an anonymous administrator) | yes | | | |
+    | static `API_KEY` (`X-API-Key` or `Authorization: Bearer`) | | yes | if set | if set |
+    | `rat_…` access token (`Authorization: Bearer`) | | yes | yes | yes |
+    | JWT from `POST /api/v1/auth/login` (`Authorization: Bearer`) | | | yes | |
+    | OIDC session cookie (`ragbox_session`) | | | | yes |
+
+    `GET /ws` additionally accepts `?access_token=<token>` because browsers cannot set headers
+    on a WebSocket handshake. A request that presents an invalid credential is rejected with 401
+    even if another credential would have been valid.
+
+    ## Authorization
+
+    Each operation's description states who may call it:
+
+    - **Public**: no credentials needed.
+    - **Authenticated**: any authenticated principal. Access tokens without the `admin` scope may
+      only call documents, stats, sync, query/search, chat, `GET /api/v1/collections`,
+      `/api/v1/auth/me` and `/ws`, and need the scope named for the operation.
+    - **Admin**: administrators only: admin users, the static API key, `admin`-scoped access
+      tokens, and everyone in open mode without an API key.
+
+    Non-admin principals only see the collections their permissions (and, for access tokens,
+    their collection restriction) allow.
+
+    ## Errors
+
+    Errors have a JSON body `{"error": "<code>", "message": "<text>", "details": "<optional>"}`:
+    400 for an invalid body or query parameter (`details` names it), 401, 403, 404, 409 for a
+    conflict, 415 for a body that is not JSON, and 500 with the message
+    `Internal server error` (the cause is logged, never returned). 413 and 429 have their own
+    bodies. Paging parameters are clamped rather than rejected.
   version: 0.2.0
   contact:
     name: RAG in a Box
     url: https://github.com/llm4s/rag_in_a_box
+  license:
+    name: MIT
+    url: https://github.com/llm4s/rag_in_a_box/blob/main/LICENSE
 
 servers:
-  - url: /api/v1
-    description: API v1
+  - url: /
+    description: This server
+
+security:
+  - bearerAuth: []
+  - apiKeyHeader: []
+  - sessionCookie: []
 
 tags:
-  - name: Auth
-    description: Authentication and user management
-  - name: Tokens
-    description: Access token management for external systems
-  - name: Documents
-    description: Document management operations
-  - name: Sync
-    description: Sync operations for external ingesters
-  - name: Query
-    description: Query and search operations
-  - name: Analytics
-    description: Query analytics and feedback
-  - name: Chunking
-    description: Text chunking preview and comparison
-  - name: Collections
-    description: Collection management and configuration
-  - name: Configuration
-    description: System configuration
-  - name: Ingestion
-    description: Batch ingestion operations
-  - name: Visibility
-    description: RAG visibility and debugging
   - name: Health
-    description: Health check endpoints
+    description: Liveness, readiness and metrics (public)
+  - name: Auth
+    description: Login, the current principal, and password-login users
+  - name: OAuth
+    description: OIDC login flow (only when AUTH_MODE=oauth)
+  - name: Tokens
+    description: Access tokens (`rat_…`) for external ingesters and integrations
+  - name: Documents
+    description: Document ingestion, listing and deletion
+  - name: Sync
+    description: Sync protocol for external ingesters
+  - name: Query
+    description: Retrieval and answer generation
+  - name: Chat
+    description: Multi-turn chat sessions over the RAG pipeline
+  - name: Collections
+    description: Collections, their permissions and their chunking configuration
+  - name: Principals
+    description: Users and groups referenced by collection permissions
+  - name: Configuration
+    description: Static and runtime configuration
+  - name: Chunking
+    description: Chunking preview and comparison
+  - name: Ingestion
+    description: Server-side ingestion from directories, URLs and configured sources
+  - name: Visibility
+    description: Inspect chunks, statistics and effective configuration
+  - name: Analytics
+    description: Query logs, feedback and optimization suggestions
+  - name: Experiments
+    description: A/B experiments between retrieval configurations
+  - name: Realtime
+    description: WebSocket updates
 
 paths:
   # ============================================================
-  # Authentication Endpoints
+  # Health and metrics
   # ============================================================
-  /auth/login:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health status
+      description: "Auth: public."
+      security: []
+      responses:
+        '200':
+          description: Server status, version, uptime and JVM information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: "Auth: public. Ready when the database and the RAG pipeline are available."
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: "Auth: public."
+      security: []
+      responses:
+        '200':
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      description: |
+        Auth: admin by default (`METRICS_REQUIRE_AUTH=true`); public when
+        `METRICS_REQUIRE_AUTH=false`. Not served at all when `METRICS_ENABLED=false`.
+      responses:
+        '200':
+          description: Metrics in the Prometheus text format
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================
+  # Auth and users
+  # ============================================================
+  /api/v1/auth/mode:
+    get:
+      tags: [Auth]
+      summary: Which login methods the server accepts
+      description: "Auth: public. Used by the admin UI to pick its login screen."
+      security: []
+      responses:
+        '200':
+          description: Authentication mode
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthModeResponse'
+
+  /api/v1/auth/login:
     post:
       tags: [Auth]
-      summary: Login and get JWT token
-      description: Authenticate with username and password to receive a JWT token
+      summary: Exchange a username and password for a JWT
+      description: |
+        Auth: public. Only available when `AUTH_MODE=basic` (400 otherwise). The JWT is valid
+        for `JWT_EXPIRATION` seconds (default 86400) and is sent as `Authorization: Bearer`.
+        Failed attempts are throttled per client IP and per username
+        (`RATE_LIMIT_LOGIN_MAX_ATTEMPTS` per `RATE_LIMIT_LOGIN_WINDOW_SECONDS`), even when the
+        general rate limit is off.
+      security: []
       requestBody:
         required: true
         content:
@@ -59,39 +211,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
-          description: Invalid credentials
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
-  /auth/me:
+  /api/v1/auth/me:
     get:
       tags: [Auth]
-      summary: Get current user info
-      security:
-        - bearerAuth: []
+      summary: The authenticated principal
+      description: "Auth: authenticated (any access token)."
       responses:
         '200':
-          description: Current user information
+          description: Current principal
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserInfo'
+                $ref: '#/components/schemas/PrincipalInfo'
         '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/Unauthorized'
 
-  /auth/password:
+  /api/v1/auth/password:
     put:
       tags: [Auth]
-      summary: Change password
-      security:
-        - bearerAuth: []
+      summary: Change your own password
+      description: "Auth: authenticated; only password-login users (basic mode) have a password."
       requestBody:
         required: true
         content:
@@ -100,34 +246,32 @@ paths:
               $ref: '#/components/schemas/ChangePasswordRequest'
       responses:
         '200':
-          description: Password changed successfully
+          $ref: '#/components/responses/Message'
         '400':
-          description: Invalid current password
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
-  /users:
+  /api/v1/users:
     get:
       tags: [Auth]
-      summary: List users (admin only)
-      security:
-        - bearerAuth: []
+      summary: List password-login users
+      description: "Auth: admin."
       responses:
         '200':
-          description: List of users
+          description: Users
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
     post:
       tags: [Auth]
-      summary: Create user (admin only)
-      security:
-        - bearerAuth: []
+      summary: Create a password-login user
+      description: "Auth: admin."
       requestBody:
         required: true
         content:
@@ -142,53 +286,161 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserInfo'
         '400':
-          description: Username already exists
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
 
-  /users/{id}:
+  /api/v1/users/{id}:
     delete:
       tags: [Auth]
-      summary: Delete user (admin only)
-      security:
-        - bearerAuth: []
+      summary: Delete a user
+      description: "Auth: admin. The user's JWTs stop working immediately."
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/UserId'
       responses:
         '204':
-          description: User deleted
-        '404':
-          description: User not found
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  # ============================================================
-  # Access Token Endpoints
-  # ============================================================
-  /tokens:
-    get:
-      tags: [Tokens]
-      summary: List access tokens (admin only)
-      security:
-        - bearerAuth: []
+  /api/v1/users/{id}/password:
+    put:
+      tags: [Auth]
+      summary: Reset a user's password
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
       responses:
         '200':
-          description: List of access tokens
+          $ref: '#/components/responses/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================
+  # OAuth (AUTH_MODE=oauth only)
+  # ============================================================
+  /api/v1/oauth/login:
+    get:
+      tags: [OAuth]
+      summary: Start the OIDC login flow
+      description: |
+        Auth: public; only mounted when `AUTH_MODE=oauth`. Redirects to the identity provider
+        (authorization code flow with PKCE) and sets a short-lived login cookie that binds the
+        callback to this browser.
+      security: []
+      parameters:
+        - name: redirect_after
+          in: query
+          description: Relative path to return to after login (anything else falls back to `/admin/`)
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the identity provider
+
+  /api/v1/oauth/callback:
+    get:
+      tags: [OAuth]
+      summary: OIDC authorization callback
+      description: |
+        Auth: public; only mounted when `AUTH_MODE=oauth`. Exchanges the code, validates the ID
+        token, creates a session, sets the session cookie and redirects to the admin UI.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: error_description
+          in: query
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Logged in; redirect to the admin UI
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/oauth/logout:
+    post:
+      tags: [OAuth]
+      summary: End the OIDC session
+      description: "Auth: public (acts on the session cookie, if any); only mounted when `AUTH_MODE=oauth`."
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/Message'
+
+  /api/v1/oauth/userinfo:
+    get:
+      tags: [OAuth]
+      summary: The user of the current OIDC session
+      description: "Auth: OIDC session cookie; only mounted when `AUTH_MODE=oauth`."
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Session user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthUserInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================
+  # Access tokens
+  # ============================================================
+  /api/v1/tokens:
+    get:
+      tags: [Tokens]
+      summary: List access tokens
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Tokens (without their secret values)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
     post:
       tags: [Tokens]
-      summary: Create access token (admin only)
-      security:
-        - bearerAuth: []
+      summary: Create an access token
+      description: "Auth: admin. The token value is only returned once, in this response."
       requestBody:
         required: true
         content:
@@ -203,69 +455,95 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateTokenResponse'
         '400':
-          description: Invalid scopes
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
 
-  /tokens/{id}:
+  /api/v1/tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
     get:
       tags: [Tokens]
-      summary: Get token details (admin only)
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      summary: Get an access token's details
+      description: "Auth: admin."
       responses:
         '200':
-          description: Token details
+          description: Token
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenInfo'
-        '404':
-          description: Token not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Admin access required
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     delete:
       tags: [Tokens]
-      summary: Revoke token (admin only)
-      security:
-        - bearerAuth: []
+      summary: Revoke an access token
+      description: "Auth: admin."
+      responses:
+        '204':
+          description: Revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================
+  # Documents
+  # ============================================================
+  /api/v1/documents:
+    get:
+      tags: [Documents]
+      summary: List documents
+      description: "Auth: authenticated; access tokens need `documents:read`. Only documents in visible collections are listed."
       parameters:
-        - name: id
-          in: path
-          required: true
+        - $ref: '#/components/parameters/Page'
+        - name: pageSize
+          in: query
+          description: Items per page (default 50, max 500)
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+        - name: collection
+          in: query
+          description: Exact collection
+          schema:
+            type: string
+        - name: search
+          in: query
+          description: Case-insensitive substring of the id, filename or title
           schema:
             type: string
       responses:
-        '204':
-          description: Token revoked
-        '404':
-          description: Token not found
-        '403':
-          description: Admin access required
-
-  # ============================================================
-  # Document Endpoints
-  # ============================================================
-  /documents:
-    get:
-      tags: [Documents]
-      summary: List all documents
-      responses:
         '200':
-          description: List of documents
+          description: A page of documents
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
       tags: [Documents]
-      summary: Upload a new document
+      summary: Add a document (text content)
+      description: |
+        Auth: authenticated; access tokens need `documents:write` and access to the collection.
+        The server generates the document id. Use `PUT /api/v1/documents/{id}` for idempotent
+        upserts with your own ids.
       requestBody:
         required: true
         content:
@@ -274,82 +552,127 @@ paths:
               $ref: '#/components/schemas/DocumentUploadRequest'
       responses:
         '201':
-          description: Document created
+          description: Document ingested
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     delete:
       tags: [Documents]
-      summary: Batch delete or clear all documents
+      summary: Delete several documents, or every document
       description: |
-        With a BatchDeleteRequest body: delete the listed documents
-        (1 to 1000 IDs).
-        With `?all=true` and no body: clear all documents.
-        A missing or malformed body without `all=true` is rejected with 400
-        and never clears the index.
+        - With a `BatchDeleteRequest` body: delete the listed documents (authenticated; access
+          tokens need `documents:write`; every document must be in an accessible collection).
+        - With `?all=true` and no body: delete every document. Auth: admin.
+
+        Anything else (no body and no `all=true`, a malformed body, or both) is a 400.
       parameters:
         - name: all
           in: query
-          required: false
-          description: Set to true (with no request body) to delete every document.
+          description: "`true` (and no body) to delete every document"
           schema:
             type: boolean
       requestBody:
+        required: false
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/BatchDeleteRequest'
       responses:
         '200':
-          description: Documents deleted (BatchDeleteResponse), or all documents cleared
+          description: 'Documents deleted (`?all=true` answers `{"message": "All documents cleared"}`)'
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/BatchDeleteResponse'
-                  - type: object
-                    properties:
-                      message:
-                        type: string
-                        example: All documents cleared
+                  - $ref: '#/components/schemas/MessageResponse'
         '400':
-          description: |
-            Missing or malformed body, empty or oversized documentIds,
-            invalid `all` value, or `all=true` combined with a body.
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/documents/upload:
+    post:
+      tags: [Documents]
+      summary: Upload a file
+      description: |
+        Auth: authenticated; access tokens need `documents:write` and access to the collection.
+        Text is extracted with llm4s's Apache Tika extractor (PDF, DOCX, HTML, Markdown, plain
+        text, …) and ingested like `POST /api/v1/documents`. The body size limit is
+        `MAX_BODY_SIZE_MB`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                collection:
+                  type: string
+                metadata:
+                  type: string
+                  description: A JSON object of string values
+                  example: '{"source": "handbook"}'
+                readableBy:
+                  type: string
+                  description: Comma-separated principals, e.g. `user:alice,group:eng`
+      responses:
+        '201':
+          description: Document ingested
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/DocumentUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
 
-  /documents/{id}:
+  /api/v1/documents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
     get:
       tags: [Documents]
-      summary: Get document details
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      summary: Get a document's metadata
+      description: |
+        Auth: authenticated; access tokens need `documents:read`. Returns registry metadata;
+        chunk content is served by `GET /api/v1/visibility/chunks/{docId}`.
       responses:
         '200':
-          description: Document details
+          description: Document
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Document'
+                $ref: '#/components/schemas/DocumentInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
-          description: Document not found
+          $ref: '#/components/responses/NotFound'
     put:
       tags: [Documents]
-      summary: Upsert document (create or update)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      summary: Create or update a document with your own id (idempotent)
+      description: |
+        Auth: authenticated; access tokens need `documents:write` and access to the collection.
+        The document is re-indexed only if its content hash changed.
       requestBody:
         required: true
         content:
@@ -358,37 +681,58 @@ paths:
               $ref: '#/components/schemas/DocumentUpsertRequest'
       responses:
         '200':
-          description: Document updated or unchanged
+          description: Updated or unchanged
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentUpsertResponse'
         '201':
-          description: Document created
+          description: Created
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentUpsertResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     delete:
       tags: [Documents]
       summary: Delete a document
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      description: "Auth: authenticated; access tokens need `documents:write` and access to its collection."
       responses:
         '204':
-          description: Document deleted
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/stats:
+    get:
+      tags: [Documents]
+      summary: Document, chunk and collection counts
+      description: "Auth: authenticated; access tokens need `documents:read`."
+      responses:
+        '200':
+          description: Statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ============================================================
-  # Sync Endpoints
+  # Sync (external ingesters)
   # ============================================================
-  /sync/status:
+  /api/v1/sync/status:
     get:
       tags: [Sync]
-      summary: Get sync status
+      summary: Sync status
+      description: "Auth: admin, or an access token with `sync:read`."
       responses:
         '200':
           description: Sync status
@@ -396,15 +740,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /sync:
+  /api/v1/sync:
     post:
       tags: [Sync]
-      summary: Complete sync and optionally prune orphaned documents
+      summary: Mark a sync complete and optionally prune
       description: |
-        Marks sync complete. If keepDocumentIds is provided, deletes all
-        documents not in the list. Use dryRun to preview deletions.
+        Auth: admin, or an access token with `sync:write`. Without a body, only records the sync
+        time. With `keepDocumentIds`, deletes every other document (a collection-restricted token
+        only prunes within its collections); `dryRun: true` reports what would be deleted.
       requestBody:
+        required: false
         content:
           application/json:
             schema:
@@ -417,43 +767,38 @@ paths:
               schema:
                 $ref: '#/components/schemas/SyncPruneResponse'
         '400':
-          description: Request body present but malformed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /sync/documents:
+  /api/v1/sync/documents:
     get:
       tags: [Sync]
-      summary: List synced document states
-      description: |
-        Returns document states for sync operations. Use query parameters
-        to include additional fields or filter by modification time.
+      summary: List document sync states
+      description: "Auth: admin, or an access token with `sync:read`. Paged; `total` counts every matching document."
       parameters:
-        - name: include
-          in: query
-          description: Comma-separated fields to include (hash, updatedAt)
-          schema:
-            type: string
-            example: "hash,updatedAt"
-        - name: since
-          in: query
-          description: Only return documents modified since this timestamp (ISO-8601)
-          schema:
-            type: string
-            format: date-time
-            example: "2024-01-01T00:00:00Z"
-        - name: page
-          in: query
-          description: 1-based page (default 1)
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/Page'
         - name: pageSize
           in: query
           description: Documents per page (default 1000, max 10000)
           schema:
             type: integer
+            default: 1000
+            maximum: 10000
+        - name: include
+          in: query
+          description: Comma-separated extra fields to include (`hash`, `updatedAt`)
+          schema:
+            type: string
+            example: hash,updatedAt
+        - name: since
+          in: query
+          description: Only documents updated since this ISO-8601 instant
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
           description: Document states
@@ -461,32 +806,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentSyncListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /sync/documents/{id}:
+  /api/v1/sync/documents/{id}:
     get:
       tags: [Sync]
-      summary: Get single document state
+      summary: One document's sync state
+      description: "Auth: admin, or an access token with `sync:read`."
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/DocumentId'
       responses:
         '200':
-          description: Document state
+          description: Document state (with hash and updatedAt)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentSyncState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
-          description: Document not found
+          $ref: '#/components/responses/NotFound'
 
-  /sync/check:
+  /api/v1/sync/check:
     post:
       tags: [Sync]
-      summary: Batch check document states
-      description: Efficiently check which documents exist and get their hashes
+      summary: Check which documents exist
+      description: "Auth: admin, or an access token with `sync:read`."
       requestBody:
         required: true
         content:
@@ -495,99 +845,104 @@ paths:
               $ref: '#/components/schemas/SyncCheckRequest'
       responses:
         '200':
-          description: Check results
+          description: Found and missing documents
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncCheckResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   # ============================================================
-  # Analytics Endpoints
+  # Query
   # ============================================================
-  /analytics/queries:
-    get:
-      tags: [Analytics]
-      summary: List query logs
-      parameters:
-        - name: from
-          in: query
-          description: Start time (ISO-8601)
-          schema:
-            type: string
-            format: date-time
-        - name: to
-          in: query
-          description: End time (ISO-8601)
-          schema:
-            type: string
-            format: date-time
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 100
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            default: 0
+  /api/v1/query:
+    post:
+      tags: [Query]
+      summary: Answer a question from the indexed documents
+      description: |
+        Auth: authenticated; access tokens need `query` and may only query their collections.
+        Retrieval is filtered by the principal's collection permissions. While an experiment is
+        running, the query may be assigned to its variant configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
       responses:
         '200':
-          description: Query logs
+          description: Answer with the contexts it was based on
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryLogListResponse'
+                $ref: '#/components/schemas/QueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /analytics/queries/summary:
-    get:
-      tags: [Analytics]
-      summary: Get query analytics summary
-      parameters:
-        - name: from
-          in: query
-          description: Start time (ISO-8601)
-          schema:
-            type: string
-            format: date-time
-        - name: to
-          in: query
-          description: End time (ISO-8601)
-          schema:
-            type: string
-            format: date-time
+  /api/v1/query/stream:
+    post:
+      tags: [Query]
+      summary: Answer a question, as server-sent events
+      description: |
+        Auth: as `POST /api/v1/query`. Each SSE `data` is a JSON object whose `event` field is
+        `start`, `context` (one per context), `answer`, `usage`, `complete` or `error`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
       responses:
         '200':
-          description: Analytics summary
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/search:
+    post:
+      tags: [Query]
+      summary: Retrieve matching chunks without generating an answer
+      description: "Auth: authenticated; access tokens need `query` and may only search their collections."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Matching chunks
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryAnalyticsSummary'
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /analytics/queries/{id}:
-    get:
-      tags: [Analytics]
-      summary: Get single query log entry
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Query log entry
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueryLogEntry'
-        '404':
-          description: Query not found
-
-  /feedback:
+  /api/v1/feedback:
     post:
       tags: [Analytics]
-      summary: Submit query feedback
+      summary: Rate a query's answer
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       requestBody:
         required: true
         content:
@@ -600,104 +955,248 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryFeedbackResponse'
+                $ref: '#/components/schemas/OperationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ============================================================
-  # Query Endpoints
+  # Chat
   # ============================================================
-  /query:
-    post:
-      tags: [Query]
-      summary: Query with RAG
-      description: Submit a query to get AI-generated response with retrieved context
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/QueryRequest'
+  /api/v1/chat/sessions:
+    get:
+      tags: [Chat]
+      summary: List your chat sessions
+      description: "Auth: authenticated; access tokens need `query`. Users only see their own sessions."
+      parameters:
+        - name: includeArchived
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
       responses:
         '200':
-          description: Query response
+          description: Sessions
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueryResponse'
-
-  /query/stream:
+                $ref: '#/components/schemas/ChatSessionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
-      tags: [Query]
-      summary: Query with RAG (Streaming)
-      description: |
-        Submit a query and receive Server-Sent Events (SSE) for real-time progress.
-
-        Event types:
-        - `start`: Query processing started (includes queryId)
-        - `context`: Retrieved context chunk (streams as chunks are found)
-        - `chunk`: Incremental answer text (if streaming LLM available)
-        - `answer`: Complete answer text
-        - `usage`: Token usage information
-        - `complete`: Query finished successfully
-        - `error`: An error occurred
-
-        Example SSE response:
-        ```
-        event: start
-        data: {"event":"start","queryId":"uuid","timestamp":"2024-01-01T00:00:00Z"}
-
-        event: context
-        data: {"event":"context","context":{"content":"...","score":0.9},"index":0,"timestamp":"..."}
-
-        event: answer
-        data: {"event":"answer","answer":"The answer is...","timestamp":"..."}
-
-        event: complete
-        data: {"event":"complete","queryId":"uuid","totalContexts":5,"timestamp":"..."}
-        ```
+      tags: [Chat]
+      summary: Start a chat session
+      description: "Auth: authenticated; access tokens need `query` and access to the collection pattern."
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/QueryRequest'
+              $ref: '#/components/schemas/CreateChatSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateChatSessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/chat/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Chat]
+      summary: A session with its latest messages
+      description: "Auth: authenticated; access tokens need `query`. Only the session's owner (or an admin) can see it."
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
       responses:
         '200':
-          description: Server-Sent Events stream
+          description: Session and messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Chat]
+      summary: Rename, re-scope or archive a session
+      description: "Auth: as GET."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChatSessionRequest'
+      responses:
+        '200':
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Chat]
+      summary: Delete a session
+      description: "Auth: as GET."
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/chat/sessions/{id}/messages:
+    post:
+      tags: [Chat]
+      summary: Send a message and get the answer
+      description: |
+        Auth: as GET of the session. The answer uses the session's earlier turns as context.
+        If answering fails, the assistant message holds the error and `error` is set.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendChatMessageRequest'
+      responses:
+        '200':
+          description: The stored user and assistant messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userMessage:
+                    $ref: '#/components/schemas/ChatMessage'
+                  assistantMessage:
+                    $ref: '#/components/schemas/ChatMessage'
+                  error:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/chat/sessions/{id}/messages/stream:
+    post:
+      tags: [Chat]
+      summary: Send a message, answer as server-sent events
+      description: |
+        Auth: as GET of the session. Events: `start`, `context`, `answer`, `usage`, `complete`
+        (or `error`). The answer arrives as one event once complete.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendChatMessageRequest'
+      responses:
+        '200':
+          description: Event stream
           content:
             text/event-stream:
               schema:
                 type: string
-                description: SSE stream with query events
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  /search:
-    post:
-      tags: [Query]
-      summary: Search documents
-      description: Search for relevant document chunks without AI generation
+  /api/v1/chat/messages/{id}/rate:
+    put:
+      tags: [Chat]
+      summary: Rate an assistant message (1-5)
+      description: "Auth: authenticated; access tokens need `query`. Only messages in your own sessions."
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SearchRequest'
+              type: object
+              required: [rating]
+              properties:
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
       responses:
         '200':
-          description: Search results
+          description: Rating saved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResponse'
+                $ref: '#/components/schemas/OperationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ============================================================
-  # Collection Endpoints
+  # Collections
   # ============================================================
-  /collections:
+  /api/v1/collections:
     get:
       tags: [Collections]
-      summary: List all collections
+      summary: Names of the collections you can see
+      description: "Auth: authenticated; access tokens need `documents:read`."
       responses:
         '200':
-          description: List of collections
+          description: Collection names
           content:
             application/json:
               schema:
@@ -707,41 +1206,242 @@ paths:
                     type: array
                     items:
                       type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Collections]
+      summary: Create a collection with permissions
+      description: "Auth: admin. Requires the PostgreSQL permission-aware search index."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionRequest'
+      responses:
+        '201':
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
-  /collections/configs:
+  /api/v1/collections/accessible:
     get:
       tags: [Collections]
-      summary: Get all collection configurations
+      summary: Collections you may query
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      parameters:
+        - $ref: '#/components/parameters/CollectionPatternQuery'
       responses:
         '200':
-          description: Collection configurations
+          description: Collections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/collections/configs:
+    get:
+      tags: [Collections]
+      summary: Chunking configuration of every collection
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      responses:
+        '200':
+          description: Collection configurations and the default
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllCollectionConfigsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/collections/{path}:
+    parameters:
+      - $ref: '#/components/parameters/CollectionPath'
+    get:
+      tags: [Collections]
+      summary: A collection and its permissions
+      description: |
+        Auth: authenticated (access tokens need the `admin` scope). Non-admins get 404 for
+        collections they cannot see. The path may contain slashes (`/collections/eng/backend`).
+      responses:
+        '200':
+          description: Collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Collections]
+      summary: Delete a collection
+      description: "Auth: admin."
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/collections/{path}/permissions:
+    put:
+      tags: [Collections]
+      summary: Replace who may query a collection
+      description: "Auth: admin. An empty list makes the collection public."
+      parameters:
+        - $ref: '#/components/parameters/CollectionPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queryableBy]
+              properties:
+                queryableBy:
+                  type: array
+                  items:
+                    type: string
+                  example: ["user:alice", "group:engineering"]
+      responses:
+        '200':
+          description: Updated collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/collections/{path}/stats:
+    get:
+      tags: [Collections]
+      summary: Document and chunk counts of a collection
+      description: "Auth: authenticated (access tokens need the `admin` scope); 404 for collections you cannot see."
+      parameters:
+        - $ref: '#/components/parameters/CollectionPath'
+      responses:
+        '200':
+          description: Statistics
           content:
             application/json:
               schema:
                 type: object
-                additionalProperties:
-                  $ref: '#/components/schemas/CollectionConfig'
+                properties:
+                  path:
+                    type: string
+                  documentCount:
+                    type: integer
+                    format: int64
+                  chunkCount:
+                    type: integer
+                    format: int64
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  /collections/{collection}/config:
+  /api/v1/collections/{collection}/config:
+    parameters:
+      - name: collection
+        in: path
+        required: true
+        schema:
+          type: string
     get:
       tags: [Collections]
-      summary: Get collection configuration
-      parameters:
-        - name: collection
-          in: path
-          required: true
-          schema:
-            type: string
+      summary: A collection's chunking configuration
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       responses:
         '200':
-          description: Collection configuration
+          description: Custom and effective configuration
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CollectionConfig'
+                $ref: '#/components/schemas/CollectionConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Collections]
-      summary: Update collection configuration
+      summary: Set a collection's chunking configuration
+      description: "Auth: admin. Applies to documents ingested afterwards."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionConfigUpdateRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collection:
+                    type: string
+                  config:
+                    $ref: '#/components/schemas/CollectionChunkingConfig'
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [Collections]
+      summary: Remove a collection's custom chunking configuration
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collection:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/collections/{collection}/config/preview:
+    post:
+      tags: [Collections]
+      summary: Which chunking configuration a file would get
+      description: "Auth: admin."
       parameters:
         - name: collection
           in: path
@@ -753,31 +1453,346 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CollectionConfig'
+              type: object
+              required: [collection]
+              properties:
+                collection:
+                  type: string
+                filename:
+                  type: string
       responses:
         '200':
-          description: Configuration updated
-    delete:
-      tags: [Collections]
-      summary: Delete collection configuration
+          description: Effective configuration and how it was resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collection:
+                    type: string
+                  filename:
+                    type: string
+                  effectiveConfig:
+                    $ref: '#/components/schemas/EffectiveChunkingConfig'
+                  configResolutionPath:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================
+  # Principals
+  # ============================================================
+  /api/v1/principals/users:
+    get:
+      tags: [Principals]
+      summary: List user principals
+      description: "Auth: admin. Requires the PostgreSQL permission-aware search index."
       parameters:
-        - name: collection
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Principals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrincipalListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Principals]
+      summary: Create (or get) a user principal
+      description: "Auth: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePrincipalRequest'
+      responses:
+        '201':
+          description: Principal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrincipalRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/principals/groups:
+    get:
+      tags: [Principals]
+      summary: List group principals
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Principals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrincipalListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Principals]
+      summary: Create (or get) a group principal
+      description: "Auth: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePrincipalRequest'
+      responses:
+        '201':
+          description: Principal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrincipalRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/principals/lookup/{externalId}:
+    get:
+      tags: [Principals]
+      summary: Look up a principal by external id
+      description: "Auth: admin."
+      parameters:
+        - name: externalId
+          in: path
+          required: true
+          description: e.g. `user:alice` or `group:engineering`
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Principal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrincipalRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/principals/{type}/{externalId}:
+    delete:
+      tags: [Principals]
+      summary: Delete a principal
+      description: "Auth: admin."
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [users, user, groups, group]
+        - name: externalId
           in: path
           required: true
           schema:
             type: string
       responses:
         '204':
-          description: Configuration deleted
+          description: Deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   # ============================================================
-  # Chunking Endpoints
+  # Configuration
   # ============================================================
-  /chunking/preview:
+  /api/v1/config:
+    get:
+      tags: [Configuration]
+      summary: Effective configuration (no secrets)
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      responses:
+        '200':
+          description: Configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Configuration]
+      summary: Not supported
+      description: |
+        Auth: admin. Always answers 400: static configuration comes from the environment and
+        needs a restart. Change the runtime settings with `PUT /api/v1/config/runtime`.
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/config/providers:
+    get:
+      tags: [Configuration]
+      summary: Available embedding and LLM providers, chunking and fusion strategies
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvidersResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/config/runtime:
+    get:
+      tags: [Configuration]
+      summary: Runtime settings
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      responses:
+        '200':
+          description: Current runtime settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Configuration]
+      summary: Change runtime settings
+      description: |
+        Auth: admin. Hot settings (topK, fusionStrategy, rrfK, systemPrompt, llmTemperature)
+        apply to the next query; warm settings (chunkingStrategy, chunkSize, chunkOverlap) to
+        documents ingested afterwards. Changes are persisted and recorded in the history.
+        Invalid values answer 400 with error `validation_failed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeConfigUpdate'
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeConfigUpdateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/config/runtime/validate:
+    post:
+      tags: [Configuration]
+      summary: Validate runtime setting changes without applying them
+      description: "Auth: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeConfigUpdate'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeConfigValidateResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/config/runtime/history:
+    get:
+      tags: [Configuration]
+      summary: History of runtime setting changes
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of changes, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigHistoryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/config/runtime/meta:
+    get:
+      tags: [Configuration]
+      summary: Descriptions of the runtime settings
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      responses:
+        '200':
+          description: One entry per setting
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key:
+                      type: string
+                    value:
+                      type: string
+                    type:
+                      type: string
+                      enum: [hot, warm, cold]
+                    description:
+                      type: string
+                    requiresRestart:
+                      type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================
+  # Chunking
+  # ============================================================
+  /api/v1/chunking/preview:
     post:
       tags: [Chunking]
-      summary: Preview chunking
-      description: Preview how text will be chunked with given strategy
+      summary: Chunk text without ingesting it
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       requestBody:
         required: true
         content:
@@ -786,17 +1801,21 @@ paths:
               $ref: '#/components/schemas/ChunkingPreviewRequest'
       responses:
         '200':
-          description: Chunking preview
+          description: Chunks, statistics and warnings
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChunkingPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
-  /chunking/compare:
+  /api/v1/chunking/compare:
     post:
       tags: [Chunking]
-      summary: Compare chunking strategies
-      description: Compare multiple chunking strategies on the same text
+      summary: Compare chunking strategies on the same text
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       requestBody:
         required: true
         content:
@@ -805,19 +1824,24 @@ paths:
               $ref: '#/components/schemas/ChunkingCompareRequest'
       responses:
         '200':
-          description: Comparison results
+          description: Results per strategy and a recommendation
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChunkingCompareResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
-  /chunking/strategies:
+  /api/v1/chunking/strategies:
     get:
       tags: [Chunking]
-      summary: List available chunking strategies
+      summary: Chunking strategies
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       responses:
         '200':
-          description: Available strategies
+          description: Strategies and the current default
           content:
             application/json:
               schema:
@@ -826,124 +1850,147 @@ paths:
                   strategies:
                     type: array
                     items:
-                      type: string
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        bestFor:
+                          type: array
+                          items:
+                            type: string
+                        tradeoffs:
+                          type: array
+                          items:
+                            type: string
+                        requiresEmbeddings:
+                          type: boolean
+                  currentDefault:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
-  /chunking/presets:
+  /api/v1/chunking/presets:
     get:
       tags: [Chunking]
-      summary: Get chunking presets
+      summary: Chunk-size presets
+      description: "Auth: authenticated (access tokens need the `admin` scope)."
       responses:
         '200':
-          description: Available presets
+          description: Presets and the current settings
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  presets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChunkingPreset'
+                  current:
+                    $ref: '#/components/schemas/ChunkingPreset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ============================================================
-  # Configuration Endpoints
+  # Ingestion
   # ============================================================
-  /config:
-    get:
-      tags: [Configuration]
-      summary: Get system configuration
+  /api/v1/ingest/directory:
+    post:
+      tags: [Ingestion]
+      summary: Ingest a directory on the server
+      description: |
+        Auth: admin. The path must be under an allowed root (`INGEST_ALLOWED_ROOTS`; by default the configured directory sources, i.e. `INGEST_DIR`). Files are
+        matched by `patterns` (default `*.md`, `*.txt`, `*.pdf`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DirectoryIngestRequest'
       responses:
         '200':
-          description: System configuration
-    put:
-      tags: [Configuration]
-      summary: Update system configuration
-      responses:
-        '200':
-          description: Configuration updated
-
-  /config/runtime:
-    get:
-      tags: [Configuration]
-      summary: Get runtime configuration
-      responses:
-        '200':
-          description: Runtime configuration
+          description: Ingestion result
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RuntimeConfig'
-    put:
-      tags: [Configuration]
-      summary: Update runtime configuration
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RuntimeConfig'
-      responses:
-        '200':
-          description: Configuration updated
-
-  /config/providers:
-    get:
-      tags: [Configuration]
-      summary: Get available providers
-      responses:
-        '200':
-          description: Available providers
-
-  /stats:
-    get:
-      tags: [Documents]
-      summary: Get statistics
-      responses:
-        '200':
-          description: System statistics
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Ingestion failed (`error` is set)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Stats'
+                $ref: '#/components/schemas/IngestResult'
 
-  # ============================================================
-  # Ingestion Endpoints
-  # ============================================================
-  /ingest/directory:
+  /api/v1/ingest/url:
     post:
       tags: [Ingestion]
-      summary: Ingest from directory
+      summary: Ingest web pages
+      description: |
+        Auth: admin. URLs are checked against the ingestion URL policy (no private or
+        link-local addresses unless `INGEST_URL_ALLOW_PRIVATE_NETWORKS=true`; optional host
+        allowlist `INGEST_URL_ALLOWED_HOSTS`).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DirectoryIngestionRequest'
+              $ref: '#/components/schemas/UrlIngestRequest'
       responses:
         '200':
-          description: Ingestion started
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Ingestion failed (`error` is set)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
 
-  /ingest/url:
+  /api/v1/ingest/run:
     post:
       tags: [Ingestion]
-      summary: Ingest from URL
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UrlIngestionRequest'
+      summary: Run every configured ingestion source
+      description: "Auth: admin. Each source syncs its own documents: files removed from a source are removed from the index."
       responses:
         '200':
-          description: Ingestion started
+          description: One result per source
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IngestResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
-  /ingest/run:
+  /api/v1/ingest/run/{source}:
     post:
       tags: [Ingestion]
-      summary: Run all ingestion sources
-      responses:
-        '200':
-          description: Ingestion started
-
-  /ingest/run/{source}:
-    post:
-      tags: [Ingestion]
-      summary: Run specific ingestion source
+      summary: Run one configured ingestion source
+      description: "Auth: admin."
       parameters:
         - name: source
           in: path
@@ -952,72 +1999,108 @@ paths:
             type: string
       responses:
         '200':
-          description: Ingestion started
-
-  /ingest/status:
-    get:
-      tags: [Ingestion]
-      summary: Get ingestion status
-      responses:
-        '200':
-          description: Ingestion status
-
-  /ingest/sources:
-    get:
-      tags: [Ingestion]
-      summary: List ingestion sources
-      responses:
-        '200':
-          description: Ingestion sources
-
-  # ============================================================
-  # Visibility Endpoints
-  # ============================================================
-  /visibility/stats:
-    get:
-      tags: [Visibility]
-      summary: Get visibility statistics
-      responses:
-        '200':
-          description: Visibility stats
+          description: Ingestion result
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VisibilityStats'
+                $ref: '#/components/schemas/IngestResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          description: Ingestion failed (`error` is set)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
 
-  /visibility/chunks:
+  /api/v1/ingest/status:
+    get:
+      tags: [Ingestion]
+      summary: Ingestion status
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Status, last results and configured sources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/ingest/sources:
+    get:
+      tags: [Ingestion]
+      summary: Configured ingestion sources
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SourceInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================
+  # Visibility
+  # ============================================================
+  /api/v1/visibility/config:
     get:
       tags: [Visibility]
-      summary: Get all chunks
+      summary: Detailed configuration, with what can change at runtime
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "`DetailedConfigResponse`: embedding, llm, rag, database and runtimeConfigurable sections"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/visibility/chunks:
+    get:
+      tags: [Visibility]
+      summary: Browse chunks
+      description: "Auth: admin."
       parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-        - name: pageSize
-          in: query
-          schema:
-            type: integer
-        - name: documentId
-          in: query
-          schema:
-            type: string
-        - name: collection
-          in: query
-          schema:
-            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
-          description: Chunks list
+          description: A page of chunks
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ChunksResponse'
+                $ref: '#/components/schemas/ChunkListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /visibility/chunks/{docId}:
+  /api/v1/visibility/chunks/{docId}:
     get:
       tags: [Visibility]
-      summary: Get chunks for document
+      summary: Every chunk of a document
+      description: "Auth: admin."
       parameters:
         - name: docId
           in: path
@@ -1027,73 +2110,753 @@ paths:
       responses:
         '200':
           description: Document chunks
-
-  /visibility/collections:
-    get:
-      tags: [Visibility]
-      summary: Get collection statistics
-      responses:
-        '200':
-          description: Collection stats
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  collections:
+                  documentId:
+                    type: string
+                  filename:
+                    type: string
+                  collection:
+                    type: string
+                  chunkCount:
+                    type: integer
+                  chunks:
                     type: array
                     items:
-                      $ref: '#/components/schemas/CollectionStats'
+                      $ref: '#/components/schemas/ChunkInfo'
+                  chunkingConfig:
+                    type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  /visibility/config:
+  /api/v1/visibility/chunks/{docId}/{index}:
     get:
       tags: [Visibility]
-      summary: Get visible configuration
+      summary: One chunk of a document
+      description: "Auth: admin."
+      parameters:
+        - name: docId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
       responses:
         '200':
-          description: Configuration visibility
+          description: Chunk
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/visibility/stats:
+    get:
+      tags: [Visibility]
+      summary: Detailed index statistics
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Statistics, including the chunk size distribution
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "`DetailedStatsResponse`"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/visibility/collections:
+    get:
+      tags: [Visibility]
+      summary: Collections with their chunking configuration
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Collections
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "`CollectionsResponse`: collections and the default configuration"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   # ============================================================
-  # Health Endpoints
+  # Analytics and suggestions
   # ============================================================
-  /health:
+  /api/v1/analytics/queries:
     get:
-      tags: [Health]
-      summary: Health check
+      tags: [Analytics]
+      summary: Query log
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/CollectionFilter'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
-          description: Service is healthy
+          description: A page of query log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryLogListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /health/ready:
+  /api/v1/analytics/queries/summary:
     get:
-      tags: [Health]
-      summary: Readiness check
+      tags: [Analytics]
+      summary: Query statistics (latency percentiles, ratings, cost)
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
       responses:
         '200':
-          description: Service is ready
-        '503':
-          description: Service not ready
+          description: Summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryAnalyticsSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
-  /health/live:
+  /api/v1/analytics/queries/{id}:
     get:
-      tags: [Health]
-      summary: Liveness check
+      tags: [Analytics]
+      summary: One query log entry
+      description: "Auth: admin."
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
-          description: Service is alive
+          description: Entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryLogEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/analytics/suggestions:
+    get:
+      tags: [Analytics]
+      summary: Optimization suggestions derived from the query log
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/CollectionFilter'
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [chunking, search, embedding, content]
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [critical, warning, info]
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/analytics/suggestions/summary:
+    get:
+      tags: [Analytics]
+      summary: Suggestion counts by severity
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  criticalCount:
+                    type: integer
+                  warningCount:
+                    type: integer
+                  infoCount:
+                    type: integer
+                  total:
+                    type: integer
+                  topIssues:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/analytics/suggestions/collection/{collection}:
+    get:
+      tags: [Analytics]
+      summary: Suggestions for one collection
+      description: "Auth: admin."
+      parameters:
+        - name: collection
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================
+  # Experiments
+  # ============================================================
+  /api/v1/experiments:
+    get:
+      tags: [Experiments]
+      summary: List experiments
+      description: "Auth: admin."
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, running, completed, archived]
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Experiments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  experiments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Experiment'
+                  total:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Experiments]
+      summary: Create a draft experiment
+      description: "Auth: admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExperimentRequest'
+      responses:
+        '201':
+          description: Experiment created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  experiment:
+                    $ref: '#/components/schemas/Experiment'
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/experiments/running:
+    get:
+      tags: [Experiments]
+      summary: The running experiment
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [Experiments]
+      summary: An experiment
+      description: "Auth: admin."
+      responses:
+        '200':
+          description: Experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Experiments]
+      summary: Delete a draft experiment
+      description: "Auth: admin."
+      responses:
+        '200':
+          $ref: '#/components/responses/ExperimentOperation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}/start:
+    put:
+      tags: [Experiments]
+      summary: Start an experiment (at most one runs at a time)
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/ExperimentId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ExperimentOperation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}/stop:
+    put:
+      tags: [Experiments]
+      summary: Stop a running experiment
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/ExperimentId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ExperimentOperation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}/archive:
+    put:
+      tags: [Experiments]
+      summary: Archive an experiment
+      description: "Auth: admin."
+      parameters:
+        - $ref: '#/components/parameters/ExperimentId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ExperimentOperation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}/results:
+    get:
+      tags: [Experiments]
+      summary: Per-variant metrics and significance tests
+      description: |
+        Auth: admin. Latency is compared with Welch's t-test, the error rate and share of
+        positive ratings with a two-proportion z-test (α = 0.05).
+      parameters:
+        - $ref: '#/components/parameters/ExperimentId'
+      responses:
+        '200':
+          description: Results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentResults'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================
+  # WebSocket
+  # ============================================================
+  /ws:
+    get:
+      tags: [Realtime]
+      summary: WebSocket for ingestion progress and stats updates
+      description: |
+        Auth: authenticated (any access token). Besides the usual credentials, the token may be
+        passed as `?access_token=` because browsers cannot set headers on a WebSocket handshake.
+        Server messages are JSON `{"type", "payload", "timestamp"}` (types include
+        `ingestion_progress`, `stats_update` and heartbeats); client messages are ignored.
+        A handshake with an `Origin` header must come from the server's own origin or an origin in
+        `ALLOWED_ORIGINS` (403 otherwise); clients without `Origin` are unaffected.
+      security:
+        - bearerAuth: []
+        - wsAccessToken: []
+        - sessionCookie: []
+      responses:
+        '101':
+          description: Switching protocols
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Origin not allowed, or an access token without access to `/ws`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
-      description: JWT token from /auth/login or access token (rat_...)
+      description: |
+        `Authorization: Bearer <credential>` where the credential is the static `API_KEY`, a
+        `rat_…` access token, or (basic mode) a JWT from `POST /api/v1/auth/login`.
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: The static `API_KEY`.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: ragbox_session
+      description: OIDC session cookie set by the OAuth callback (oauth mode; name set by `OAUTH_SESSION_COOKIE_NAME`).
+    wsAccessToken:
+      type: apiKey
+      in: query
+      name: access_token
+      description: Any bearer credential, accepted on `GET /ws` only.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 1-based page number
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        default: 50
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        default: 0
+    From:
+      name: from
+      in: query
+      description: ISO-8601 start of the period
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      description: ISO-8601 end of the period
+      schema:
+        type: string
+        format: date-time
+    CollectionFilter:
+      name: collection
+      in: query
+      schema:
+        type: string
+    CollectionPatternQuery:
+      name: pattern
+      in: query
+      description: Collection pattern such as `*`, `eng/*` or `eng/**`
+      schema:
+        type: string
+    CollectionPath:
+      name: path
+      in: path
+      required: true
+      description: |
+        Collection path. `GET /api/v1/collections/{path}` accepts nested paths as is
+        (`/collections/eng/backend`); the other operations take one path segment, so encode
+        `/` as `%2F`.
+      schema:
+        type: string
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    ExperimentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Message:
+      description: Success
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MessageResponse'
+    ExperimentOperation:
+      description: Operation result
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              message:
+                type: string
+              experiment:
+                $ref: '#/components/schemas/Experiment'
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid credentials (with a `WWW-Authenticate` challenge)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated, but not allowed (not an admin, missing token scope, or collection not allowed)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Conflicts with the current state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Body larger than `MAX_BODY_SIZE_MB` (the limit is also in the `X-Max-Body-Size` header)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              maxSizeBytes:
+                type: string
+              maxSizeMB:
+                type: string
+    TooManyRequests:
+      description: Rate limited (see `Retry-After`)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              retryAfter:
+                type: string
+              limit:
+                type: string
+              window:
+                type: string
 
   schemas:
-    # ============================================================
-    # Auth Schemas
-    # ============================================================
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable code, e.g. `bad_request`, `validation_failed`, `configuration_error`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `unsupported_media_type`, `internal_error`
+        message:
+          type: string
+        details:
+          type: string
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+    OperationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    # ---------------- Health ----------------
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        uptime:
+          type: integer
+          format: int64
+          description: Milliseconds since start
+        system:
+          type: object
+          properties:
+            memoryUsedMb:
+              type: integer
+            memoryMaxMb:
+              type: integer
+            memoryFreePercent:
+              type: integer
+            cpuCount:
+              type: integer
+            javaVersion:
+              type: string
+    ReadinessResponse:
+      type: object
+      properties:
+        ready:
+          type: boolean
+        checks:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+              message:
+                type: string
+
+    # ---------------- Auth ----------------
+    AuthModeResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [open, basic, oauth]
+        authRequired:
+          type: boolean
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [password, sso, api-key]
+        oauthLoginUrl:
+          type: string
+          example: /api/v1/oauth/login
     LoginRequest:
       type: object
       required: [username, password]
@@ -1102,19 +2865,63 @@ components:
           type: string
         password:
           type: string
-
+          format: password
     LoginResponse:
       type: object
       properties:
         token:
           type: string
-          description: JWT token
+          description: JWT
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
         expiresIn:
           type: integer
-          description: Token lifetime in seconds
-        user:
-          $ref: '#/components/schemas/UserInfo'
-
+          format: int64
+          description: Seconds until the token expires
+    PrincipalInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+        isAdmin:
+          type: boolean
+        authMethod:
+          type: string
+          description: How the principal authenticated (e.g. open, api-key, access-token, password, oidc)
+        groups:
+          type: array
+          items:
+            type: string
+        scopes:
+          type: array
+          description: Access tokens only
+          items:
+            type: string
+        collections:
+          type: array
+          description: Access tokens restricted to collections only
+          items:
+            type: string
+        userId:
+          type: integer
+          description: Password-login users only
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          format: password
+        newPassword:
+          type: string
+          format: password
     UserInfo:
       type: object
       properties:
@@ -1124,11 +2931,6 @@ components:
           type: string
         role:
           type: string
-          enum: [admin, user]
-        createdAt:
-          type: string
-          format: date-time
-
     UserListResponse:
       type: object
       properties:
@@ -1136,7 +2938,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/UserInfo'
-
+        total:
+          type: integer
     CreateUserRequest:
       type: object
       required: [username, password]
@@ -1145,45 +2948,45 @@ components:
           type: string
         password:
           type: string
+          format: password
         role:
           type: string
           enum: [admin, user]
           default: user
-
-    ChangePasswordRequest:
+    OAuthUserInfo:
       type: object
-      required: [currentPassword, newPassword]
       properties:
-        currentPassword:
+        userId:
           type: string
-        newPassword:
+        email:
           type: string
+        name:
+          type: string
+        groups:
+          type: array
+          items:
+            type: string
 
-    # ============================================================
-    # Token Schemas
-    # ============================================================
+    # ---------------- Tokens ----------------
     CreateTokenRequest:
       type: object
       required: [name, scopes]
       properties:
         name:
           type: string
-          description: Descriptive name for the token
         scopes:
           type: array
           items:
             type: string
-            enum: [documents:read, documents:write, sync:read, sync:write, query, admin]
+            enum: ["documents:read", "documents:write", "sync:read", "sync:write", query, admin]
         collections:
           type: array
+          description: Restrict the token to these collections (default all)
           items:
             type: string
-          description: Optional collection restrictions
         expiresAt:
           type: string
           format: date-time
-          description: Optional expiration timestamp
-
     CreateTokenResponse:
       type: object
       properties:
@@ -1193,7 +2996,7 @@ components:
           type: string
         token:
           type: string
-          description: Full token value (only returned once)
+          description: The full `rat_…` token; only returned on creation
         scopes:
           type: array
           items:
@@ -1205,7 +3008,6 @@ components:
         expiresAt:
           type: string
           format: date-time
-
     TokenInfo:
       type: object
       properties:
@@ -1215,7 +3017,6 @@ components:
           type: string
         tokenPrefix:
           type: string
-          description: First 12 characters of token
         scopes:
           type: array
           items:
@@ -1233,7 +3034,6 @@ components:
         createdAt:
           type: string
           format: date-time
-
     TokenListResponse:
       type: object
       properties:
@@ -1244,41 +3044,29 @@ components:
         total:
           type: integer
 
-    # ============================================================
-    # Document Schemas
-    # ============================================================
-    Document:
+    # ---------------- Documents ----------------
+    Metadata:
       type: object
-      properties:
-        id:
-          type: string
-        filename:
-          type: string
-        collection:
-          type: string
-        chunkCount:
-          type: integer
-        metadata:
-          type: object
-
+      additionalProperties:
+        type: string
     DocumentUploadRequest:
       type: object
-      required: [content, filename]
+      required: [content]
       properties:
         content:
           type: string
         filename:
           type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
         collection:
           type: string
-        metadata:
-          type: object
+          description: Defaults to `default`
         readableBy:
           type: array
+          description: Principals allowed to read it (permission mode), e.g. `user:alice`, `group:eng`
           items:
             type: string
-          description: Principal IDs who can read this document
-
     DocumentUploadResponse:
       type: object
       properties:
@@ -1288,25 +3076,57 @@ components:
           type: integer
         message:
           type: string
-
+    DocumentInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        chunkCount:
+          type: integer
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        createdAt:
+          type: string
+          format: date-time
+        collection:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    DocumentListResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentInfo'
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
     DocumentUpsertRequest:
       type: object
       required: [content]
       properties:
         content:
           type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
         contentHash:
           type: string
-          description: Optional content hash for change detection
+          description: Your hash of the content; defaults to the server's SHA-256
         collection:
           type: string
-        metadata:
-          type: object
         readableBy:
           type: array
           items:
             type: string
-
     DocumentUpsertResponse:
       type: object
       properties:
@@ -1319,17 +3139,6 @@ components:
           enum: [created, updated, unchanged]
         message:
           type: string
-
-    DocumentListResponse:
-      type: object
-      properties:
-        documents:
-          type: array
-          items:
-            $ref: '#/components/schemas/Document'
-        total:
-          type: integer
-
     BatchDeleteRequest:
       type: object
       required: [documentIds]
@@ -1340,8 +3149,6 @@ components:
             type: string
         dryRun:
           type: boolean
-          default: false
-
     BatchDeleteResponse:
       type: object
       properties:
@@ -1359,10 +3166,29 @@ components:
             type: string
         dryRun:
           type: boolean
+    StatsResponse:
+      type: object
+      properties:
+        documentCount:
+          type: integer
+        chunkCount:
+          type: integer
+        vectorCount:
+          type: integer
+          format: int64
+        collections:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              documentCount:
+                type: integer
+              chunkCount:
+                type: integer
 
-    # ============================================================
-    # Sync Schemas
-    # ============================================================
+    # ---------------- Sync ----------------
     SyncStatusResponse:
       type: object
       properties:
@@ -1375,20 +3201,16 @@ components:
           type: integer
         pendingDeletes:
           type: integer
-
     SyncPruneRequest:
       type: object
+      required: [keepDocumentIds]
       properties:
         keepDocumentIds:
           type: array
           items:
             type: string
-          description: Documents to keep (all others deleted)
         dryRun:
           type: boolean
-          default: false
-          description: Preview deletions without executing
-
     SyncPruneResponse:
       type: object
       properties:
@@ -1398,11 +3220,11 @@ components:
           type: integer
         prunedIds:
           type: array
+          description: Only for dry runs
           items:
             type: string
         dryRun:
           type: boolean
-
     DocumentSyncState:
       type: object
       properties:
@@ -1415,7 +3237,6 @@ components:
           format: date-time
         collection:
           type: string
-
     DocumentSyncListResponse:
       type: object
       properties:
@@ -1432,7 +3253,6 @@ components:
           type: integer
         hasMore:
           type: boolean
-
     SyncCheckRequest:
       type: object
       required: [documentIds]
@@ -1441,7 +3261,6 @@ components:
           type: array
           items:
             type: string
-
     SyncCheckResponse:
       type: object
       properties:
@@ -1454,9 +3273,877 @@ components:
           items:
             type: string
 
-    # ============================================================
-    # Analytics Schemas
-    # ============================================================
+    # ---------------- Query ----------------
+    QueryOverrides:
+      type: object
+      description: Per-request overrides of the runtime settings
+      properties:
+        topK:
+          type: integer
+        fusionStrategy:
+          type: string
+        systemPrompt:
+          type: string
+        llmTemperature:
+          type: number
+        similarityThreshold:
+          type: number
+    QueryRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+        collection:
+          type: string
+          description: Collection or pattern (`*`, `eng/*`, `eng/**`)
+        topK:
+          type: integer
+        includeMetadata:
+          type: boolean
+          default: true
+        experimentId:
+          type: string
+        overrides:
+          $ref: '#/components/schemas/QueryOverrides'
+    ContextItem:
+      type: object
+      properties:
+        content:
+          type: string
+        score:
+          type: number
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        documentId:
+          type: string
+        chunkIndex:
+          type: integer
+    UsageInfo:
+      type: object
+      properties:
+        promptTokens:
+          type: integer
+        completionTokens:
+          type: integer
+        totalTokens:
+          type: integer
+    QueryResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        contexts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextItem'
+        usage:
+          $ref: '#/components/schemas/UsageInfo'
+        metrics:
+          type: object
+          properties:
+            embeddingLatencyMs:
+              type: integer
+            searchLatencyMs:
+              type: integer
+            llmLatencyMs:
+              type: integer
+            chunksRetrieved:
+              type: integer
+            chunksUsed:
+              type: integer
+            embeddingTokens:
+              type: integer
+            promptTokens:
+              type: integer
+            completionTokens:
+              type: integer
+            costUsd:
+              type: number
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        topK:
+          type: integer
+        collection:
+          type: string
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextItem'
+        count:
+          type: integer
+
+    # ---------------- Chat ----------------
+    ChatSession:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        collectionPattern:
+          type: string
+          default: '*'
+        messageCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        isArchived:
+          type: boolean
+        ownerId:
+          type: string
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        contexts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextItem'
+        usage:
+          $ref: '#/components/schemas/UsageInfo'
+        rating:
+          type: integer
+        queryLogId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        messageIndex:
+          type: integer
+    CreateChatSessionRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        collectionPattern:
+          type: string
+    CreateChatSessionResponse:
+      type: object
+      properties:
+        session:
+          $ref: '#/components/schemas/ChatSession'
+        message:
+          type: string
+    UpdateChatSessionRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        collectionPattern:
+          type: string
+        isArchived:
+          type: boolean
+    ChatSessionListResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatSession'
+        total:
+          type: integer
+    ChatSessionDetailResponse:
+      type: object
+      properties:
+        session:
+          $ref: '#/components/schemas/ChatSession'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    SendChatMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+
+    # ---------------- Collections and principals ----------------
+    CreateCollectionRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          example: engineering/backend
+        description:
+          type: string
+        queryableBy:
+          type: array
+          description: External principal ids; empty or absent means public
+          items:
+            type: string
+          example: ["group:engineering"]
+        isLeaf:
+          type: boolean
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    Collection:
+      type: object
+      properties:
+        id:
+          type: integer
+        path:
+          type: string
+        parentPath:
+          type: string
+        queryableBy:
+          type: array
+          description: Internal principal ids
+          items:
+            type: integer
+        isLeaf:
+          type: boolean
+        isPublic:
+          type: boolean
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    CollectionListResponse:
+      type: object
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collection'
+    CreatePrincipalRequest:
+      type: object
+      required: [externalId]
+      properties:
+        externalId:
+          type: string
+          example: alice
+    PrincipalRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        externalId:
+          type: string
+        principalType:
+          type: string
+          enum: [user, group]
+    PrincipalListResponse:
+      type: object
+      properties:
+        principals:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrincipalRecord'
+        total:
+          type: integer
+          format: int64
+    CollectionChunkingConfig:
+      type: object
+      properties:
+        collection:
+          type: string
+        strategy:
+          type: string
+        targetSize:
+          type: integer
+        maxSize:
+          type: integer
+        overlap:
+          type: integer
+        fileTypeStrategies:
+          type: object
+          additionalProperties:
+            type: string
+        updatedAt:
+          type: string
+          format: date-time
+    CollectionConfigUpdateRequest:
+      type: object
+      properties:
+        strategy:
+          type: string
+          enum: [simple, sentence, markdown, semantic]
+        targetSize:
+          type: integer
+        maxSize:
+          type: integer
+        overlap:
+          type: integer
+        fileTypeStrategies:
+          type: object
+          description: 'File extension to strategy, e.g. `{".md": "markdown"}`'
+          additionalProperties:
+            type: string
+    EffectiveChunkingConfig:
+      type: object
+      properties:
+        strategy:
+          type: string
+        targetSize:
+          type: integer
+        maxSize:
+          type: integer
+        overlap:
+          type: integer
+        source:
+          type: string
+          description: Where the configuration came from (default, collection, file-type)
+        appliedFileTypeOverride:
+          type: string
+    CollectionConfigResponse:
+      type: object
+      properties:
+        collection:
+          type: string
+        hasCustomConfig:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/CollectionChunkingConfig'
+        effectiveConfig:
+          $ref: '#/components/schemas/EffectiveChunkingConfig'
+        documentCount:
+          type: integer
+    AllCollectionConfigsResponse:
+      type: object
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionConfigResponse'
+        defaultConfig:
+          $ref: '#/components/schemas/EffectiveChunkingConfig'
+
+    # ---------------- Configuration ----------------
+    ConfigResponse:
+      type: object
+      properties:
+        embedding:
+          type: object
+          properties:
+            provider:
+              type: string
+            model:
+              type: string
+            dimensions:
+              type: integer
+        llm:
+          type: object
+          properties:
+            model:
+              type: string
+            temperature:
+              type: number
+        rag:
+          type: object
+          properties:
+            chunkingStrategy:
+              type: string
+            chunkSize:
+              type: integer
+            chunkOverlap:
+              type: integer
+            topK:
+              type: integer
+            fusionStrategy:
+              type: string
+            rrfK:
+              type: integer
+            searchMode:
+              type: string
+            fusionApplies:
+              type: boolean
+            reranking:
+              type: string
+            queryTransform:
+              type: string
+            limitations:
+              type: array
+              items:
+                type: string
+        database:
+          type: object
+          properties:
+            host:
+              type: string
+            port:
+              type: integer
+            database:
+              type: string
+            tableName:
+              type: string
+            connected:
+              type: boolean
+    ProvidersResponse:
+      type: object
+      properties:
+        embeddingProviders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderInfo'
+        llmProviders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderInfo'
+        chunkingStrategies:
+          type: array
+          items:
+            type: string
+        fusionStrategies:
+          type: array
+          items:
+            type: string
+    ProviderInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        configured:
+          type: boolean
+    RuntimeConfig:
+      type: object
+      properties:
+        topK:
+          type: integer
+        fusionStrategy:
+          type: string
+        rrfK:
+          type: integer
+        systemPrompt:
+          type: string
+        llmTemperature:
+          type: number
+        chunkingStrategy:
+          type: string
+        chunkSize:
+          type: integer
+        chunkOverlap:
+          type: integer
+    RuntimeConfigResponse:
+      type: object
+      properties:
+        config:
+          $ref: '#/components/schemas/RuntimeConfig'
+        lastModified:
+          type: string
+          format: date-time
+        hotSettings:
+          type: array
+          items:
+            type: string
+        warmSettings:
+          type: array
+          items:
+            type: string
+    RuntimeConfigUpdate:
+      type: object
+      description: Only the fields present are changed
+      properties:
+        topK:
+          type: integer
+        fusionStrategy:
+          type: string
+          enum: [rrf, weighted, vector_only, keyword_only]
+        rrfK:
+          type: integer
+        systemPrompt:
+          type: string
+        llmTemperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        chunkingStrategy:
+          type: string
+          enum: [simple, sentence, markdown, semantic]
+        chunkSize:
+          type: integer
+        chunkOverlap:
+          type: integer
+    RuntimeConfigUpdateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              oldValue:
+                type: string
+              newValue:
+                type: string
+              changeability:
+                type: string
+                enum: [hot, warm]
+              effectiveImmediately:
+                type: boolean
+              note:
+                type: string
+        current:
+          $ref: '#/components/schemas/RuntimeConfig'
+        message:
+          type: string
+    RuntimeConfigValidateResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        validations:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              valid:
+                type: boolean
+              currentValue:
+                type: string
+              proposedValue:
+                type: string
+              error:
+                type: string
+              warning:
+                type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    ConfigHistoryResponse:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+                format: int64
+              field:
+                type: string
+              oldValue:
+                type: string
+              newValue:
+                type: string
+              changedAt:
+                type: string
+                format: date-time
+              changedBy:
+                type: string
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+
+    # ---------------- Chunking ----------------
+    ChunkingPreviewRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+        strategy:
+          type: string
+          enum: [simple, sentence, markdown, semantic]
+        targetSize:
+          type: integer
+        maxSize:
+          type: integer
+        overlap:
+          type: integer
+        filename:
+          type: string
+          description: Used to auto-detect the strategy when none is given
+    PreviewChunk:
+      type: object
+      properties:
+        index:
+          type: integer
+        content:
+          type: string
+        length:
+          type: integer
+        headings:
+          type: array
+          items:
+            type: string
+        isCodeBlock:
+          type: boolean
+        language:
+          type: string
+    ChunkingStats:
+      type: object
+      properties:
+        chunkCount:
+          type: integer
+        totalLength:
+          type: integer
+        avgChunkSize:
+          type: number
+        minChunkSize:
+          type: integer
+        maxChunkSize:
+          type: integer
+        estimatedTokens:
+          type: integer
+    ChunkingWarning:
+      type: object
+      properties:
+        level:
+          type: string
+          enum: [info, warning, error]
+        message:
+          type: string
+        suggestion:
+          type: string
+    ChunkingPreviewResponse:
+      type: object
+      properties:
+        strategy:
+          type: string
+        config:
+          type: object
+          properties:
+            strategy:
+              type: string
+            targetSize:
+              type: integer
+            maxSize:
+              type: integer
+            overlap:
+              type: integer
+            source:
+              type: string
+              enum: [request, auto-detect, default]
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewChunk'
+        stats:
+          $ref: '#/components/schemas/ChunkingStats'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChunkingWarning'
+    ChunkingCompareRequest:
+      type: object
+      required: [content, strategies]
+      properties:
+        content:
+          type: string
+        strategies:
+          type: array
+          items:
+            type: string
+          example: [simple, sentence, markdown]
+        targetSize:
+          type: integer
+        overlap:
+          type: integer
+    ChunkingCompareResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              strategy:
+                type: string
+              chunks:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PreviewChunk'
+              stats:
+                $ref: '#/components/schemas/ChunkingStats'
+              warnings:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChunkingWarning'
+        recommendation:
+          type: object
+          properties:
+            strategy:
+              type: string
+            reason:
+              type: string
+    ChunkingPreset:
+      type: object
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        targetSize:
+          type: integer
+        maxSize:
+          type: integer
+        overlap:
+          type: integer
+        bestFor:
+          type: array
+          items:
+            type: string
+
+    # ---------------- Ingestion ----------------
+    DirectoryIngestRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        patterns:
+          type: array
+          items:
+            type: string
+          default: ["*.md", "*.txt", "*.pdf"]
+        recursive:
+          type: boolean
+          default: true
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    UrlIngestRequest:
+      type: object
+      required: [urls]
+      properties:
+        urls:
+          type: array
+          items:
+            type: string
+            format: uri
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    IngestResult:
+      type: object
+      properties:
+        sourceName:
+          type: string
+        sourceType:
+          type: string
+        documentsAdded:
+          type: integer
+        documentsUpdated:
+          type: integer
+        documentsDeleted:
+          type: integer
+        documentsUnchanged:
+          type: integer
+        documentsFailed:
+          type: integer
+        durationMs:
+          type: integer
+          format: int64
+        error:
+          type: string
+    SourceInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        sourceType:
+          type: string
+        enabled:
+          type: boolean
+        config:
+          type: object
+          additionalProperties:
+            type: string
+    IngestionStatusResponse:
+      type: object
+      properties:
+        running:
+          type: boolean
+        lastRun:
+          type: string
+          format: date-time
+        lastResults:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestResult'
+        nextScheduledRun:
+          type: string
+          format: date-time
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceInfo'
+
+    # ---------------- Visibility ----------------
+    ChunkInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        documentId:
+          type: string
+        index:
+          type: integer
+        content:
+          type: string
+        contentLength:
+          type: integer
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        chunkMetadata:
+          type: object
+          properties:
+            headings:
+              type: array
+              items:
+                type: string
+            isCodeBlock:
+              type: boolean
+            language:
+              type: string
+            startOffset:
+              type: integer
+            endOffset:
+              type: integer
+    ChunkListResponse:
+      type: object
+      properties:
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChunkInfo'
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+
+    # ---------------- Analytics ----------------
     QueryLogEntry:
       type: object
       properties:
@@ -1484,10 +4171,35 @@ components:
           type: integer
         userRating:
           type: integer
+        experimentId:
+          type: string
+        configSnapshot:
+          type: object
+          properties:
+            topK:
+              type: integer
+            fusionStrategy:
+              type: string
+            systemPrompt:
+              type: string
+            llmTemperature:
+              type: number
         createdAt:
           type: string
           format: date-time
-
+        promptTokens:
+          type: integer
+        embeddingTokens:
+          type: integer
+        costUsd:
+          type: number
+        variant:
+          type: string
+          enum: [baseline, variant]
+        failed:
+          type: boolean
+        errorMessage:
+          type: string
     QueryLogListResponse:
       type: object
       properties:
@@ -1497,13 +4209,16 @@ components:
             $ref: '#/components/schemas/QueryLogEntry'
         total:
           type: integer
-
+        page:
+          type: integer
+        pageSize:
+          type: integer
     QueryAnalyticsSummary:
       type: object
       properties:
         totalQueries:
           type: integer
-        avgLatencyMs:
+        averageLatencyMs:
           type: number
         p50LatencyMs:
           type: integer
@@ -1511,25 +4226,39 @@ components:
           type: integer
         p99LatencyMs:
           type: integer
-        avgChunksRetrieved:
+        averageChunksRetrieved:
           type: number
-        avgUserRating:
+        averageChunksUsed:
           type: number
-        collectionStats:
+        averageRating:
+          type: number
+        ratedQueriesCount:
+          type: integer
+        queriesWithFeedback:
+          type: integer
+        topCollections:
           type: array
           items:
-            $ref: '#/components/schemas/CollectionQueryStats'
-
-    CollectionQueryStats:
-      type: object
-      properties:
-        collection:
+            type: object
+            properties:
+              collection:
+                type: string
+              queryCount:
+                type: integer
+              averageLatencyMs:
+                type: number
+              averageRating:
+                type: number
+        periodStart:
           type: string
-        queryCount:
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+        p95RetrievalLatencyMs:
           type: integer
-        avgLatencyMs:
+        totalCostUsd:
           type: number
-
     QueryFeedbackRequest:
       type: object
       required: [queryId, rating]
@@ -1546,219 +4275,191 @@ components:
             type: string
         comment:
           type: string
-
-    QueryFeedbackResponse:
+    SuggestionsResponse:
       type: object
       properties:
-        message:
+        suggestions:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              suggestionType:
+                type: string
+                enum: [chunking, search, embedding, content]
+              severity:
+                type: string
+                enum: [critical, warning, info]
+              title:
+                type: string
+              description:
+                type: string
+              collection:
+                type: string
+              evidence:
+                type: object
+                properties:
+                  metric:
+                    type: string
+                  currentValue:
+                    type: number
+                  threshold:
+                    type: number
+                  sampleSize:
+                    type: integer
+                  timeRange:
+                    type: string
+              recommendation:
+                type: string
+              estimatedImpact:
+                type: string
+              currentValue:
+                type: string
+              suggestedValue:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+        analyzedQueries:
+          type: integer
+        analyzedCollections:
+          type: integer
+        analysisTimestamp:
           type: string
-        queryId:
-          type: string
+          format: date-time
 
-    # ============================================================
-    # Query Schemas
-    # ============================================================
-    QueryRequest:
+    # ---------------- Experiments ----------------
+    ExperimentConfig:
       type: object
-      required: [question]
+      description: Settings that differ from the runtime configuration; absent fields use it
       properties:
-        question:
-          type: string
-        collection:
-          type: string
         topK:
           type: integer
-        includeMetadata:
-          type: boolean
-
-    QueryResponse:
+        fusionStrategy:
+          type: string
+        systemPrompt:
+          type: string
+        llmTemperature:
+          type: number
+        rrfK:
+          type: integer
+        reranking:
+          type: string
+    Experiment:
       type: object
       properties:
-        answer:
+        id:
           type: string
-        contexts:
-          type: array
-          items:
-            type: object
-        usage:
-          type: object
-
-    SearchRequest:
-      type: object
-      required: [query]
-      properties:
-        query:
+        name:
           type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [draft, running, completed, archived]
+        baselineConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        variantConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        trafficSplit:
+          type: number
+          description: Share of queries sent to the variant
         collection:
           type: string
-        limit:
-          type: integer
-
-    SearchResponse:
-      type: object
-      properties:
-        results:
-          type: array
-          items:
-            type: object
-
-    # ============================================================
-    # Chunking Schemas
-    # ============================================================
-    ChunkingPreviewRequest:
-      type: object
-      required: [content]
-      properties:
-        content:
+        createdAt:
           type: string
-        strategy:
+          format: date-time
+        startedAt:
           type: string
-        targetSize:
-          type: integer
-        overlap:
-          type: integer
-
-    ChunkingPreviewResponse:
-      type: object
-      properties:
-        chunks:
-          type: array
-          items:
-            type: object
-        stats:
-          type: object
-
-    ChunkingCompareRequest:
-      type: object
-      required: [content, strategies]
-      properties:
-        content:
+          format: date-time
+        endedAt:
           type: string
-        strategies:
-          type: array
-          items:
-            type: string
-        targetSize:
-          type: integer
-        overlap:
-          type: integer
-
-    ChunkingCompareResponse:
+          format: date-time
+    CreateExperimentRequest:
       type: object
-      properties:
-        results:
-          type: array
-          items:
-            type: object
-        recommendation:
-          type: object
-
-    # ============================================================
-    # Configuration Schemas
-    # ============================================================
-    CollectionConfig:
-      type: object
-      properties:
-        chunkingStrategy:
-          type: string
-        chunkSize:
-          type: integer
-        chunkOverlap:
-          type: integer
-
-    RuntimeConfig:
-      type: object
-      properties:
-        embeddingProvider:
-          type: string
-        embeddingModel:
-          type: string
-        llmProvider:
-          type: string
-        llmModel:
-          type: string
-
-    Stats:
-      type: object
-      properties:
-        documentCount:
-          type: integer
-        chunkCount:
-          type: integer
-
-    # ============================================================
-    # Visibility Schemas
-    # ============================================================
-    VisibilityStats:
-      type: object
-      properties:
-        documentCount:
-          type: integer
-        chunkCount:
-          type: integer
-        collectionCount:
-          type: integer
-        avgChunksPerDocument:
-          type: number
-        totalContentSize:
-          type: integer
-        chunkSizeDistribution:
-          type: object
-
-    CollectionStats:
-      type: object
+      required: [name, variantConfig]
       properties:
         name:
           type: string
-        documentCount:
-          type: integer
-        chunkCount:
-          type: integer
-
-    ChunksResponse:
-      type: object
-      properties:
-        chunks:
-          type: array
-          items:
-            type: object
-        total:
-          type: integer
-
-    # ============================================================
-    # Ingestion Schemas
-    # ============================================================
-    DirectoryIngestionRequest:
-      type: object
-      required: [path]
-      properties:
-        path:
+        description:
           type: string
+        baselineConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        variantConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        trafficSplit:
+          type: number
+          default: 0.5
         collection:
           type: string
-        patterns:
-          type: array
-          items:
-            type: string
-
-    UrlIngestionRequest:
-      type: object
-      required: [url]
-      properties:
-        url:
-          type: string
-        collection:
-          type: string
-
-    # ============================================================
-    # Error Schema
-    # ============================================================
-    ErrorResponse:
+    VariantMetrics:
       type: object
       properties:
-        error:
+        queryCount:
+          type: integer
+        avgLatencyMs:
+          type: number
+        avgRating:
+          type: number
+        ratedCount:
+          type: integer
+        avgChunksUsed:
+          type: number
+        avgChunksRetrieved:
+          type: number
+        failedCount:
+          type: integer
+        errorRate:
+          type: number
+        latencyStdDevMs:
+          type: number
+        ratingStdDev:
+          type: number
+        positiveCount:
+          type: integer
+    ExperimentResults:
+      type: object
+      properties:
+        experimentId:
           type: string
-        message:
+        experimentName:
           type: string
-        details:
+        status:
           type: string
+        duration:
+          type: string
+        baseline:
+          $ref: '#/components/schemas/VariantMetrics'
+        variant:
+          $ref: '#/components/schemas/VariantMetrics'
+        analysis:
+          type: object
+          properties:
+            latencyChange:
+              type: string
+            ratingChange:
+              type: string
+            chunksUsedChange:
+              type: string
+            errorRateChange:
+              type: string
+            tests:
+              type: array
+              items:
+                type: object
+                properties:
+                  metric:
+                    type: string
+                  test:
+                    type: string
+                  baseline:
+                    type: number
+                  variant:
+                    type: number
+                  statistic:
+                    type: number
+                  pValue:
+                    type: number
+                  significant:
+                    type: boolean

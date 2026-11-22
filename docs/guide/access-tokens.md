@@ -2,7 +2,7 @@
 layout: page
 title: Access Tokens
 parent: User Guide
-nav_order: 3
+nav_order: 6
 ---
 
 # Access Tokens

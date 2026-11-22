@@ -2,190 +2,212 @@
 layout: page
 title: Analytics API
 parent: API Reference
-nav_order: 5
+nav_order: 7
 ---
 
 # Analytics API
+{: .no_toc }
 
-Endpoints for query analytics and feedback collection.
+The query log, analytics summaries, feedback and optimization suggestions. See the
+[Analytics guide](/guide/analytics) and [Optimization guide](/guide/optimization).
 {: .fs-6 .fw-300 }
 
-## List Query Logs {#list}
+## Table of Contents
+{: .no_toc .text-delta }
 
-Retrieve paginated query logs for analysis.
+1. TOC
+{:toc}
+
+---
+
+**Auth:** everything under `/api/v1/analytics` is **Admin** only (the query log contains every
+user's questions). `POST /api/v1/feedback` is open to any authenticated caller (access tokens
+need the `admin` scope).
+
+Time parameters (`from`, `to`) are ISO-8601 instants such as `2026-01-01T00:00:00Z`.
+
+## List Query Logs {#list}
 
 ```
 GET /api/v1/analytics/queries
 ```
 
-### Query Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `from` | ISO-8601 | - | Start timestamp filter |
-| `to` | ISO-8601 | - | End timestamp filter |
-| `collection` | string | - | Filter by collection |
-| `page` | integer | 1 | Page number |
-| `pageSize` | integer | 50 | Results per page (max 100) |
-
-### Example Request
-
-```bash
-curl "http://localhost:8080/api/v1/analytics/queries?from=2024-01-01T00:00:00Z&pageSize=20" \
-  -H "Authorization: Bearer your-token"
-```
-
-### Example Response
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `from` | | Only queries at or after this instant |
+| `to` | | Only queries before this instant |
+| `collection` | | Collection pattern the query was made with |
+| `page` | `1` | 1-based page |
+| `pageSize` | `50` | Page size, capped at 100 |
 
 ```json
 {
   "queries": [
     {
-      "id": "query-123",
-      "queryText": "How do I configure auth?",
-      "collectionPattern": "docs/*",
-      "userId": "user-456",
-      "timestamp": "2024-01-15T10:30:00Z",
-      "totalLatencyMs": 1250,
+      "id": "q-123",
+      "queryText": "How do I configure authentication?",
+      "collectionPattern": "*",
+      "userId": "user:alice",
+      "embeddingLatencyMs": 41,
+      "searchLatencyMs": 12,
+      "llmLatencyMs": 1830,
+      "totalLatencyMs": 1900,
       "chunksRetrieved": 5,
-      "chunksUsed": 3,
+      "chunksUsed": 5,
       "answerTokens": 120,
-      "feedback": {
-        "rating": 4,
-        "comment": "Helpful answer"
-      }
+      "userRating": 4,
+      "experimentId": null,
+      "configSnapshot": { "topK": 5, "fusionStrategy": "rrf", "systemPrompt": "...", "llmTemperature": null },
+      "createdAt": "2026-01-15T10:30:00Z",
+      "promptTokens": 450,
+      "embeddingTokens": 9,
+      "costUsd": 0.0023,
+      "variant": null,
+      "failed": false,
+      "errorMessage": null
     }
   ],
-  "total": 1,
+  "total": 1234,
   "page": 1,
-  "pageSize": 20
+  "pageSize": 50
 }
 ```
 
----
-
-## Get Query Details {#get}
-
-Retrieve a single query log entry.
-
-```
-GET /api/v1/analytics/queries/:id
-```
-
-### Example Response
-
-```json
-{
-  "id": "query-123",
-  "queryText": "How do I configure auth?",
-  "collectionPattern": "docs/*",
-  "userId": "user-456",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "embeddingLatencyMs": 150,
-  "searchLatencyMs": 80,
-  "llmLatencyMs": 1020,
-  "totalLatencyMs": 1250,
-  "chunksRetrieved": 5,
-  "chunksUsed": 3,
-  "answerTokens": 120
-}
-```
+Failed queries are logged too (`failed: true`, `errorMessage`). `variant` is `baseline` or
+`variant` when the query ran in an [experiment](/api/experiments).
 
 ---
 
 ## Analytics Summary {#summary}
 
-Get aggregated analytics for a time period.
-
 ```
-GET /api/v1/analytics/queries/summary
+GET /api/v1/analytics/queries/summary?from=...&to=...
 ```
 
-### Query Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `from` | ISO-8601 | 7 days ago | Start timestamp |
-| `to` | ISO-8601 | now | End timestamp |
-
-### Example Request
-
-```bash
-curl "http://localhost:8080/api/v1/analytics/queries/summary?from=2024-01-01T00:00:00Z" \
-  -H "Authorization: Bearer your-token"
-```
-
-### Example Response
+Defaults to the last 7 days.
 
 ```json
 {
-  "period": {
-    "from": "2024-01-01T00:00:00Z",
-    "to": "2024-01-15T10:30:00Z"
-  },
-  "totalQueries": 1500,
-  "averageLatencyMs": 850,
-  "p50LatencyMs": 720,
-  "p95LatencyMs": 1800,
-  "averageChunksRetrieved": 4.2,
+  "totalQueries": 1234,
+  "averageLatencyMs": 1450.5,
+  "p50LatencyMs": 1200,
+  "p95LatencyMs": 2800,
+  "p99LatencyMs": 4100,
+  "averageChunksRetrieved": 5.0,
+  "averageChunksUsed": 4.2,
   "averageRating": 4.1,
-  "feedbackCount": 320,
-  "queriesByCollection": {
-    "docs/guides": 800,
-    "docs/api": 500,
-    "other": 200
-  }
+  "ratedQueriesCount": 150,
+  "queriesWithFeedback": 150,
+  "topCollections": [
+    { "collection": "docs/**", "queryCount": 800, "averageLatencyMs": 1400.0, "averageRating": 4.3 }
+  ],
+  "periodStart": "2026-01-08T00:00:00Z",
+  "periodEnd": "2026-01-15T00:00:00Z",
+  "p95RetrievalLatencyMs": 60,
+  "totalCostUsd": 2.75
 }
 ```
+
+---
+
+## Get Query Log Entry {#get}
+
+```
+GET /api/v1/analytics/queries/{id}
+```
+
+One entry (same shape as in the list), or `404`.
 
 ---
 
 ## Submit Feedback {#feedback}
 
-Submit user feedback for a query.
+Rate a logged query.
 
 ```
 POST /api/v1/feedback
 ```
 
-### Request Body
-
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `queryId` | string | Yes | Query ID to provide feedback for |
-| `rating` | integer | Yes | Rating from 1-5 |
-| `relevantChunks` | array | No | IDs of relevant chunks |
-| `comment` | string | No | Optional feedback text |
-
-### Example Request
-
-```bash
-curl -X POST http://localhost:8080/api/v1/feedback \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-token" \
-  -d '{
-    "queryId": "query-123",
-    "rating": 4,
-    "relevantChunks": ["chunk-1", "chunk-3"],
-    "comment": "The second chunk was not relevant"
-  }'
-```
-
-### Example Response
+| `queryId` | string | Yes | Query-log id |
+| `rating` | integer | Yes | 1 to 5 |
+| `relevantChunks` | string[] | No | Chunks the user found relevant |
+| `comment` | string | No | Free-text comment |
 
 ```json
-{
-  "success": true,
-  "message": "Feedback recorded"
-}
+{ "success": true, "message": "Feedback recorded" }
 ```
+
+`400` for a rating outside 1 to 5, `404` for an unknown `queryId`.
+
+{: .note }
+`/query` responses do not include the query-log id, so outside chat (where
+`PUT /api/v1/chat/messages/{id}/rate` records feedback on the linked entry) the id has to come
+from the admin-only query log.
 
 ---
 
-## Error Responses
+## Optimization Suggestions {#suggestions}
 
-| Status | Error | Description |
-|--------|-------|-------------|
-| 400 | `bad_request` | Invalid rating (must be 1-5) |
-| 404 | `not_found` | Query ID not found |
-| 500 | `internal_error` | Database error |
+Rule-based suggestions derived from the query log (latency, ratings, chunk usage, zero-result
+queries) and the current configuration.
+
+```
+GET /api/v1/analytics/suggestions
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `from`, `to` | Analysis window |
+| `collection` | Only analyse this collection |
+| `type` | Filter: `chunking`, `search`, `embedding`, `content` |
+| `severity` | Filter: `critical`, `warning`, `info` |
+
+```json
+{
+  "suggestions": [
+    {
+      "id": "s-1",
+      "suggestionType": "search",
+      "severity": "warning",
+      "title": "Low average rating",
+      "description": "...",
+      "collection": "docs/**",
+      "evidence": {
+        "metric": "avgRating",
+        "currentValue": 2.8,
+        "threshold": 3.5,
+        "sampleSize": 120,
+        "timeRange": "7 days"
+      },
+      "recommendation": "...",
+      "estimatedImpact": "...",
+      "currentValue": "5",
+      "suggestedValue": "8",
+      "createdAt": "2026-01-15T10:30:00Z"
+    }
+  ],
+  "analyzedQueries": 1234,
+  "analyzedCollections": 3,
+  "analysisTimestamp": "2026-01-15T10:30:00Z"
+}
+```
+
+### Suggestions Summary {#suggestions-summary}
+
+```
+GET /api/v1/analytics/suggestions/summary?from=...&to=...
+```
+
+```json
+{ "criticalCount": 0, "warningCount": 2, "infoCount": 3, "total": 5, "topIssues": ["..."] }
+```
+
+### Suggestions for a Collection {#collection-suggestions}
+
+```
+GET /api/v1/analytics/suggestions/collection/{name}?from=...&to=...
+```
+
+Same shape as the full list, limited to suggestions for that collection.

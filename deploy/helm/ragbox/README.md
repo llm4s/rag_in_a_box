@@ -1,6 +1,6 @@
 # RAG in a Box Helm Chart
 
-A Helm chart for deploying [RAG in a Box](https://github.com/llm4s/rag-in-a-box) - a turnkey RAG solution powered by LLM4S.
+A Helm chart for deploying [RAG in a Box](https://github.com/llm4s/rag_in_a_box) - a turnkey RAG solution powered by LLM4S.
 
 ## Prerequisites
 
@@ -10,11 +10,13 @@ A Helm chart for deploying [RAG in a Box](https://github.com/llm4s/rag-in-a-box)
 
 ## Installation
 
-### Add the repository
+### Get the chart
+
+No chart repository is published yet; install from a checkout of the repository:
 
 ```bash
-helm repo add ragbox https://llm4s.github.io/rag-in-a-box
-helm repo update
+git clone https://github.com/llm4s/rag_in_a_box.git
+cd rag_in_a_box
 ```
 
 ### Install the chart
@@ -39,13 +41,13 @@ secrets:
 EOF
 
 # Install the chart
-helm install ragbox ragbox/ragbox -f my-values.yaml
+helm install ragbox ./deploy/helm/ragbox -f my-values.yaml
 ```
 
 ### Quick start (development only)
 
 ```bash
-helm install ragbox ragbox/ragbox \
+helm install ragbox ./deploy/helm/ragbox \
   --set postgresql.auth.password=devpassword \
   --set secrets.security.jwtSecret=dev-jwt-secret-32-characters!! \
   --set secrets.security.adminPassword=admin123 \
@@ -192,7 +194,7 @@ credential (the API key or an admin-scoped `rat_` token, e.g. in a ServiceMonito
 ## Upgrading
 
 ```bash
-helm upgrade ragbox ragbox/ragbox -f my-values.yaml
+helm upgrade ragbox ./deploy/helm/ragbox -f my-values.yaml
 ```
 
 ## Uninstalling

@@ -1,3 +1,10 @@
+---
+layout: page
+title: Production Deployment
+parent: Operations
+nav_order: 1
+---
+
 # Production Deployment Guide
 
 This guide covers deploying RAG in a Box to production environments using Docker Compose or Kubernetes.
@@ -13,8 +20,8 @@ This guide covers deploying RAG in a Box to production environments using Docker
 
 ```bash
 # Clone the repository
-git clone https://github.com/llm4s/rag-in-a-box.git
-cd rag-in-a-box
+git clone https://github.com/llm4s/rag_in_a_box.git
+cd rag_in_a_box
 
 # Create environment file
 cp .env.example .env
@@ -22,8 +29,8 @@ cp .env.example .env
 # Edit .env with your API keys and settings
 # At minimum, set OPENAI_API_KEY or your preferred provider
 
-# Start services
-docker-compose up -d
+# Start services (the image build also builds the admin UI)
+docker compose up -d
 
 # Check health
 curl http://localhost:8080/health
@@ -31,27 +38,33 @@ curl http://localhost:8080/health
 
 ## Environment Variables Reference
 
-### Required
+The authoritative list, with defaults, is `src/main/resources/application.conf`.
+
+### Provider API keys
+
+At least the keys for the configured LLM and embedding providers are needed.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key (if using OpenAI) | `sk-...` |
-| `ANTHROPIC_API_KEY` | Anthropic API key (if using Claude) | `sk-ant-...` |
-| `JWT_SECRET` | Secret for JWT token signing (32+ chars) | `your-secure-random-secret` |
+| `OPENAI_API_KEY` | OpenAI API key (`OPEN_AI_KEY` is also accepted) | `sk-...` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (for `anthropic/...` LLM models) | `sk-ant-...` |
+| `VOYAGE_API_KEY` | Voyage AI key (for `EMBEDDING_PROVIDER=voyage`) | |
+| `COHERE_API_KEY` | Cohere key (for `RAG_RERANKING_STRATEGY=cohere`) | |
 
 ### Database
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | - | Full connection string (overrides individual settings) |
+| `DATABASE_URL` | - | `postgresql://user:pass@host:port/db` (also `postgres://` or `jdbc:postgresql://`); overrides the settings below. Percent-encode special characters in the user or password; a missing port means 5432 |
 | `PG_HOST` | `localhost` | PostgreSQL hostname |
-| `PG_PORT` | `5432` | PostgreSQL port |
+| `PG_PORT` | `15432` | PostgreSQL port (the docker-compose host port; use `5432` inside a compose network) |
 | `PG_DATABASE` | `ragdb` | Database name |
 | `PG_USER` | `rag` | Database username |
 | `PG_PASSWORD` | `rag` | Database password |
 | `PG_TABLE_NAME` | `rag_embeddings` | Vector table name |
 | `DB_POOL_SIZE` | `10` | Connection pool size (per instance) |
 | `DB_MIGRATE_ON_START` | `true` | Apply pending schema migrations at startup |
+| `PERMISSIONS_REQUIRED` | `false` | Fail startup if permission-based RAG (the PostgreSQL search index) cannot be initialised, instead of falling back to legacy mode in which queries ignore permissions |
 
 ### Schema migrations
 
@@ -106,10 +119,13 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o` | LLM model (format: provider/model) |
-| `LLM_TEMPERATURE` | `0.1` | Generation temperature (0.0-1.0) |
+| `LLM_MODEL` | `openai/gpt-4o` | LLM model (format: provider/model, any llm4s provider) |
+| `LLM_BASE_URL` | - | Provider endpoint when not the default (e.g. a remote Ollama) |
+| `LLM_TEMPERATURE` | `0.1` | Temperature for chat answers (single-shot `/query` answers use llm4s's fixed 0.0) |
 | `EMBEDDING_PROVIDER` | `openai` | Embedding provider (openai, voyage, ollama) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
+| `EMBEDDING_DIMENSIONS` | from llm4s's model table | Embedding dimensions |
+| `EMBEDDING_BASE_URL` | - | Embedding provider endpoint when not the default |
 
 ### RAG Settings
 
@@ -120,20 +136,43 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 | `RAG_CHUNK_OVERLAP` | `150` | Overlap between chunks |
 | `RAG_TOP_K` | `5` | Number of context chunks to retrieve |
 | `RAG_FUSION_STRATEGY` | `rrf` | Search fusion (rrf, weighted, vector_only, keyword_only) |
+| `RAG_RRF_K` | `60` | RRF k parameter |
+| `RAG_RERANKING_STRATEGY` | `none` | `none`, `cohere` (needs `COHERE_API_KEY`) or `llm`; not applied in permission mode |
+| `RAG_RERANKING_MODEL` | `rerank-english-v3.0` | Cohere rerank model |
+| `RAG_RERANKING_CANDIDATES` | `30` | Candidates reranked down to top-k |
+| `RAG_QUERY_TRANSFORM` | `none` | `none` or `llm-rewrite`; not applied in permission mode |
+| `RAG_CHAT_HISTORY_MESSAGES` | `10` | Earlier chat messages sent with each question |
+| `RAG_SYSTEM_PROMPT` | (built-in) | System prompt for answer generation |
+
+### Ingestion
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INGEST_DIR` | - | Directory to ingest (creates the `env-directory` source) |
+| `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | File patterns for `INGEST_DIR` |
+| `INGEST_RECURSIVE` | `true` | Recurse into subdirectories |
+| `INGEST_ON_STARTUP` | `false` | Ingest when the server starts |
+| `INGEST_SCHEDULE` | - | Cron expression for scheduled ingestion |
+| `INGEST_ALLOWED_ROOTS` | the configured directory sources | Directories `POST /api/v1/ingest/directory` may read under; with none, that endpoint is disabled |
+| `INGEST_URL_ALLOWED_HOSTS` | - (any public host) | Only hosts URL/web ingestion may fetch (`*.example.com` allowed) |
+| `INGEST_URL_ALLOW_PRIVATE_NETWORKS` | `false` | Allow URLs resolving to loopback/private/link-local addresses |
 
 ### Security
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_MODE` | `open` | Authentication mode (open, basic, oauth) |
+| `AUTH_MODE` | `open` | Authentication mode (open, basic, oauth); see [Authentication](guide/authentication.md) |
 | `ADMIN_USERNAME` | `admin` | Admin username (when AUTH_MODE=basic) |
 | `ADMIN_PASSWORD` | - | Admin password (required when AUTH_MODE=basic; 12+ characters, not `admin` or a placeholder) |
-| `JWT_SECRET` | - | JWT signing secret (required when AUTH_MODE=basic; 32+ characters, not a placeholder) |
+| `JWT_SECRET` | - | JWT signing secret (required when AUTH_MODE=basic; 32+ characters, not a placeholder). Identical on every replica |
 | `JWT_EXPIRATION` | `86400` | JWT expiration in seconds |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | `rag-in-a-box` | `iss` / `aud` claims of JWTs |
 | `PASSWORD_MIN_LENGTH` | `12` | Minimum password length |
-| `API_KEY` | - | Static administrator key (`X-API-Key` or `Authorization: Bearer`) |
-| `ALLOWED_ORIGINS` | - (same-origin only) | CORS allowed origins (comma-separated), or `*` |
+| `PASSWORD_HASH_ITERATIONS` | `600000` | PBKDF2-HMAC-SHA256 iterations for new password hashes (older hashes are upgraded at next login) |
+| `API_KEY` | - | Static administrator key (`X-API-Key` or `Authorization: Bearer`); in open mode, setting it makes every API request require authentication |
+| `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let an administrator credential (e.g. a gateway holding `API_KEY`) act for an end user via `X-User-Id` / `X-Group-Ids`. Otherwise these headers are stripped |
+| `ALLOW_ADMIN_HEADER` | `false` | With trusted proxy headers, let `X-Admin: true` keep administrator rights |
+| `ALLOWED_ORIGINS` | - (same-origin only) | CORS allowed origins (comma-separated), or `*`; also the origins allowed to open `/ws` |
 | `CORS_ALLOW_ALL_ORIGINS` | `false` | Allow every origin when `ALLOWED_ORIGINS` is unset |
 
 ### Production Hardening
@@ -158,15 +197,15 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 |----------|---------|-------------|
 | `METRICS_ENABLED` | `false` | Enable Prometheus metrics at /metrics |
 | `METRICS_REQUIRE_AUTH` | `true` | `/metrics` for administrators only; `false` makes it public |
-| `LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
+| `LOG_LEVEL` | `INFO` | Level for the `org.llm4s` loggers and the root logger (DEBUG, INFO, WARN, ERROR) |
 | `LOG_FORMAT` | `console` | Log format (console, json) |
 
 ## Production Configuration
 
 ### Security Checklist
 
-- [ ] Set `JWT_SECRET` to a strong random value (32+ characters; template placeholders are rejected)
-- [ ] Enable `AUTH_MODE=basic` with a strong `ADMIN_PASSWORD` (or use `AUTH_MODE=oauth`)
+- [ ] Use `AUTH_MODE=basic` with a strong `ADMIN_PASSWORD` and `JWT_SECRET` (32+ random characters; template placeholders are rejected), or `AUTH_MODE=oauth`. Never expose `AUTH_MODE=open` without `API_KEY`: every request is then an anonymous administrator
+- [ ] Leave `AUTH_TRUSTED_PROXY_HEADERS=false` unless a gateway you control authenticates users and holds the `API_KEY`
 - [ ] Leave `ALLOWED_ORIGINS` unset (same-origin only) unless a browser app on another origin needs the API
 - [ ] Enable `RATE_LIMIT_ENABLED=true` and set `RATE_LIMIT_TRUSTED_PROXIES` to your proxies' addresses
 - [ ] Keep `METRICS_REQUIRE_AUTH=true` (scrape with a bearer credential), or keep `/metrics` off untrusted networks
@@ -201,22 +240,11 @@ ALTER SYSTEM SET work_mem = '256MB';
 ALTER SYSTEM SET max_parallel_workers_per_gather = 4;
 ```
 
-Create optimized indexes:
-
-```sql
--- HNSW index for faster vector search
-CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
-ON rag_embeddings
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
-
--- B-tree indexes for filtering
-CREATE INDEX IF NOT EXISTS idx_embeddings_collection
-ON rag_embeddings (collection);
-
-CREATE INDEX IF NOT EXISTS idx_embeddings_doc_id
-ON rag_embeddings (document_id);
-```
+The vector/keyword table (`PG_TABLE_NAME`, default `rag_embeddings`) and the
+`llm4s_collections` / `llm4s_principals` tables are created by llm4s with its own indexes;
+ragbox's Flyway migrations manage only ragbox's tables. Inspect the existing indexes
+(`\d rag_embeddings` in `psql`) before adding any by hand, and prefer tuning PostgreSQL memory
+settings first.
 
 ## Docker Compose Production Setup
 
@@ -248,7 +276,7 @@ services:
     restart: always
 
   api:
-    image: ghcr.io/llm4s/rag_in_a_box:9e5427d
+    image: ghcr.io/llm4s/rag_in_a_box:latest   # or a release version, e.g. 1.2.3
     environment:
       # Database
       PG_HOST: postgres
@@ -274,7 +302,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -296,9 +324,12 @@ volumes:
 
 ## Kubernetes Deployment
 
-See [deploy/kubernetes/](../deploy/kubernetes/) for complete manifests.
+Two options are in the repository:
 
-Quick start:
+- **Helm** (recommended): `deploy/helm/ragbox`, see the [Helm deployment guide](guide/helm-deployment.md)
+- **Plain manifests**: [`deploy/kubernetes/`](https://github.com/llm4s/rag_in_a_box/tree/main/deploy/kubernetes)
+
+Quick start with the plain manifests:
 
 ```bash
 # Create namespace
@@ -307,6 +338,7 @@ kubectl create namespace ragbox
 # Create secrets
 kubectl create secret generic ragbox-secrets \
   --namespace ragbox \
+  --from-literal=pg-user="rag" \
   --from-literal=jwt-secret="your-jwt-secret" \
   --from-literal=admin-password="your-admin-password" \
   --from-literal=pg-password="your-db-password" \
@@ -325,9 +357,11 @@ kubectl get pods -n ragbox
 
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /health` | Basic health | `{"status": "healthy", "uptime": ...}` |
-| `GET /health/ready` | Readiness (includes DB) | `{"ready": true, "checks": {...}}` |
+| `GET /health` | Basic health | `{"status": "healthy", "version": "...", "uptime": <ms>, "system": {...}}` |
+| `GET /health/ready` | Readiness: `database`, `rag_instance` and `api_keys` checks; `503` unless database and RAG instance are `ok` | `{"ready": true, "checks": {"database": {"status": "ok"}, ...}}` |
 | `GET /health/live` | Liveness | `{"status": "ok"}` |
+
+The health endpoints are public (no authentication).
 
 ### Kubernetes Probes
 
@@ -369,10 +403,13 @@ Set `METRICS_REQUIRE_AUTH=false` only if `/metrics` cannot be reached from untru
 Metrics:
 
 ```
-# Document and chunk counts
+# Build info, document and chunk counts
+ragbox_info
 ragbox_documents_total
 ragbox_chunks_total
 ragbox_vectors_total
+ragbox_collections_total
+ragbox_stats_available
 
 # Per-collection metrics
 ragbox_collection_documents{collection="..."}
@@ -386,7 +423,12 @@ ragbox_component_status{component="..."}
 # JVM metrics
 ragbox_jvm_memory_used_bytes{area="heap"}
 ragbox_jvm_memory_used_bytes{area="nonheap"}
+ragbox_jvm_memory_committed_bytes{area="..."}
+ragbox_jvm_memory_max_bytes{area="..."}
 ragbox_jvm_threads_current
+ragbox_jvm_threads_daemon
+ragbox_jvm_threads_peak
+ragbox_jvm_gc_collection_count_total{gc="..."}
 ragbox_jvm_gc_collection_seconds_total{gc="..."}
 
 # System
@@ -394,9 +436,9 @@ ragbox_uptime_seconds
 ragbox_jvm_available_processors
 ```
 
-### Grafana Dashboard
+### Alerting
 
-Import the dashboard from `deploy/grafana/ragbox-dashboard.json` or create alerts based on:
+There is no bundled Grafana dashboard; useful alerts are:
 
 - `ragbox_ready == 0` - Service not ready
 - `ragbox_component_status{component="database"} == 0` - Database unreachable
@@ -409,10 +451,11 @@ Import the dashboard from `deploy/grafana/ragbox-dashboard.json` or create alert
 RAG in a Box supports horizontal scaling with shared PostgreSQL:
 
 1. Ensure `JWT_SECRET` is identical across all instances
-2. Use a load balancer with session affinity (optional)
-3. Schema migrations at startup are safe with several replicas (Flyway serialises them with
+2. With `AUTH_MODE=oauth`, set `OAUTH_SESSION_STORAGE=postgres` so every replica sees the sessions (the default in-memory storage would need session affinity)
+3. Rate limits and login throttling are kept per instance, so the effective limit is multiplied by the replica count
+4. Schema migrations at startup are safe with several replicas (Flyway serialises them with
    a database lock); or run them once with `--migrate-only` and set `DB_MIGRATE_ON_START=false`
-4. Scale API replicas:
+5. Scale API replicas:
 
 ```yaml
 # Kubernetes
@@ -428,6 +471,11 @@ The service uses one HikariCP pool per instance with these defaults:
 - Maximum pool size: 10 connections (`DB_POOL_SIZE`)
 - Minimum idle: 2 connections
 - Connection timeout: 30 seconds
+- Idle timeout: 10 minutes
+
+The pool is shared by every component (registries, chunk store, permission search index).
+Blocking JDBC calls run on the blocking thread pool, so `DB_POOL_SIZE` bounds concurrent
+database work rather than request concurrency.
 
 ## Backup and Recovery
 
@@ -461,10 +509,10 @@ See [troubleshooting.md](troubleshooting.md) for common issues and solutions.
 
 ```bash
 # Pull latest image
-docker-compose pull
+docker compose pull
 
-# Restart with zero downtime (rolling update)
-docker-compose up -d --no-deps api
+# Recreate the API container (brief downtime; run several replicas behind a load balancer for zero downtime)
+docker compose up -d --no-deps api
 ```
 
 ### Major Versions
@@ -472,11 +520,11 @@ docker-compose up -d --no-deps api
 1. Read release notes for breaking changes
 2. Backup database
 3. Stop services
-4. Apply any required migrations
-5. Update and restart
+4. Update and restart; pending schema migrations are applied at startup (or run
+   `--migrate-only` first, see [Schema migrations](#schema-migrations))
 
 ```bash
-docker-compose down
-docker-compose pull
-docker-compose up -d
+docker compose down
+docker compose pull
+docker compose up -d
 ```

@@ -7,7 +7,7 @@ This script demonstrates incremental ingestion:
 - Deleted files are automatically pruned
 
 Usage:
-    python ingest_directory.py /path/to/docs
+    RAGBOX_API_KEY=rat_... python ingest_directory.py /path/to/docs
 
 Requirements:
     pip install ragbox-client
@@ -57,6 +57,12 @@ def main():
         help="RAG in a Box API URL (default: http://localhost:8080)"
     )
     parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key, rat_ access token (sync:read, sync:write, documents:write scopes) "
+             "or JWT; defaults to $RAGBOX_API_KEY"
+    )
+    parser.add_argument(
         "--extensions",
         default=".md,.txt,.rst",
         help="Comma-separated file extensions to include (default: .md,.txt,.rst)"
@@ -99,7 +105,7 @@ def main():
     print(f"Connecting to: {args.url}")
 
     # Connect to RAG in a Box
-    client = RagBoxClient(args.url)
+    client = RagBoxClient(args.url, api_key=args.api_key)
 
     # Check health
     try:

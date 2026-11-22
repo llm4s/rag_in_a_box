@@ -1,9 +1,8 @@
 # Site settings
 title: RAG in a Box
 description: >-
-  RAG in a Box - A turnkey RAG solution. Start a Docker container, point it at
-  documents, and immediately have a production-ready RAG system with great
-  retrieval quality. Powered by LLM4S.
+  RAG in a Box - a turnkey RAG server and LLM4S demonstrator. Start it with Docker
+  Compose, point it at documents, and query them over a REST API or the admin UI.
 baseurl: ""
 url: "https://raginabox.dev"
 
@@ -30,42 +29,13 @@ kramdown:
     block:
       line_numbers: true
 
-# Collections for organized content
-collections:
-  getting-started:
-    output: true
-    permalink: /getting-started/:name
-  guide:
-    output: true
-    permalink: /guide/:name
-  api:
-    output: true
-    permalink: /api/:name
-
-# Defaults
+# Navigation: pages are organised with just-the-docs front matter (parent / nav_order /
+# has_children): Home, Getting Started, User Guide, API Reference, Operations.
 defaults:
   - scope:
       path: ""
     values:
       layout: "default"
-  - scope:
-      path: ""
-      type: "getting-started"
-    values:
-      layout: "page"
-      parent: "Getting Started"
-  - scope:
-      path: ""
-      type: "guide"
-    values:
-      layout: "page"
-      parent: "User Guide"
-  - scope:
-      path: ""
-      type: "api"
-    values:
-      layout: "page"
-      parent: "API Reference"
 
 # Exclude from processing
 exclude:

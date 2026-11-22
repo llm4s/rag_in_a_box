@@ -2,7 +2,7 @@
 layout: page
 title: Permissions
 parent: User Guide
-nav_order: 5
+nav_order: 7
 ---
 
 # Permissions Guide
@@ -19,6 +19,17 @@ RAG in a Box supports permission-based access control through:
 - **Permissions**: Control which principals can query which collections
 
 When permissions are enabled, search results are automatically filtered to only include documents the user has access to.
+
+Permission mode needs the PostgreSQL search index with its permission schema (llm4s
+`PgSearchIndex`). It is initialised at startup; if that fails the server logs a warning and runs
+without permissions (queries ignore them and the `/principals` and collection-permission
+endpoints are not mounted). Set `PERMISSIONS_REQUIRED=true` to make startup fail instead.
+
+{: .note }
+Managing principals, creating and deleting collections and changing their permissions are
+administrator operations. The examples below omit credentials for brevity (they work as-is only
+in open mode without `API_KEY`); otherwise add e.g. `-H "X-API-Key: $API_KEY"` or
+`-H "Authorization: Bearer <admin token>"`. See [Authentication](authentication.md).
 
 ---
 
@@ -48,11 +59,16 @@ curl -X POST http://localhost:8080/api/v1/principals/groups \
   -d '{"externalId": "engineering"}'
 ```
 
+The response (`201 Created`) is `{"id": 1, "externalId": "user:alice@example.com", "principalType": "user"}`.
+
 ### External ID Format
 
 Principals use external IDs with a type prefix:
 - Users: `user:alice@example.com`
 - Groups: `group:engineering`
+
+`queryableBy` lists take these prefixed IDs; principals that do not exist yet are created on the
+fly.
 
 ---
 
@@ -86,9 +102,24 @@ curl -X POST http://localhost:8080/api/v1/collections \
 | Property | Type | Description |
 |----------|------|-------------|
 | `path` | string | Hierarchical path (e.g., `docs/guides/api`) |
-| `queryableBy` | array | List of principal external IDs |
-| `isLeaf` | boolean | Whether collection holds documents directly |
-| `metadata` | object | Additional key-value metadata |
+| `queryableBy` | array | List of principal external IDs (optional; omitted = public) |
+| `isLeaf` | boolean | Whether collection holds documents directly (default `true`) |
+| `metadata` | object | Additional string key-value metadata |
+
+The response (`201 Created`) describes the collection; `queryableBy` comes back as internal
+principal ids:
+
+```json
+{
+  "id": 3,
+  "path": "docs/internal",
+  "parentPath": "docs",
+  "queryableBy": [1, 2],
+  "isLeaf": true,
+  "isPublic": false,
+  "metadata": {}
+}
+```
 
 ### Hierarchical Paths
 
@@ -125,8 +156,11 @@ curl -X POST http://localhost:8080/api/v1/collections \
 
 ### Updating Permissions
 
+The `PUT .../permissions`, `DELETE` and `.../stats` routes take the collection path as a single
+URL segment, so encode the `/` in nested paths as `%2F`:
+
 ```bash
-curl -X PUT http://localhost:8080/api/v1/collections/finance/reports/permissions \
+curl -X PUT http://localhost:8080/api/v1/collections/finance%2Freports/permissions \
   -H "Content-Type: application/json" \
   -d '{
     "queryableBy": [
@@ -290,25 +324,31 @@ permission checks on every request made with the SSO session.
 
 ### Principals
 
+All principal endpoints are admin-only.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/principals/users` | POST | Create user principal |
-| `/api/v1/principals/groups` | POST | Create group principal |
-| `/api/v1/principals/users` | GET | List users |
-| `/api/v1/principals/groups` | GET | List groups |
-| `/api/v1/principals/lookup/:id` | GET | Lookup by external ID |
-| `/api/v1/principals/:type/:id` | DELETE | Delete principal |
+| `/api/v1/principals/users` | POST | Create (or get) a user principal: `{"externalId": "alice"}` |
+| `/api/v1/principals/groups` | POST | Create (or get) a group principal |
+| `/api/v1/principals/users?limit=&offset=` | GET | List user principals |
+| `/api/v1/principals/groups?limit=&offset=` | GET | List group principals |
+| `/api/v1/principals/lookup/{externalId}` | GET | Look up by external ID (e.g. `user:alice`) |
+| `/api/v1/principals/{type}/{externalId}` | DELETE | Delete a principal (`type` is `user(s)` or `group(s)`; `204`) |
 
 ### Collections
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/collections` | POST | Create collection |
-| `/api/v1/collections` | GET | Names of the collections that have documents |
-| `/api/v1/collections/accessible` | GET | Collections the caller may query, with their permissions (administrators: all) |
-| `/api/v1/collections/:path` | GET | Get collection details |
-| `/api/v1/collections/:path/permissions` | PUT | Update permissions |
-| `/api/v1/collections/:path` | DELETE | Delete collection |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/v1/collections` | POST | admin | Create collection |
+| `/api/v1/collections` | GET | any (`documents:read` for tokens) | Names of the collections that hold documents and that the caller may see: `{"collections": ["default", "docs/internal"]}` |
+| `/api/v1/collections/accessible?pattern=` | GET | any | Collection objects the caller may query: `{"collections": [...]}` |
+| `/api/v1/collections/{path}` | GET | any (hidden collections answer `404`) | Collection details (nested paths may be written with `/`) |
+| `/api/v1/collections/{path}/stats` | GET | any (hidden collections answer `404`) | `{"path", "documentCount", "chunkCount"}` |
+| `/api/v1/collections/{path}/permissions` | PUT | admin | Replace `queryableBy` |
+| `/api/v1/collections/{path}` | DELETE | admin | Delete collection (`204`) |
+
+The per-collection chunking configuration lives under `/api/v1/collections/{collection}/config`;
+see [Chunking](chunking.md).
 
 ---
 

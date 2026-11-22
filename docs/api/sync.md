@@ -2,7 +2,7 @@
 layout: page
 title: Sync API
 parent: API Reference
-nav_order: 3
+nav_order: 6
 ---
 
 # Sync API
@@ -10,6 +10,13 @@ nav_order: 3
 
 APIs for external ingesters and document synchronization.
 {: .fs-6 .fw-300 }
+
+**Auth:** the sync API is for ingesters: access tokens with `sync:read` (reads and
+`POST /sync/check`) or `sync:write` (`POST /sync`), or administrators. Other users get `403`.
+A token restricted to collections only sees, and only prunes, documents in those collections.
+Documents are written with the [Documents API](/api/documents) (`documents:write`).
+
+See the [External Ingesters guide](/guide/external-ingesters) for a walkthrough.
 
 ## Table of Contents
 {: .no_toc .text-delta }
@@ -31,8 +38,8 @@ GET /api/v1/sync/documents
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `include` | string | Comma-separated fields to include: `hash`, `updatedAt` |
-| `since` | ISO-8601 | Only return documents modified after this timestamp |
+| `include` | string | Comma-separated extra fields: `hash`, `updatedAt`. Without it only `id` and `collection` are returned |
+| `since` | ISO-8601 | Only documents updated after this instant, e.g. `2024-01-15T00:00:00Z` (a malformed value is a `400`) |
 | `page` | integer | 1-based page (default 1) |
 | `pageSize` | integer | Documents per page (default 1000, max 10000) |
 
@@ -45,13 +52,13 @@ counts every matching document. Documents are ordered by indexing time (by updat
 
 ```bash
 # Get all document IDs
-curl "http://localhost:8080/api/v1/sync/documents"
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents"
 
 # Include hashes and timestamps
-curl "http://localhost:8080/api/v1/sync/documents?include=hash,updatedAt"
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents?include=hash,updatedAt"
 
 # Get documents modified since a timestamp
-curl "http://localhost:8080/api/v1/sync/documents?since=2024-01-15T00:00:00Z&include=hash"
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents?since=2024-01-15T00:00:00Z&include=hash"
 ```
 
 ### Response
@@ -81,7 +88,7 @@ curl "http://localhost:8080/api/v1/sync/documents?since=2024-01-15T00:00:00Z&inc
 
 ---
 
-## Get Single Document State
+## Get Single Document State {#get}
 
 Get the state of a specific document.
 
@@ -98,7 +105,7 @@ GET /api/v1/sync/documents/:id
 ### Example
 
 ```bash
-curl "http://localhost:8080/api/v1/sync/documents/doc-001"
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/documents/doc-001"
 ```
 
 ### Response
@@ -133,7 +140,7 @@ POST /api/v1/sync/check
 ### Example
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/sync/check \
+curl -X POST -H "Authorization: Bearer $RAGBOX_TOKEN" http://localhost:8080/api/v1/sync/check \
   -H "Content-Type: application/json" \
   -d '{
     "documentIds": ["doc-001", "doc-002", "doc-003", "doc-new"]
@@ -163,7 +170,7 @@ curl -X POST http://localhost:8080/api/v1/sync/check \
 
 ---
 
-## Get Sync Status
+## Get Sync Status {#status}
 
 Get the overall sync status.
 
@@ -174,7 +181,7 @@ GET /api/v1/sync/status
 ### Example
 
 ```bash
-curl "http://localhost:8080/api/v1/sync/status"
+curl -H "Authorization: Bearer $RAGBOX_TOKEN" "http://localhost:8080/api/v1/sync/status"
 ```
 
 ### Response
@@ -202,7 +209,7 @@ POST /api/v1/sync
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `keepDocumentIds` | string[] | No | Document IDs to keep (others will be deleted) |
+| `keepDocumentIds` | string[] | Yes, when a body is sent | Document IDs to keep; every other document is deleted |
 | `dryRun` | boolean | No | If true, preview deletions without executing |
 
 ### Examples
@@ -210,7 +217,7 @@ POST /api/v1/sync
 #### Mark sync complete (no pruning)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/sync
+curl -X POST -H "Authorization: Bearer $RAGBOX_TOKEN" http://localhost:8080/api/v1/sync
 ```
 
 Response:
@@ -225,7 +232,7 @@ Response:
 #### Dry-run prune preview
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/sync \
+curl -X POST -H "Authorization: Bearer $RAGBOX_TOKEN" http://localhost:8080/api/v1/sync \
   -H "Content-Type: application/json" \
   -d '{
     "keepDocumentIds": ["doc-001", "doc-003"],
@@ -246,7 +253,7 @@ Response:
 #### Execute prune
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/sync \
+curl -X POST -H "Authorization: Bearer $RAGBOX_TOKEN" http://localhost:8080/api/v1/sync \
   -H "Content-Type: application/json" \
   -d '{
     "keepDocumentIds": ["doc-001", "doc-003"]

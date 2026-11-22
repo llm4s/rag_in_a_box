@@ -2,7 +2,7 @@
 layout: page
 title: Chunking Strategies
 parent: User Guide
-nav_order: 6
+nav_order: 10
 ---
 
 # Chunking Strategies Guide
@@ -132,7 +132,10 @@ RAG_CHUNK_OVERLAP=150
 
 ## Preview API
 
-Test chunking strategies before committing to a configuration.
+Test chunking strategies before committing to a configuration. The preview endpoints only
+compute chunks; nothing is stored. Any authenticated user may call them (access tokens need the
+`admin` scope). The examples omit credentials; add `-H "X-API-Key: $API_KEY"` or a bearer token
+unless you run in open mode.
 
 ### Preview Chunking
 
@@ -146,6 +149,10 @@ curl -X POST http://localhost:8080/api/v1/chunking/preview \
     "overlap": 150
   }'
 ```
+
+All fields but `content` are optional: `strategy`, `targetSize`, `maxSize` and `overlap`
+default to the current runtime settings, and `filename` lets the preview pick a strategy from
+the extension (see [Auto-detection in the preview](#auto-detection-in-the-preview)).
 
 Response includes:
 - Chunked content with indices
@@ -164,7 +171,7 @@ curl -X POST http://localhost:8080/api/v1/chunking/compare \
   }'
 ```
 
-Returns results for each strategy with a recommendation. Content that llm4s's
+Returns `{"results": [{strategy, chunks, stats, warnings}], "recommendation": {strategy, reason}}`. Content that llm4s's
 `ChunkerFactory.auto` detects as markdown (headings, lists, links, images or code fences)
 gets a `markdown` recommendation; otherwise the strategy with the fewest warnings and chunk
 sizes nearest the target is recommended.
@@ -175,23 +182,59 @@ sizes nearest the target is recommended.
 curl http://localhost:8080/api/v1/chunking/strategies
 ```
 
+Returns `{"strategies": [{name, displayName, description, bestFor, tradeoffs, requiresEmbeddings}], "currentDefault": "sentence"}`.
+
 ### List Presets
 
 ```bash
 curl http://localhost:8080/api/v1/chunking/presets
 ```
 
+Returns `{"presets": [...], "current": {...}}`; each preset has `name` (`small`, `default`,
+`large`), `displayName`, `description`, `targetSize`, `maxSize`, `overlap` and `bestFor`.
+`current` describes the runtime settings.
+
 ---
 
-## Auto-Detection
+## Per-Collection Configuration
 
-When no strategy is specified, RAG in a Box auto-detects based on file extension:
+A collection can override the runtime chunking settings, including a strategy per file
+extension. Ingestion (uploads, upserts and ingestion sources) uses, in order: the collection's
+file-type override for the document's file name, the collection's own settings, the runtime
+settings.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/v1/collections/configs` | GET | any authenticated | Every collection with a custom config |
+| `/api/v1/collections/{collection}/config` | GET | any authenticated | `{collection, hasCustomConfig, config, effectiveConfig, documentCount}` |
+| `/api/v1/collections/{collection}/config` | PUT | admin | Set `strategy`, `targetSize`, `maxSize`, `overlap`, `fileTypeStrategies` (all optional) |
+| `/api/v1/collections/{collection}/config` | DELETE | admin | Remove the custom config (`404` if there is none) |
+| `/api/v1/collections/{collection}/config/preview` | POST | admin | Effective config for `{"collection", "filename"}` |
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/collections/docs/config \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "markdown", "targetSize": 500, "overlap": 75, "fileTypeStrategies": {".txt": "sentence"}}'
+```
+
+The collection name is a single URL segment; encode the `/` of nested collections as `%2F`.
+Existing documents keep their chunks until they are re-ingested.
+
+---
+
+## Auto-Detection in the Preview
+
+When a preview request names no (valid) `strategy` but has a `filename`, the preview picks one
+from the extension (config `source` `auto-detect`):
 
 | Extension | Strategy |
 |-----------|----------|
 | `.md`, `.markdown` | markdown |
 | `.json`, `.xml` | simple |
-| Others | Default (sentence) |
+| Others | the runtime default (`RAG_CHUNKING_STRATEGY`, source `default`) |
+
+This only applies to `POST /api/v1/chunking/preview`. Ingestion does not guess from the file
+extension; use a collection's `fileTypeStrategies` for that.
 
 ---
 
@@ -259,7 +302,8 @@ RAG_CHUNK_OVERLAP=100
       "content": "First chunk content...",
       "length": 756,
       "headings": ["Introduction"],
-      "isCodeBlock": false
+      "isCodeBlock": false,
+      "language": null
     }
   ],
   "stats": {
@@ -291,6 +335,7 @@ Always preview chunking on representative documents:
 ```bash
 # Test with actual content
 curl -X POST http://localhost:8080/api/v1/chunking/compare \
+  -H "Content-Type: application/json" \
   -d @sample-document.json
 ```
 
@@ -316,7 +361,9 @@ Start with default (800 chars) and adjust based on results.
 The preview API generates warnings for:
 - Very small chunks (< 100 chars)
 - Chunks exceeding max size
+- A single chunk much smaller than the target size
 - Potential sentence splits (simple strategy)
+- Semantic chunking, which the preview cannot show (see [Semantic](#semantic))
 
 Address warnings before production deployment.
 

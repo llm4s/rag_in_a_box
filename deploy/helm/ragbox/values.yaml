@@ -135,7 +135,7 @@ config:
 
   # LLM settings
   llm:
-    # -- LLM model (e.g., openai/gpt-4o, anthropic/claude-3-opus)
+    # -- LLM model (e.g., openai/gpt-4o, anthropic/claude-sonnet-4-6)
     model: "openai/gpt-4o"
     # -- Temperature for answer generation
     temperature: "0.1"

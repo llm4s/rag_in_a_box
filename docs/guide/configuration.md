@@ -12,7 +12,9 @@ Complete reference for all RAG in a Box configuration options.
 
 ## Environment Variables
 
-RAG in a Box is configured primarily through environment variables. All settings have sensible defaults for development.
+RAG in a Box is configured primarily through environment variables, which `application.conf`
+(HOCON) maps onto its settings. All settings have sensible defaults for development; the
+repository's `.env.example` lists them with placeholders.
 
 ---
 
@@ -22,6 +24,17 @@ RAG in a Box is configured primarily through environment variables. All settings
 |----------|---------|-------------|
 | `SERVER_HOST` | `0.0.0.0` | Host to bind the server to |
 | `SERVER_PORT` | `8080` | Port to listen on |
+
+## Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `INFO` | Level for the `org.llm4s` / `org.llm4s.ragbox` loggers and the root logger |
+| `LOG_FORMAT` | (console) | `json` for one JSON object per line (logstash encoder, for log shippers); anything else gives human-readable console output |
+
+The HTTP request log (logger `org.llm4s.ragbox.http`) writes one line per request (method, path,
+query string, status, duration). Headers are not logged, and credential-like query parameters
+(`access_token`, `api_key`, `token`, `code`, `state`, ...) are redacted.
 
 ---
 
@@ -340,7 +353,7 @@ Required for the respective providers.
 
 ## Authentication
 
-See [Authentication Guide](/guide/authentication) for detailed setup.
+See [Authentication Guide](authentication.md) for detailed setup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -354,13 +367,38 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 | `PASSWORD_MIN_LENGTH` | `12` | Minimum password length for new and changed passwords and `ADMIN_PASSWORD` |
 | `PASSWORD_HASH_ITERATIONS` | `600000` | PBKDF2-HMAC-SHA256 iterations; weaker and legacy hashes are upgraded at the next login |
 
-### Legacy API Key Mode
+### API Key and Trusted Proxies
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | - | Static administrator key, sent as `X-API-Key` or `Authorization: Bearer` (`?api_key=` is no longer accepted). Placeholders are rejected |
 | `ALLOW_ADMIN_HEADER` | `false` | With trusted proxy headers: `X-Admin: true` keeps admin rights for a proxied user |
-| `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let administrator credentials act for an end user via `X-User-Id` / `X-Group-Ids` (headers are stripped otherwise) |
+| `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let administrator credentials act for an end user via `X-User-Id` / `X-Group-Ids` (headers are stripped otherwise). See [trusted proxy headers](permissions.md#trusted-proxy-headers) |
+
+### OAuth / OIDC (`AUTH_MODE=oauth`)
+
+OAuth is configured only when `OAUTH_CLIENT_ID` is set; `AUTH_MODE=oauth` then also needs
+`OAUTH_CLIENT_SECRET` and `OAUTH_REDIRECT_URI`, and permission mode (the groups claim maps to
+principals). See [OAuth configuration](../oauth-configuration.md) for provider walkthroughs.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OAUTH_PROVIDER` | `google` | Preset: `google`, `azure`, `okta`, `keycloak`, `custom` |
+| `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` | - | Client credentials registered with the provider |
+| `OAUTH_REDIRECT_URI` | - | Callback URL, e.g. `https://ragbox.example.com/api/v1/oauth/callback` |
+| `OAUTH_AZURE_TENANT_ID` | - | Azure AD tenant (provider `azure`, required) |
+| `OAUTH_OKTA_DOMAIN` | - | Okta domain (provider `okta`, required) |
+| `OAUTH_KEYCLOAK_BASE_URL` / `OAUTH_KEYCLOAK_REALM` | - | Keycloak server and realm (provider `keycloak`, required) |
+| `OAUTH_AUTHORIZATION_ENDPOINT`, `OAUTH_TOKEN_ENDPOINT`, `OAUTH_USERINFO_ENDPOINT`, `OAUTH_JWKS_URI`, `OAUTH_ISSUER` | - | Endpoints of a `custom` provider (all required) |
+| `OAUTH_SCOPES` | provider preset (e.g. `openid profile email`) | Scopes to request, space- or comma-separated; must include `openid` |
+| `OAUTH_CLAIM_USER_ID` / `OAUTH_CLAIM_EMAIL` / `OAUTH_CLAIM_GROUPS` / `OAUTH_CLAIM_NAME` | `sub` / `email` / `groups` / `name` | ID-token claims mapped to the user |
+| `OAUTH_ADMIN_GROUPS` | - | Comma-separated groups whose members are administrators (none by default) |
+| `OAUTH_SESSION_STORAGE` | `memory` | Where sessions and login states live: `memory` or `postgres` (needed for more than one replica) |
+| `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
+| `OAUTH_SESSION_COOKIE_SECURE` | `true` | `Secure` flag on the cookie (set `false` only for plain-HTTP development) |
+| `OAUTH_SESSION_MAX_AGE` | `86400` | Session lifetime in seconds |
+| `OAUTH_PKCE_ENABLED` | `true` | Use PKCE |
+| `OAUTH_STATE_TTL` | `300` | Seconds a login may take between redirect and callback |
 
 ---
 
@@ -443,10 +481,36 @@ INGEST_DIR=/data/docs
 INGEST_PATTERNS=*.md,*.txt,*.pdf
 INGEST_RECURSIVE=true
 INGEST_ON_STARTUP=true
-INGEST_SCHEDULE="0 0 * * *"  # Daily at midnight
+INGEST_SCHEDULE=daily        # every 24 hours, see below
 # Directories the API may ingest from (defaults to INGEST_DIR)
 INGEST_ALLOWED_ROOTS=/data/docs
 ```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INGEST_DIR` | - | Directory to ingest (a source named `env-directory`) |
+| `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | Comma-separated file patterns |
+| `INGEST_RECURSIVE` | `true` | Descend into subdirectories |
+| `INGEST_ON_STARTUP` | `false` | Run the ingestion once at startup |
+| `INGEST_SCHEDULE` | - | Interval between scheduled runs (see [Schedules](#schedules)) |
+
+When `INGEST_DIR` is set these variables replace any `ingestion` sources in the HOCON
+configuration; without `INGEST_DIR`, `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` are ignored (set
+`run-on-startup` / `schedule` in HOCON instead).
+
+### Schedules
+
+`schedule` / `INGEST_SCHEDULE` is an **interval**, counted from server start (it is not a
+calendar schedule):
+
+- `hourly`, `daily`, `weekly`
+- a duration: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
+- a few cron-like patterns, read as intervals: `0 * * * *` (every hour), `0 */2 * * *`,
+  `0 */4 * * *`, `0 */6 * * *`, `0 */12 * * *` (every 2/4/6/12 hours) and `0 0 * * *` (every 24
+  hours, not at midnight)
+
+Any other value is ignored: no scheduled runs happen (check the startup log). Runs can always
+be started with `POST /api/v1/ingest/run`.
 
 ### Advanced Configuration (HOCON)
 
@@ -456,7 +520,7 @@ For complex setups, use `application.conf`:
 ingestion {
   enabled = true
   run-on-startup = false
-  schedule = "0 0 * * *"
+  schedule = "daily"
 
   sources = [
     # Directory source
@@ -539,8 +603,7 @@ address of every page and redirect the crawler and URL loader fetch.
 The llm4s hooks that would close these gaps are tracked in
 [llm4s/llm4s#2724](https://github.com/llm4s/llm4s/issues/2724).
 
-> **Note:** these endpoints are admin operations. Until role checks land (issue #13), protect
-> them with `AUTH_MODE` / an API key, and do not expose the API to untrusted callers.
+All `/api/v1/ingest/*` endpoints are administrator-only (`403` for anyone else).
 
 ### How sources are synced
 

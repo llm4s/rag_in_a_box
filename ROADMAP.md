@@ -1,450 +1,141 @@
-# RAG in a Box - Product Roadmap
+# RAG in a Box: Roadmap
 
 ## Vision
 
-A turnkey RAG solution: start a Docker container, point it at documents, and immediately have a production-ready RAG system with great retrieval quality. Works for simple use cases out of the box, scales to enterprise with permissions and external ingesters.
+A turnkey RAG server: start it next to PostgreSQL, point it at documents, and get good retrieval
+straight away, with permissions, authentication and external ingesters when you need them. It is
+also the reference application for [llm4s](https://github.com/llm4s/llm4s), so it should use
+llm4s the way a production service would and send what it learns back upstream.
+
+This file records what works today, what is known not to, and what is planned. Open work is
+tracked in GitHub issues; the November 2026 codebase review is tracked in #27.
 
 ---
 
-## Current State
+## Done
 
-**What's Built:**
-- Core RAG pipeline (LLM4S): ingestion, chunking, hybrid search, answer generation
-- Permission-based RAG: principals (users/groups), collections with `queryableBy`, documents with `readableBy`
-- Document registry: PostgreSQL-backed with content hashing, timestamps, sync tracking
-- Built-in ingesters: directory (scheduled), URL, database (JDBC), web crawler
-- Sync API pattern: `GET /sync/documents`, `POST /sync` (with prune)
-- Admin UI: dashboard, documents, upload, config, chunking preview, chat, analytics
-- **Full authentication system**: Open, Basic (JWT), and OAuth2/OIDC modes
-- **Access token management**: `rat_*` tokens for external ingesters
-- WebSocket infrastructure for real-time updates
-- Prometheus metrics endpoint
-- Rate limiting and request size validation
-- Helm charts for Kubernetes deployment
-- Documentation site (Jekyll + GitHub Pages)
+Each item works end to end and is covered by tests. Pull request numbers are given where the
+behaviour was last reworked.
 
----
+### RAG pipeline (llm4s)
+- Every LLM and embedding provider resolved through the llm4s `ProviderRegistry` (OpenAI,
+  Anthropic, Voyage, Ollama, or any provider module on the classpath) (#39)
+- Hybrid search: pgvector + PostgreSQL full-text with RRF or weighted fusion; vector-only and
+  keyword-only modes (#39)
+- Optional reranking (Cohere or LLM) and LLM query rewriting (#39)
+- Chunking with llm4s chunkers (simple, sentence, markdown, semantic); each document is chunked
+  once, with the chunking its collection resolves to (#39, #42)
+- File upload with text extraction through llm4s's `TikaDocumentExtractor` (#39)
+- Per-query latency, token and cost accounting from llm4s tracing and the bundled model
+  metadata (#39)
+- Chat sessions with conversation history (#39, #41)
+- Pipelines pooled by their settings (`PipelinePool`), so runtime changes take effect without a
+  restart and in-flight requests are never cut off (#42)
 
-## Completion Checklist
+### Documents and ingestion
+- Document API: add, idempotent upsert with content hashes, list with paging and search, batch
+  delete, clear-all only with `?all=true` (#28)
+- Sync API for external ingesters: status, document states (`include`, `since`), batch check,
+  prune with dry run; scoped access tokens (#33, #38)
+- Built-in sources: directory, URL, web crawler, database (JDBC) and S3, on an interval
+  schedule; each source syncs only its own documents, and the bookkeeping survives restarts (#33)
+- Ingestion policy: directory ingestion only under allowed roots; URL and crawler ingestion only
+  to public addresses unless allowed (SSRF) (#37)
 
-### Phase 1: Authentication & Access Control (P0) - COMPLETE
+### Permissions and security
+- Users, groups and hierarchical collections (`queryableBy` / `readableBy`) on the llm4s
+  permission-aware search index; every query filtered by the caller's permissions (#32)
+- One authenticator for every protected route: static API key, `rat_` access tokens with scopes
+  and collection restrictions, JWTs (basic mode) and OIDC sessions (oauth mode) (#38)
+- Authorization: admin-only endpoint groups, filtered reads, chat sessions owned by their
+  creator, trusted-proxy identity headers only when enabled (#41)
+- OIDC login: Google, Azure AD, Okta, Keycloak or custom; PKCE, browser-bound state, nonce,
+  `iss`+`sub` identities, in-memory or PostgreSQL sessions (#35)
+- Hardening: CORS same-origin by default, required `JWT_SECRET` and `ADMIN_PASSWORD` in basic mode,
+  PBKDF2 password hashing, login throttling, bounded rate limiter, streaming body-size limit,
+  authenticated `/metrics` by default (#44)
 
-#### 1.1 Authentication Modes
-- [x] Add `auth.mode` config option (open | basic | oauth)
-- [x] Implement mode switching logic in Main.scala
-- [x] Update application.conf with auth configuration block
+### Tuning and evaluation
+- Runtime settings (top-K, fusion, RRF k, system prompt, temperature, chunking) changed through
+  the API or UI, persisted with history (#42)
+- Per-collection chunking with file-type overrides, and a preview of the effective config (#42)
+- Chunking preview and strategy comparison; chunk and statistics visibility
+- Query log, feedback, analytics summary (latency percentiles, cost) and optimization
+  suggestions
+- A/B experiments: variants run with their full configuration; Welch's t-test and
+  two-proportion z-tests on the results (#43)
 
-#### 1.2 Basic Auth Implementation
-- [x] Create `users` database table (id, username, password_hash, role, created_at)
-- [x] Create `auth/AuthService.scala` - password hashing (PBKDF2-100k), validation
-- [x] JWT token generation/validation (integrated in AuthService)
-- [x] Create `routes/AuthRoutes.scala`:
-  - [x] `POST /api/v1/auth/login` - authenticate, return JWT
-  - [x] `POST /api/v1/auth/logout` - invalidate token
-  - [x] `GET /api/v1/auth/me` - current user info
-- [x] Create default admin user on first startup (if mode=basic)
-- [x] Update AuthMiddleware to validate JWT tokens
+### Persistence and operations
+- One HikariCP pool for every component; blocking JDBC on the blocking pool; transactional
+  writes (#36)
+- Flyway migrations, safe for several replicas starting together (#46)
+- `RAGService` split into focused services; one error-handling layer (no exception text in
+  responses, 400 for malformed bodies and query parameters, typed service errors); derived
+  codecs; paged `GET /api/v1/sync/documents` (#50)
+- `/ws` handshakes checked against the server's origin and `ALLOWED_ORIGINS` (cross-site
+  WebSocket hijacking) (#47)
+- `DATABASE_URL` parsing (#29); health, readiness and liveness probes; Prometheus metrics;
+  structured JSON logs
+- Docker image (admin UI and server), Docker Compose, Helm chart with a pgvector StatefulSet,
+  Kubernetes manifests (#31)
+- CI: backend tests with Testcontainers, admin UI build and unit tests, Playwright end-to-end
+  tests against a real backend, Python SDK tests, release workflow (#30, #49)
 
-#### 1.3 Access Tokens for External Ingesters
-- [x] Create `access_tokens` database table
-- [x] Create `routes/TokenRoutes.scala`:
-  - [x] `POST /api/v1/tokens` - create token (admin only)
-  - [x] `GET /api/v1/tokens` - list tokens (admin only)
-  - [x] `DELETE /api/v1/tokens/{id}` - revoke token (admin only)
-- [x] Implement token scopes
-- [x] Add collection-scoped tokens (optional restriction)
-- [x] Update AuthMiddleware to accept `rat_*` tokens
-- [x] Track last_used_at for tokens
-
-#### 1.4 Admin UI - Authentication
-- [x] Create Login.vue page
-- [x] Add authentication state to Pinia store
-- [x] Implement JWT token storage and refresh
-- [x] Create TokenManagement.vue (admin only)
-- [x] Add logout functionality
-- [x] Protect routes requiring authentication
-
-#### 1.5 OAuth2/OIDC
-- [x] Support OAuth2 authorization code flow
-- [x] Map OAuth claims to principals
-- [x] Support: Google, Azure AD, Okta, Keycloak
-
-#### 1.6 Tests
-- [x] Unit tests for AuthService (password hashing, validation)
-- [x] Integration tests for auth endpoints (login, logout, me)
-- [x] Integration tests for access token endpoints
-- [x] Unit tests for OIDC token validation
-
-#### 1.7 Documentation
-- [x] Auth configuration guide (open/basic/oauth modes) - docs/guide/authentication.md
-- [x] Access token guide for external ingesters - docs/guide/access-tokens.md
-- [x] OAuth configuration guide - docs/oauth-configuration.md
-- [x] OAuth security guide - docs/oauth-security.md
-
----
-
-### Phase 2: External Ingester API (P0) - COMPLETE
-
-#### 2.1 Enhanced Sync API
-- [x] Add `?include=hash,updatedAt` parameter to `GET /sync/documents`
-- [x] Add `?since=timestamp` parameter for incremental sync
-- [x] Add `GET /api/v1/sync/documents/{id}` - single document state
-- [x] Add `POST /api/v1/sync/check` - batch check document states
-
-#### 2.2 Deleted Document Detection
-- [x] Add `dryRun` parameter to `POST /api/v1/sync`
-- [x] Return `wouldDelete` list when dryRun=true
-- [x] Add batch delete: `DELETE /api/v1/documents` with body (supports dryRun)
-
-#### 2.3 API Documentation
-- [x] Create `docs/guide/external-ingesters.md` guide
-- [ ] Document full sync pattern with curl examples
-- [ ] Document incremental sync pattern
-
-#### 2.4 Tests
-- [x] Integration tests for enhanced sync endpoints
-- [ ] E2E test: full sync workflow (list -> upsert -> prune)
+### Clients and docs
+- Vue 3 admin UI: dashboard, documents, upload, chat, collections and permissions, users,
+  tokens, configuration, chunking, visibility, ingestion, analytics, suggestions, experiments,
+  API docs; login for basic and OIDC modes (#34, #38)
+- OpenAPI spec covering every route, kept complete by a test (#26)
+- Python SDK with API-key/token authentication and a test suite (#26)
+- Documentation site (Jekyll) (#26)
 
 ---
 
-### Phase 3: Built-in Ingesters (P1) - MOSTLY COMPLETE
+## Known limitations
 
-#### 3.1 Directory Ingester
-- [x] Directory ingestion with pattern matching
-- [x] Recursive directory scanning
-- [x] Scheduled ingestion (cron-like scheduling)
-- [ ] Add `watch: true` option for real-time file watching (NIO WatchService)
-- [ ] Add debouncing for rapid file changes
+These are limits of the current llm4s release (0.6.0) that ragbox works around or documents.
+Most are fixed or proposed upstream; see #40.
 
-#### 3.2 S3/Cloud Storage Ingester - COMPLETE
-- [x] S3 integration via llm4s S3Loader (AWS SDK v2)
-- [x] Support bucket, prefix, region, patterns configuration
-- [x] Multi-format document extraction (PDF, DOCX, DOC via PDFBox/POI/Tika)
-- [x] Incremental sync via S3 object ETags
-- [x] IAM role and credential chain authentication
-- [x] S3 ingestion documentation - docs/guide/s3-ingestion.md
-- [ ] Add GCS and Azure Blob support (future)
-
-#### 3.3 Web Crawler - COMPLETE
-- [x] Create WebCrawlerSource.scala
-- [x] Implement breadth-first crawling from seed URLs
-- [x] Support max-depth, follow-patterns, exclude-patterns
-- [x] Add robots.txt compliance
-- [x] Implement rate limiting (delay-ms)
-- [x] Extract and clean HTML content
-
-#### 3.4 Enterprise Connectors (Future)
-- [ ] Confluence connector
-- [ ] SharePoint connector
-- [ ] Google Drive connector
-
-#### 3.5 Documentation
-- [x] Directory ingestion configuration guide
-- [ ] S3/cloud storage setup guide (pending S3 feature)
-- [x] Web crawler configuration (in IngestionConfig)
+| Limitation | Effect in ragbox | Upstream |
+|---|---|---|
+| RAG answers take no completion options | The answer temperature is fixed: `LLM_TEMPERATURE`, the runtime `llmTemperature` and the experiment-variant temperature do not reach `/query` or chat | llm4s/llm4s#2715 (fixed on llm4s `main`, unreleased) |
+| No streaming answer API | `/query/stream` and chat streaming send the answer as one event once it is complete | llm4s/llm4s#2717 (fixed on `main`, unreleased) |
+| Permission-mode search is vector-only | In permission mode, fusion, keyword search, reranking and query rewriting do not apply (reported in `GET /api/v1/config` as `searchMode` / `fusionApplies`); ragbox routes ingests without a collection to `default` itself | llm4s/llm4s#2716 (fixed on `main`, unreleased) |
+| No persistent registry or source-scoped sync | ragbox keeps its own document registry and per-source sync state | llm4s/llm4s#2714 |
+| Loader URL policy | ragbox checks URLs before handing them to the llm4s loaders; robots.txt fetches and DNS rebinding remain residual risks | llm4s/llm4s#2724 |
+| No pre-chunked ingest with permissions | ragbox embeds its own chunks and writes them through `SearchIndex.ingest` | llm4s/llm4s#2732 |
+| No chat history in `queryWithAnswer` | ragbox builds the conversation for chat itself | llm4s/llm4s#2733 |
+| Tracing covers embeddings only | ragbox wraps the LLM client to trace the answer, rerank and rewrite calls | llm4s/llm4s#2734 |
 
 ---
 
-### Phase 4: RAGA Evaluation & Optimization (P1) - COMPLETE
+## Planned
 
-#### 4.1 Query Metrics Collection
-- [x] Create `query_logs` database table
-- [x] Instrument RAGService to log queries
-- [x] Track latency, tokens, chunks
-- [x] Add `GET /api/v1/analytics/queries` endpoint
-- [x] Add `GET /api/v1/analytics/queries/summary` endpoint
+### Next
+- **Adopt the next llm4s release** (#40): completion options, real streaming answers,
+  permission-mode hybrid search; drop the workarounds above as upstream issues land
+  (llm4s/llm4s#2714, #2724, #2732, #2733, #2734).
+- **Test gaps** (#48): route and service specs for chat, experiments, suggestions, the
+  WebSocket and `RAGService`; a V3 migration dropping a duplicate index; a Helm migration job.
 
-#### 4.2 Relevance Feedback System
-- [x] Create `query_feedback` database table (integrated in query_logs)
-- [x] Add `POST /api/v1/feedback` endpoint
-- [x] Support rating (1-5), relevant_chunks, comment
-
-#### 4.3 Analytics Dashboard
-- [x] Create Analytics.vue in admin UI
-- [x] Display query metrics
-- [x] Display query latency distribution (p50/p95/p99)
-- [x] Show retrieval precision metrics (chunk utilization)
-- [x] List top collections with ratings
-
-#### 4.4 Optimization Suggestions
-- [x] Implement suggestion engine based on metrics
-- [x] Create SuggestionService with rule-based analysis
-- [x] Add `GET /api/v1/analytics/suggestions` endpoint
-- [x] Add `GET /api/v1/analytics/suggestions/summary` endpoint
-- [x] Create Suggestions.vue dashboard in admin UI
-- [x] Support chunking, search, embedding, and content suggestions
-- [x] Per-collection suggestions
-
-#### 4.5 Documentation
-- [x] Analytics API reference - docs/api/analytics.md
-- [x] Optimization tuning guide - docs/guide/optimization.md
+### Later
+- Real-time directory watching (NIO `WatchService`) with debouncing
+- More connectors: GCS, Azure Blob, Confluence, SharePoint, Google Drive
+- Cron schedules for ingestion (today schedules are intervals; see the configuration guide)
+- Query-log ids in query responses, so API clients can send feedback
+- Evaluation datasets and offline scoring (RAGAS-style) alongside the online experiments
 
 ---
 
-### Phase 5: User Experience (P1) - MOSTLY COMPLETE
+## Decisions
 
-#### 5.1 Chat Interface
-- [x] Create Chat.vue in admin UI
-- [x] Implement query input
-- [x] Display source citations
-- [x] Add collection selector dropdown
-- [x] Implement streaming response (SSE) - POST /api/v1/query/stream
-- [x] Add conversation history (session-based) - Chat sessions persisted in PostgreSQL
-- [x] Add feedback buttons (thumbs up/down) - Already implemented in ChatMessage.vue
-
-#### 5.2 Permission Management UI
-- [x] Create PrincipalManagement.vue (users/groups)
-- [x] Create collection permissions management
-- [ ] Visual permission inheritance display
-
-#### 5.3 Ingestion Dashboard
-- [x] Real-time ingestion progress (WebSocket)
-- [x] Source status indicators
-- [x] Manual trigger buttons per source
-- [ ] Ingestion history with drill-down
-
----
-
-### Phase 6: Production Readiness (P2) - MOSTLY COMPLETE
-
-#### 6.1 Security Hardening
-- [x] API rate limiting (per-token, per-IP)
-- [x] Request size limits (10MB default)
-- [x] CORS configuration
-- [ ] TLS/SSL configuration guide
-- [ ] Audit logging (who did what when)
-- [ ] Secrets management (Vault integration)
-
-#### 6.2 Observability
-- [x] Structured logging (JSON format with logback)
-- [x] Prometheus metrics endpoint
-- [ ] Distributed tracing (OpenTelemetry)
-- [ ] Grafana dashboard templates
-- [ ] Alerting rules (Prometheus AlertManager)
-
-#### 6.3 Deployment
-- [x] Docker images (multi-platform: amd64, arm64)
-- [x] Kubernetes Helm charts
-- [x] Health check endpoints (/health, /health/ready)
-- [x] Graceful shutdown handling
-- [ ] Official Docker images on Docker Hub
-- [ ] Database migration tooling (Flyway)
-
-#### 6.4 High Availability
-- [x] Database connection pooling (HikariCP)
-- [ ] Multi-instance support (stateless design)
-- [ ] Cache layer (Redis for sessions, embeddings)
-- [ ] Load balancer configuration guide
-
-#### 6.5 Documentation
-- [x] Production deployment guide - docs/production-deployment.md
-- [x] Kubernetes/Helm deployment guide - docs/guide/helm-deployment.md
-- [x] Troubleshooting guide - docs/troubleshooting.md
-- [ ] Security hardening checklist
-- [ ] Monitoring and alerting setup
-
----
-
-### Phase 7: Documentation Site (P0) - MOSTLY COMPLETE
-
-#### 7.1 Site Setup (Jekyll + GitHub Pages)
-- [x] Create `docs/` directory structure
-- [x] Add Jekyll configuration (`_config.yml` with just-the-docs theme)
-- [x] Add Gemfile for Jekyll dependencies
-- [x] Configure GitHub Actions for automatic deployment
-- [x] Enable search functionality
-- [x] Add "Edit on GitHub" links
-- [ ] Set up custom domain (optional: docs.raginabox.dev)
-- [ ] Add site logo and branding
-
-#### 7.2 Getting Started
-- [x] Quick start guide - docs/getting-started/quickstart.md
-- [ ] Docker installation guide (detailed)
-- [ ] First document ingestion tutorial
-- [ ] First query tutorial
-
-#### 7.3 User Guide
-- [x] Configuration guide - docs/guide/configuration.md
-- [x] Authentication setup - docs/guide/authentication.md
-- [x] Permission system guide - docs/guide/permissions.md
-- [x] Chunking strategies guide - docs/guide/chunking.md
-- [x] Analytics guide - docs/guide/analytics.md
-- [ ] Admin UI walkthrough
-
-#### 7.4 API Reference
-- [x] Document endpoints reference - docs/api/documents.md
-- [x] Sync endpoints reference - docs/api/sync.md
-- [x] Query endpoints reference - docs/api/query.md
-- [x] Auth endpoints reference - docs/api/auth.md
-- [x] Token endpoints reference - docs/api/tokens.md
-- [x] Config endpoints reference - docs/api/config.md
-- [x] Health endpoints reference - docs/api/health.md
-- [x] Analytics endpoints reference - docs/api/analytics.md
-- [ ] OpenAPI spec integration
-
-#### 7.5 Ingestion Guides
-- [x] External ingester guide - docs/guide/external-ingesters.md
-- [ ] Built-in directory ingester guide
-- [ ] S3/cloud storage ingester guide
-- [ ] Web crawler guide
-- [ ] Writing custom ingesters
-
-#### 7.6 Advanced Topics
-- [ ] Performance tuning guide
-- [ ] Scaling and high availability
-- [ ] RAGA evaluation and optimization
-- [ ] Monitoring with Prometheus/Grafana
-- [ ] Backup and recovery
-
----
-
-### Phase 8: Experimentation Framework (P1) - COMPLETE
-
-#### 8.1 Per-Query Parameter Overrides
-- [x] Add QueryOverrides to query model (topK, fusionStrategy, systemPrompt, llmTemperature)
-- [x] Update RAGService to apply overrides when processing queries
-- [x] Add experimentId and configSnapshot to query_logs table
-- [x] Track configuration used for each query
-
-#### 8.2 Experiment Management
-- [x] Create ExperimentModels.scala (Experiment, ConfigSnapshot, Results, Analysis)
-- [x] Create ExperimentRegistry.scala (PostgreSQL-backed storage)
-- [x] Create ExperimentService.scala (traffic routing, results calculation)
-- [x] Create ExperimentRoutes.scala (REST API endpoints)
-- [x] Wire up experiments in Main.scala
-
-#### 8.3 Experiment Lifecycle
-- [x] Create experiment (draft status)
-- [x] Start experiment (begins traffic splitting)
-- [x] Stop experiment (ends traffic splitting)
-- [x] Archive experiment (for historical reference)
-- [x] Delete experiment (draft only)
-- [x] Only one experiment can be running at a time
-
-#### 8.4 Results Analysis
-- [x] Calculate metrics per variant (baseline vs variant)
-- [x] Track query count, avg latency, avg rating, avg chunks used
-- [x] Calculate percentage changes between variants
-- [x] Statistical significance calculation (sample size based)
-
-#### 8.5 Admin UI
-- [x] Create Experiments.vue dashboard
-- [x] Experiment list with status filtering
-- [x] Create experiment dialog
-- [x] Start/stop/archive actions
-- [x] Results dialog with metrics comparison
-- [x] Add experiments to navigation
-
-#### 8.6 API Endpoints
-- [x] POST /api/v1/experiments - Create experiment
-- [x] GET /api/v1/experiments - List experiments
-- [x] GET /api/v1/experiments/running - Get running experiment
-- [x] GET /api/v1/experiments/{id} - Get experiment by ID
-- [x] PUT /api/v1/experiments/{id}/start - Start experiment
-- [x] PUT /api/v1/experiments/{id}/stop - Stop experiment
-- [x] PUT /api/v1/experiments/{id}/archive - Archive experiment
-- [x] DELETE /api/v1/experiments/{id} - Delete draft experiment
-- [x] GET /api/v1/experiments/{id}/results - Get results with analysis
-
-#### 8.7 Documentation
-- [x] Experimentation API reference in README.md
-- [x] Configuration temperature documentation
-- [x] Usage examples with curl commands
-- [x] Create docs/guide/experimentation.md
-
----
-
-## Quick Wins (Remaining)
-
-These can be implemented quickly with high impact:
-
-- [x] ~~Add `?include=hash,updatedAt` to sync/documents endpoint~~ (DONE)
-- [x] ~~Add `POST /sync/check` for batch document state checks~~ (DONE)
-- [x] ~~Add `dryRun` option to prune endpoint~~ (DONE)
-- [x] ~~Complete S3 ingester~~ (DONE - via llm4s v0.2.9 S3Loader)
-- [x] ~~Add streaming responses for chat interface (SSE)~~ (DONE)
-
-All Quick Wins completed!
-
----
-
-## Roadmap Summary
-
-| Phase | Priority | Status | Key Remaining Work |
-|-------|----------|--------|-------------------|
-| **1. Auth** | P0 | COMPLETE | - |
-| **2. Ingester API** | P0 | COMPLETE | Documentation examples |
-| **3. Built-in Ingesters** | P1 | COMPLETE | GCS/Azure (future), file watching |
-| **4. RAGA Eval** | P1 | COMPLETE | - |
-| **5. UX** | P1 | MOSTLY COMPLETE | Visual permission display, ingestion history |
-| **6. Production** | P2 | MOSTLY COMPLETE | Audit logging, distributed tracing |
-| **7. Documentation Site** | P0 | MOSTLY COMPLETE | Tutorials, advanced guides |
-| **8. Experimentation** | P1 | COMPLETE | - |
-
----
-
-## Decisions Made
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Auth approach | Open + Basic + OAuth | Full flexibility from simple to enterprise |
-| Multi-tenancy | Collection-based isolation | Leverages existing permission system |
-| SDK approach | REST API docs only | Users can use any HTTP client |
-| Licensing | Fully open source | Community-first approach, no enterprise paywall |
-| Documentation | Jekyll + GitHub Pages | Same stack as llm4s, easy to maintain |
-| Testing | Unit + Integration + E2E | Comprehensive coverage for all features |
-
----
-
-## Testing Strategy
-
-Each phase includes comprehensive testing:
-
-| Test Type | Scope | Tools |
-|-----------|-------|-------|
-| **Unit Tests** | Individual functions, services | ScalaTest |
-| **Integration Tests** | API endpoints, database operations | ScalaTest, Testcontainers (PostgreSQL) |
-| **E2E Tests** | Full user workflows | Playwright (Admin UI), HTTP client (API) |
-| **Component Tests** | Vue components in isolation | Vitest, Vue Test Utils |
-| **Load Tests** | Performance under load | Gatling or k6 |
-
-**Test Requirements:**
-- All new features must have corresponding tests before merge
-- Integration tests run against real PostgreSQL (via Testcontainers)
-- E2E tests run in CI on every PR
-- Coverage reports generated and tracked (minimum 20%)
-
----
-
-## Auth Mode Migration
-
-**Migrating from `open` -> `basic` -> `oauth` is straightforward:**
-
-1. **open -> basic**:
-   - Set `auth.mode = "basic"` and `ADMIN_PASSWORD`
-   - Restart server - admin user is auto-created
-   - Existing documents and collections remain unchanged
-   - API keys and access tokens start being enforced
-
-2. **basic -> oauth**:
-   - Add OAuth provider config (issuer, client-id, client-secret)
-   - Set `auth.mode = "oauth"`
-   - Existing users can be linked to OAuth identities via email/username matching
-   - Access tokens continue to work for external ingesters
-
-3. **Rollback**: Simply change `auth.mode` back - the database schema supports all modes simultaneously
-
-**Key principle**: The authentication mode only controls *how* users authenticate, not *what* they can access. The permission system (principals, collections, documents) is independent and persists across mode changes.
-
----
-
-## Success Criteria
-
-A successful RAG in a Box should:
-
-1. **Zero-config start**: `docker run ragbox` with mounted docs directory works immediately
-2. **5-minute enterprise setup**: Add auth + permissions with simple config
-3. **Great retrieval quality**: Built-in RAGA metrics show precision/recall
-4. **Easy optimization**: Dashboard suggests improvements based on metrics
-5. **Flexible ingestion**: Works with files, URLs, S3, databases, or custom ingesters
-6. **Production-ready**: Scales, monitors, secures out of the box
+| Decision | Choice |
+|---|---|
+| Authentication | `AUTH_MODE` = open, basic or oauth; one authenticator in front of every protected route |
+| Ingester credentials | `rat_` access tokens with scopes and optional collection restrictions |
+| Default mode | Open, for local use; anything shared should use basic or oauth |
+| Vector store | PostgreSQL + pgvector through llm4s; hybrid search with PostgreSQL full-text |
+| Schema | Flyway migrations owned by ragbox; llm4s owns its vector, keyword and permission tables |
+| Providers | Whatever llm4s's provider registry offers; no provider names hard-coded in ragbox |
+| Schedules | Intervals (`30m`, `6h`, `daily`), not cron |
+| Docs | Jekyll site in `docs/`, OpenAPI spec in `admin-ui/public/openapi.yaml` |

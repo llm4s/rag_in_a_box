@@ -8,7 +8,8 @@ nav_order: 1
 # Auth API
 {: .no_toc }
 
-Authentication and user management endpoints.
+Login, the current principal, user management and the OAuth/OIDC flow. See the
+[Authentication guide](/guide/authentication) for choosing and configuring a mode.
 {: .fs-6 .fw-300 }
 
 ## Table of Contents
@@ -19,287 +20,244 @@ Authentication and user management endpoints.
 
 ---
 
-## Login
+## Auth Mode {#mode}
 
-Authenticate with username and password to receive a JWT token.
+Which login methods the server accepts. The admin UI calls this first.
+
+```
+GET /api/v1/auth/mode
+```
+
+**Auth:** Public.
+
+```json
+{
+  "mode": "basic",
+  "authRequired": true,
+  "methods": ["password", "api-key"],
+  "oauthLoginUrl": null
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `mode` | `open`, `basic` or `oauth` (`AUTH_MODE`) |
+| `authRequired` | `false` only in `open` mode without an `API_KEY` |
+| `methods` | `password` (basic mode), `sso` (oauth mode), `api-key` (when `API_KEY` is set) |
+| `oauthLoginUrl` | `/api/v1/oauth/login` in oauth mode, otherwise `null` |
+
+---
+
+## Login {#login}
+
+Exchange a username and password for a JWT.
 
 ```
 POST /api/v1/auth/login
 ```
 
-### Request Body
+**Auth:** Public. Only available when `AUTH_MODE=basic`; in other modes it answers `400`.
+Failed attempts are throttled per client IP and per username
+(`RATE_LIMIT_LOGIN_MAX_ATTEMPTS`, default 10 per `RATE_LIMIT_LOGIN_WINDOW_SECONDS`, default
+300), even when general rate limiting is off.
 
 ```json
-{
-  "username": "admin",
-  "password": "your-password"
-}
+{ "username": "admin", "password": "your-password" }
 ```
 
-### Response
-
 **200 OK**
+
 ```json
 {
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "expiresIn": 3600,
-  "user": {
-    "id": 1,
-    "username": "admin",
-    "role": "admin"
-  }
+  "username": "admin",
+  "role": "admin",
+  "expiresIn": 86400
 }
 ```
 
-**401 Unauthorized**
+`expiresIn` is in seconds (`JWT_EXPIRATION`, default 86400 = 24 hours). Send the token as
+`Authorization: Bearer <token>`. There is no logout endpoint for JWTs: discard the token (it
+stops working when it expires, or immediately if the user is deleted or demoted).
+
+**401 Unauthorized** (whether the user exists is not revealed)
+
 ```json
-{
-  "error": "unauthorized",
-  "message": "Invalid credentials"
-}
+{ "error": "unauthorized", "message": "Invalid username or password" }
 ```
 
 ---
 
-## Get Current User
-
-Get information about the authenticated user.
+## Current Principal {#me}
 
 ```
 GET /api/v1/auth/me
 ```
 
-### Headers
+**Auth:** Authenticated (any credential, including access tokens of any scope).
 
-```
-Authorization: Bearer <jwt-token>
-```
-
-### Response
-
-**200 OK**
 ```json
 {
-  "id": 1,
+  "id": "user:admin",
   "username": "admin",
-  "role": "admin"
+  "role": "admin",
+  "isAdmin": true,
+  "authMethod": "password",
+  "groups": [],
+  "scopes": null,
+  "collections": null,
+  "userId": 1
 }
 ```
 
-**401 Unauthorized**
-```json
-{
-  "error": "unauthorized",
-  "message": "Missing authorization token"
-}
-```
+| Field | Description |
+|-------|-------------|
+| `authMethod` | `open`, `api-key`, `password`, `access-token` or `oidc` |
+| `role` | `admin` or `user` |
+| `groups` | Group memberships (OIDC groups, or `X-Group-Ids` from a trusted proxy) |
+| `scopes` | Access-token scopes; `null` for other credentials |
+| `collections` | Access-token collection restriction; `null` when unrestricted |
+| `userId` | Numeric user id for password users; `null` otherwise |
 
 ---
 
-## Change Password
-
-Update the current user's password.
+## Change Password {#change-password}
 
 ```
 PUT /api/v1/auth/password
 ```
 
-### Headers
-
-```
-Authorization: Bearer <jwt-token>
-```
-
-### Request Body
+**Auth:** Password users (basic mode). Other principals get `400`.
 
 ```json
-{
-  "currentPassword": "old-password",
-  "newPassword": "new-secure-password"
-}
+{ "currentPassword": "old-password", "newPassword": "new-secure-password" }
 ```
-
-### Response
 
 **200 OK**
+
 ```json
-{
-  "message": "Password updated successfully"
-}
+{ "message": "Password changed successfully" }
 ```
 
-**400 Bad Request**
-```json
-{
-  "error": "bad_request",
-  "message": "Current password is incorrect"
-}
-```
+**400 Bad Request** when the current password is wrong or the new one breaks the password
+policy (at least `PASSWORD_MIN_LENGTH` characters, default 12).
 
 ---
 
-## Create User
-
-Create a new user account. Requires admin role.
+## Create User {#create-user}
 
 ```
 POST /api/v1/users
 ```
 
-### Headers
-
-```
-Authorization: Bearer <admin-jwt-token>
-```
-
-### Request Body
+**Auth:** Admin.
 
 ```json
-{
-  "username": "alice",
-  "password": "alice-password",
-  "role": "user"
-}
+{ "username": "alice", "password": "a-long-password", "role": "user" }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `username` | string | Yes | Unique username |
-| `password` | string | Yes | Initial password |
-| `role` | string | No | `admin` or `user` (default: `user`) |
-
-### Response
+| Field | Required | Description |
+|-------|----------|-------------|
+| `username` | Yes | Unique username |
+| `password` | Yes | Initial password (password policy applies) |
+| `role` | No | `admin` or `user` (default `user`) |
 
 **201 Created**
+
 ```json
-{
-  "id": 2,
-  "username": "alice",
-  "role": "user",
-  "createdAt": "2024-01-15T10:30:00Z"
-}
+{ "id": 2, "username": "alice", "role": "user" }
 ```
 
-**400 Bad Request**
-```json
-{
-  "error": "bad_request",
-  "message": "Username already exists"
-}
-```
-
-**403 Forbidden**
-```json
-{
-  "error": "forbidden",
-  "message": "Admin access required"
-}
-```
+**400 Bad Request** e.g. when the username exists or the password is too short.
 
 ---
 
-## List Users
-
-List all user accounts. Requires admin role.
+## List Users {#list-users}
 
 ```
 GET /api/v1/users
 ```
 
-### Headers
+**Auth:** Admin.
 
-```
-Authorization: Bearer <admin-jwt-token>
-```
-
-### Response
-
-**200 OK**
 ```json
 {
   "users": [
-    {
-      "id": 1,
-      "username": "admin",
-      "role": "admin",
-      "createdAt": "2024-01-01T00:00:00Z"
-    },
-    {
-      "id": 2,
-      "username": "alice",
-      "role": "user",
-      "createdAt": "2024-01-15T10:30:00Z"
-    }
-  ]
+    { "id": 1, "username": "admin", "role": "admin" },
+    { "id": 2, "username": "alice", "role": "user" }
+  ],
+  "total": 2
 }
 ```
 
 ---
 
-## Delete User
-
-Delete a user account. Requires admin role.
+## Delete User {#delete-user}
 
 ```
 DELETE /api/v1/users/{id}
 ```
 
-### Headers
+**Auth:** Admin. **204 No Content**, or **404** when the user does not exist. The user's
+JWTs stop working immediately.
+
+---
+
+## Reset Password {#reset-password}
 
 ```
-Authorization: Bearer <admin-jwt-token>
+PUT /api/v1/users/{id}/password
 ```
 
-### Path Parameters
+**Auth:** Admin.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | integer | User ID |
-
-### Response
-
-**204 No Content**
-
-**404 Not Found**
 ```json
-{
-  "error": "not_found",
-  "message": "User not found"
-}
+{ "password": "a-new-long-password" }
 ```
+
+**200 OK** `{"message": "Password reset successfully"}`, or **400** when the password is
+missing or breaks the policy.
+
+---
+
+## OAuth / OIDC {#oauth}
+
+These endpoints exist only when `AUTH_MODE=oauth` (see
+[OAuth configuration](/oauth-configuration)). They are public: they establish or end the
+session that the browser then presents as an HttpOnly session cookie (`ragbox_session` by
+default, `OAUTH_SESSION_COOKIE_NAME`; `OAUTH_SESSION_COOKIE_SECURE` controls `Secure`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/oauth/login?redirect_after=/admin/` | Redirects (`302`) to the identity provider (authorization code flow with state, nonce and, unless `OAUTH_PKCE_ENABLED=false`, PKCE) and sets a short-lived pre-auth cookie binding the login to this browser. `redirect_after` must be a relative path; anything else falls back to `/admin/` |
+| GET | `/api/v1/oauth/callback?code=...&state=...` | Provider callback. On success: `303` to the `redirect_after` target with the session cookie set (any previous session is invalidated). `400` on a missing pre-auth cookie, invalid or expired state, or a provider `error`; `401` on an invalid ID token; `403` when the identity is rejected |
+| POST | `/api/v1/oauth/logout` | Ends the session and clears the cookie. `200 {"message": "Logged out successfully"}` (or `"No active session"`) |
+| GET | `/api/v1/oauth/userinfo` | The session's user: `{"userId", "email", "name", "groups"}`; `401` without a valid session |
+
+Members of the groups in `OAUTH_ADMIN_GROUPS` are administrators.
 
 ---
 
 ## Authentication Errors
 
-All authenticated endpoints may return:
+Every authenticated endpoint may answer:
 
-**401 Unauthorized**
-```json
-{
-  "error": "unauthorized",
-  "message": "Missing authorization token"
-}
-```
+**401 Unauthorized** (with `WWW-Authenticate: Bearer realm="ragbox"`), e.g.
 
 ```json
-{
-  "error": "unauthorized",
-  "message": "Token expired"
-}
+{ "error": "unauthorized", "message": "Authentication required" }
 ```
 
+Other messages: `Invalid API key`, `Invalid, revoked or expired access token`,
+`Token expired`, `Invalid token`, `User no longer exists`,
+`Session expired or invalid. Please log in again.`
+
+**403 Forbidden**, e.g.
+
 ```json
-{
-  "error": "unauthorized",
-  "message": "Invalid token"
-}
+{ "error": "forbidden", "message": "Admin access required" }
 ```
 
-**403 Forbidden**
-```json
-{
-  "error": "forbidden",
-  "message": "Admin access required"
-}
-```
+Other messages: `Access token is missing the '<scope>' scope`,
+`Access token needs the 'admin' scope for this endpoint`,
+`Not allowed to use collection '<name>'`.
