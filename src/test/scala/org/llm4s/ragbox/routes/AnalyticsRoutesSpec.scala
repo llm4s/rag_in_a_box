@@ -49,11 +49,12 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
       costUsd: Option[Double] = None,
       variant: Option[String] = None,
       failed: Boolean = false,
-      errorMessage: Option[String] = None
+      errorMessage: Option[String] = None,
+      id: Option[String] = None
     ) = IO {
-      val id = java.util.UUID.randomUUID().toString
+      val logId = id.getOrElse(java.util.UUID.randomUUID().toString)
       val entry = QueryLogEntry(
-        id = id,
+        id = logId,
         queryText = queryText,
         collectionPattern = collectionPattern,
         userId = userId,
@@ -72,8 +73,8 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
         errorMessage = errorMessage,
         createdAt = Instant.now()
       )
-      logs = logs + (id -> entry)
-      id
+      logs = logs + (logId -> entry)
+      logId
     }
 
     override def list(

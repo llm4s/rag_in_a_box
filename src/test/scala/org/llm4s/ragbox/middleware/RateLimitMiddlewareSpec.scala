@@ -157,4 +157,17 @@ class RateLimitMiddlewareSpec extends AnyFlatSpec with Matchers {
     val a = app(RateLimitMiddleware.Config(maxRequests = 100, window = 1.minute, enabled = false, loginMaxAttempts = 0))
     statuses(a, Seq.fill(20)(login("eve", "wrong"))).distinct shouldBe List(Status.Unauthorized)
   }
+
+  "A 429" should "be the standard ErrorResponse with the numbers in details, and keep Retry-After (#54)" in {
+    val a = app(RateLimitMiddleware.Config(maxRequests = 1, window = 30.seconds, enabled = true))
+    val limited = (a.run(from("203.0.113.9")) *> a.run(from("203.0.113.9"))).unsafeRunSync()
+    limited.status shouldBe Status.TooManyRequests
+    val body = limited.as[Json].unsafeRunSync().hcursor
+    body.get[String]("error") shouldBe Right("rate_limited")
+    body.get[String]("message") shouldBe Right("Rate limit exceeded")
+    body.get[String]("details") shouldBe Right("limit=1; window=30s; retryAfter=30")
+    body.keys.get.toSet shouldBe Set("error", "message", "details")
+    limited.headers.get(ci"Retry-After").map(_.head.value) shouldBe Some("30")
+    limited.headers.get(ci"X-RateLimit-Limit").map(_.head.value) shouldBe Some("1")
+  }
 }

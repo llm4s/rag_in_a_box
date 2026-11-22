@@ -62,7 +62,7 @@ class RAGServiceFacadeSpec extends AnyFlatSpec with Matchers {
       IO { calls += "ingestDocument" -> (documentId, metadata) }.as(uploaded)
     override def ingestWithPermissions(path: String, documentId: String, content: String, metadata: Map[String, String], readableBy: Set[PrincipalId]): IO[DocumentUploadResponse] =
       IO { calls += "ingestWithPermissions" -> (path, documentId, readableBy) }.as(uploaded)
-    override def upsertDocument(documentId: String, content: String, metadata: Map[String, String], hash: Option[String]): IO[DocumentUpsertResponse] =
+    override def upsertDocument(documentId: String, content: String, metadata: Map[String, String], hash: Option[String], sourceId: Option[String]): IO[DocumentUpsertResponse] =
       IO { calls += "upsertDocument" -> (documentId, hash) }.as(upserted)
     override def upsertWithPermissions(
       path: String, documentId: String, content: String, metadata: Map[String, String], readableBy: Set[PrincipalId],

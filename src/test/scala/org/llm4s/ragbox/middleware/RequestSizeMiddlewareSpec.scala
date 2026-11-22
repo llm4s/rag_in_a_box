@@ -3,7 +3,9 @@ package org.llm4s.ragbox.middleware
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import fs2.{Chunk, Stream}
+import io.circe.Json
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.headers.`Content-Length`
 import org.http4s.implicits._
@@ -63,6 +65,17 @@ class RequestSizeMiddlewareSpec extends AnyFlatSpec with Matchers {
   it should "pass everything through when disabled" in {
     val off = RequestSizeMiddleware(RequestSizeMiddleware.Config(Limit, enabled = false))(routes).orNotFound
     off.run(chunked(Method.POST, "/echo", 5000)).unsafeRunSync().status shouldBe Status.Ok
+  }
+
+  it should "answer with the standard ErrorResponse, the limit in details (#54)" in {
+    val response = app.run(chunked(Method.POST, "/echo", Limit.toInt + 1)).unsafeRunSync()
+    response.status shouldBe Status.PayloadTooLarge
+    val body = response.as[Json].unsafeRunSync().hcursor
+    body.get[String]("error") shouldBe Right("payload_too_large")
+    body.get[String]("message").toOption.get should include("1.0KB")
+    body.get[String]("details") shouldBe Right(s"maxSizeBytes=$Limit")
+    body.keys.get.toSet shouldBe Set("error", "message", "details")
+    response.headers.get(org.typelevel.ci.CIString("X-Max-Body-Size")).map(_.head.value) shouldBe Some(Limit.toString)
   }
 
   "RequestSizeMiddleware.limit" should "emit the body unchanged under the limit" in {

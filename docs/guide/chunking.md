@@ -209,7 +209,7 @@ settings.
 | `/api/v1/collections/{collection}/config` | GET | any authenticated | `{collection, hasCustomConfig, config, effectiveConfig, documentCount}` |
 | `/api/v1/collections/{collection}/config` | PUT | admin | Set `strategy`, `targetSize`, `maxSize`, `overlap`, `fileTypeStrategies` (all optional) |
 | `/api/v1/collections/{collection}/config` | DELETE | admin | Remove the custom config (`404` if there is none) |
-| `/api/v1/collections/{collection}/config/preview` | POST | admin | Effective config for `{"filename"}` in the path's collection |
+| `/api/v1/collections/{collection}/config/preview` | POST | any authenticated | Effective config for `{"filename"}` in the path's collection (changes nothing) |
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/collections/docs/config \
@@ -217,7 +217,8 @@ curl -X PUT http://localhost:8080/api/v1/collections/docs/config \
   -d '{"strategy": "markdown", "targetSize": 500, "overlap": 75, "fileTypeStrategies": {".txt": "sentence"}}'
 ```
 
-The collection name is a single URL segment; encode the `/` of nested collections as `%2F`.
+Nested collection names may be written with raw or encoded slashes (`/collections/eng/backend/config`
+or `/collections/eng%2Fbackend/config`).
 Existing documents keep their chunks until they are re-ingested.
 
 ---

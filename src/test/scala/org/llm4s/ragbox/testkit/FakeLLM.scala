@@ -37,6 +37,9 @@ final class FakeLLM {
   /** The base URL the last client was built with. */
   @volatile var lastBaseUrl: Option[String] = None
 
+  /** While set, every completion fails with this message (a provider outage). */
+  @volatile var failing: Option[String] = None
+
   private def reply(conversation: Conversation): String = {
     val system = conversation.messages.headOption.map(_.content).getOrElse("")
     val user = conversation.messages.lastOption.map(_.content).getOrElse("")
@@ -51,14 +54,14 @@ final class FakeLLM {
     override def complete(conversation: Conversation, options: CompletionOptions): Result[Completion] = {
       calls.add(conversation -> options)
       val content = reply(conversation)
-      Right(Completion(
+      failing.fold[Result[Completion]](Right(Completion(
         id = s"fake-${counter.incrementAndGet()}",
         created = Instant.now(),
         content = content,
         model = Model,
         message = AssistantMessage(content),
         usage = Some(TokenUsage(promptTokens = 100, completionTokens = 10, totalTokens = 110))
-      ))
+      )))(message => Left(org.llm4s.error.ProcessingError("fake-llm", message)))
     }
 
     override def streamComplete(

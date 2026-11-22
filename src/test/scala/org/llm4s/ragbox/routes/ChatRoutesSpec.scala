@@ -200,7 +200,7 @@ class ChatRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     calls.map(_._2) shouldBe Seq(Nil, Nil)
   }
 
-  it should "store a failed answer as an error reply, not log it, and leave it out of the next history" in withContainers { pg =>
+  it should "store a failed answer as an error reply, log it as failed (unless the request was invalid), and leave it out of the next history" in withContainers { pg =>
     val (failed, hidden, next, logCount, nextHistory) = run(chat(freshDatabase(pg)).use { c =>
       for {
         id <- c.newSession()
@@ -220,7 +220,10 @@ class ChatRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     // an unexpected error's message is not shown to the client
     hidden._2.hcursor.get[String]("error") shouldBe Right("Query failed")
     next._2.hcursor.get[String]("error").isLeft shouldBe true
-    logCount shouldBe 1
+    // The unexpected failure and the answer are logged (#54); the invalid request is not a query
+    logCount shouldBe 2
+    failed._2.hcursor.downField("assistantMessage").get[String]("queryLogId").isLeft shouldBe true
+    hidden._2.hcursor.downField("assistantMessage").get[String]("queryLogId").isRight shouldBe true
   }
 
   it should "answer 404 for an unknown session without asking the RAG service" in withContainers { pg =>

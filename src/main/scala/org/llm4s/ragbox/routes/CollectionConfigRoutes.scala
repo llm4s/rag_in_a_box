@@ -20,15 +20,17 @@ import org.llm4s.ragbox.registry.{CollectionConfigRegistry, DocumentRegistry}
  */
 object CollectionConfigRoutes {
 
-  // Changing collection configuration (including previews) is admin-only.
+  // Changing collection configuration is admin-only. The preview (POST .../config/preview)
+  // changes nothing and is open to any authenticated user, like GET .../config.
   def routes(
     collectionConfigRegistry: CollectionConfigRegistry,
     documentRegistry: DocumentRegistry,
     runtimeConfigManager: RuntimeConfigManager
-  ): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/collections")(req))(AuthedRoutes.of[Principal, IO] {
+  ): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && CollectionRoute.isConfig(req.pathInfo))(AuthedRoutes.of[Principal, IO] {
 
-    // GET /api/v1/collections/{name}/config - Get collection chunking config
-    case GET -> Root / "api" / "v1" / "collections" / collection / "config" as principal =>
+    // GET /api/v1/collections/{name}/config - Get collection chunking config. Nested collection
+    // names may be written with raw or encoded slashes (see CollectionRoute).
+    case GET -> "api" /: "v1" /: "collections" /: CollectionRoute.Config(collection) as principal =>
       for {
         maybeConfig <- collectionConfigRegistry.get(collection)
         docCount <- documentRegistry.countByCollection(collection)
@@ -53,7 +55,7 @@ object CollectionConfigRoutes {
       } yield response
 
     // PUT /api/v1/collections/{name}/config - Set collection chunking config
-    case (req @ PUT -> Root / "api" / "v1" / "collections" / collection / "config") as principal =>
+    case (req @ PUT -> "api" /: "v1" /: "collections" /: CollectionRoute.Config(collection)) as principal =>
       for {
         request <- req.as[CollectionConfigUpdateRequest]
         runtimeConfig <- runtimeConfigManager.get
@@ -88,7 +90,7 @@ object CollectionConfigRoutes {
       } yield response
 
     // DELETE /api/v1/collections/{name}/config - Remove custom config
-    case DELETE -> Root / "api" / "v1" / "collections" / collection / "config" as principal =>
+    case DELETE -> "api" /: "v1" /: "collections" /: CollectionRoute.Config(collection) as principal =>
       for {
         deleted <- collectionConfigRegistry.delete(collection)
         response <- if (deleted) {
@@ -147,7 +149,7 @@ object CollectionConfigRoutes {
       } yield response
 
     // POST /api/v1/collections/{name}/config/preview - Preview effective config for a file
-    case (req @ POST -> Root / "api" / "v1" / "collections" / collection / "config" / "preview") as principal =>
+    case (req @ POST -> "api" /: "v1" /: "collections" /: CollectionRoute.ConfigPreview(collection)) as principal =>
       for {
         request <- req.as[EffectiveConfigPreviewRequest]
         runtimeConfig <- runtimeConfigManager.get

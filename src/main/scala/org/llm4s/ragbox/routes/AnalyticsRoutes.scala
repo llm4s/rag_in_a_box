@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
-import org.llm4s.ragbox.auth.Principal
+import org.llm4s.ragbox.auth.{PermissionContext, Principal, TokenScope}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
@@ -27,7 +27,8 @@ object AnalyticsRoutes {
   val DefaultPageSize: Int = 50
   val MaxPageSize: Int = 100
 
-  // Query analytics contain every user's query text: admin-only. POST /feedback stays open to any authenticated caller.
+  // Query analytics contain every user's query text: admin-only. POST /feedback is for the user
+  // who asked the query (or an administrator); access tokens need the `query` scope.
   def routes(queryLogRegistry: QueryLogRegistryBase): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/analytics"))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/analytics/queries - List query logs with pagination
@@ -67,22 +68,33 @@ object AnalyticsRoutes {
       }
 
     // POST /api/v1/feedback - Submit feedback for a query
-    case (req @ POST -> Root / "api" / "v1" / "feedback") as _ =>
-      req.as[QueryFeedbackRequest].flatMap { body =>
+    // The query id is the `queryId` of the /query response (or of the query stream's events).
+    // Only the user who asked the query, or an administrator, may rate it; anyone else gets the
+    // same 404 as for an unknown id, so query ids of other users are not revealed.
+    case (req @ POST -> Root / "api" / "v1" / "feedback") as principal =>
+      Authz.requireScope(principal, TokenScope.Query) { req.as[QueryFeedbackRequest].flatMap { body =>
+        val notFound = NotFound(ErrorResponse.notFound(s"Query ${body.queryId} not found").asJson)
         if (body.rating < 1 || body.rating > 5)
           BadRequest(ErrorResponse.badRequest("Rating must be between 1 and 5").asJson)
         else
           Params.withUuid(body.queryId, s"Query ${body.queryId} not found") { uuid =>
-            queryLogRegistry.addFeedback(
+            queryLogRegistry.get(uuid.toString).map(_.exists(entry => ownsQuery(principal, entry))).flatMap {
+              case false => notFound
+              case true => queryLogRegistry.addFeedback(
               queryId = uuid.toString,
               rating = body.rating,
               relevantChunks = body.relevantChunks,
               comment = body.comment
             ).flatMap {
               case true => Ok(QueryFeedbackResponse(success = true, message = "Feedback recorded").asJson)
-              case false => NotFound(ErrorResponse.notFound(s"Query ${body.queryId} not found").asJson)
+              case false => notFound
+            }
             }
           }
-      }
+      } }
   })
+
+  /** Whether `principal` may rate the logged query `entry`: an administrator, or who asked it. */
+  private def ownsQuery(principal: Principal, entry: QueryLogEntry): Boolean =
+    principal.isAdmin || entry.userId.contains(PermissionContext.userId(principal))
 }

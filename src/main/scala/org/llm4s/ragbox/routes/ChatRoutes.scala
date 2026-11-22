@@ -15,7 +15,7 @@ import org.http4s.headers.`Content-Type`
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase, QueryLogging}
-import org.llm4s.ragbox.service.{Llm4sPipeline, RAGService}
+import org.llm4s.ragbox.service.{InvalidRequestError, Llm4sPipeline, RAGService}
 
 import java.util.UUID
 
@@ -203,11 +203,14 @@ object ChatRoutes {
                 case Left(e) =>
                   for {
                     errorMessage <- ErrorHandling.clientMessage(e, "Query failed")
-                    // Add error message
+                    // Log the failure, as /query does, so analytics and experiments count it
+                    failureLogId <- logChatFailure(queryLogRegistry, body.content, session.collectionPattern, userId, totalLatencyMs, e, None)
+                    // Add error message, linked to its query-log entry
                     errorAssistant <- chatRegistry.addMessage(
                       sessionId = sessionId,
                       role = "assistant",
-                      content = s"$ErrorReplyPrefix $errorMessage"
+                      content = s"$ErrorReplyPrefix $errorMessage",
+                      queryLogId = failureLogId
                     )
 
                     result <- Ok(Json.obj(
@@ -255,7 +258,7 @@ object ChatRoutes {
                 IO.unit
               }
 
-              // Generate a unique ID for this stream
+              // The query-log id the answer is logged under (the events' queryId)
               queryId = UUID.randomUUID().toString
 
               userId = Some(PermissionContext.userId(principal))
@@ -297,7 +300,7 @@ object ChatRoutes {
                         totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
 
                         // Log to query_logs
-                        logId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse)
+                        logId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse, id = Some(queryId))
 
                         // Save assistant message
                         _ <- chatRegistry.addMessage(
@@ -314,14 +317,21 @@ object ChatRoutes {
                     contextEvents ++ answerEvent ++ usageEvent ++ completeEvent ++ saveEffect
 
                   case Left(e) =>
-                    // Report the error, then save it as the reply
+                    // Report the error, then log the failure (under the stream's queryId) and
+                    // save it as the reply, linked to that log entry
                     Stream.eval(ErrorHandling.clientMessage(e, "Query failed")).flatMap { errorMessage =>
                       Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces)) ++
-                        Stream.eval(chatRegistry.addMessage(
-                          sessionId = sessionId,
-                          role = "assistant",
-                          content = s"$ErrorReplyPrefix $errorMessage"
-                        )).drain
+                        Stream.eval(for {
+                          endTime <- IO.realTimeInstant
+                          totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
+                          failureLogId <- logChatFailure(queryLogRegistry, body.content, session.collectionPattern, userId, totalLatencyMs, e, Some(queryId))
+                          _ <- chatRegistry.addMessage(
+                            sessionId = sessionId,
+                            role = "assistant",
+                            content = s"$ErrorReplyPrefix $errorMessage",
+                            queryLogId = failureLogId
+                          )
+                        } yield ()).drain
                     }
                 }
 
@@ -409,6 +419,29 @@ object ChatRoutes {
   /**
    * Format a message as a Server-Sent Event.
    */
+  /**
+   * Log a chat answer that failed, like `/query` does (`failed = true`), so analytics error rates
+   * and experiment results count chat failures too. A rejected request (invalid input) is not a
+   * query and is not logged; logging never fails the request.
+   *
+   * @return the query-log id, if the failure was logged
+   */
+  private def logChatFailure(
+    queryLogRegistry: QueryLogRegistryBase,
+    question: String,
+    collectionPattern: String,
+    userId: Option[String],
+    totalLatencyMs: Int,
+    error: Throwable,
+    id: Option[String]
+  ): IO[Option[String]] =
+    error match {
+      case _: InvalidRequestError => IO.pure(None)
+      case e =>
+        QueryLogging.logFailure(queryLogRegistry, question, Some(collectionPattern), userId, totalLatencyMs, e, id = id)
+          .attempt.map(_.toOption)
+    }
+
   private def formatSSE(event: String, data: String): String =
     s"event: $event\ndata: $data\n\n"
 }

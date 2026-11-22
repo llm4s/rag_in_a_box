@@ -8,6 +8,7 @@ import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
 import org.llm4s.ragbox.config.RateLimitConfig
+import org.llm4s.ragbox.model.ErrorResponse
 import org.typelevel.ci.CIStringSyntax
 
 import scala.collection.immutable.VectorMap
@@ -143,13 +144,17 @@ object RateLimitMiddleware {
     path == "/health" || path == "/health/ready" || path == "/health/live" || path == "/metrics"
   }
 
+  /**
+   * 429 Too Many Requests, as the standard [[ErrorResponse]]: `details` carries the numbers as
+   * `limit=<n>; window=<seconds>s; retryAfter=<seconds>`, and the `Retry-After` and
+   * `X-RateLimit-*` headers are set.
+   */
   private def tooManyRequests(message: String, limit: Int, window: FiniteDuration): IO[Response[IO]] = {
     val retryAfter = window.toSeconds.toString
-    val body = Map(
-      "error" -> message,
-      "retryAfter" -> retryAfter,
-      "limit" -> limit.toString,
-      "window" -> s"${window.toSeconds}s"
+    val body = ErrorResponse(
+      error = "rate_limited",
+      message = message,
+      details = Some(s"limit=$limit; window=${window.toSeconds}s; retryAfter=$retryAfter")
     )
     IO.pure(
       Response[IO](Status.TooManyRequests)

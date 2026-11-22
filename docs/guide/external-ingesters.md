@@ -85,6 +85,7 @@ curl -X PUT "http://localhost:8080/api/v1/documents/confluence-page-123" \
   -d '{
     "content": "Page content from Confluence...",
     "contentHash": "sha256:computed-hash",
+    "source": "confluence",
     "collection": "confluence",
     "metadata": {
       "title": "Engineering Guidelines",
@@ -112,20 +113,23 @@ The `contentHash` parameter enables efficient change detection:
 - If omitted, RAG in a Box computes one (hex SHA-256 of the content). The value is stored as
   given, so use one format consistently (the examples use `sha256:<hex>`)
 
+`source` names your ingester (default `api`): the prune below only removes documents of that
+source. Use the same `source` on every upsert and on `POST /sync`, and one per ingester.
+
 `collection` (default `default`) and `readableBy` (principal external IDs such as
 `user:alice`, `group:eng`) apply in permission mode; without permission mode the collection is
 only recorded in the metadata and `readableBy` is ignored.
 
 ### 3. Detect and Remove Deleted Documents
 
-After syncing all documents from your source, prune orphans: every document **not** in
-`keepDocumentIds` is deleted.
+After syncing all documents from your source, prune orphans: every document of your
+`source` **not** in `keepDocumentIds` is deleted. Uploads, other sources' documents and
+documents of configured ingestion sources are never touched (an admin-only `"scope": "all"`
+prunes everything; see [the Sync API](/api/sync#prune)). Always try `dryRun` first.
 
-{: .warning }
-The prune is not limited to your source. With an unrestricted credential it deletes every
-other document in the server - other ingesters' documents, uploads, and documents from
-configured ingestion sources. Give each ingester an access token restricted to its own
-collections (then only documents inside them are pruned), and always try `dryRun` first.
+{: .note }
+Upgrading an ingester written before sources existed: see
+[the migration note](/api/sync#sync-scope-migration).
 
 ```bash
 # First, preview what would be deleted (dry run)
@@ -133,6 +137,7 @@ curl -X POST "http://localhost:8080/api/v1/sync" \
   -H "Content-Type: application/json" \
   -d '{
     "keepDocumentIds": ["doc-001", "doc-003", "doc-004"],
+    "source": "confluence",
     "dryRun": true
   }'
 ```
@@ -154,7 +159,8 @@ A `POST /api/v1/sync` without a body only records the sync time (see
 curl -X POST "http://localhost:8080/api/v1/sync" \
   -H "Content-Type: application/json" \
   -d '{
-    "keepDocumentIds": ["doc-001", "doc-003", "doc-004"]
+    "keepDocumentIds": ["doc-001", "doc-003", "doc-004"],
+    "source": "confluence"
   }'
 ```
 
@@ -296,6 +302,7 @@ class ConfluenceIngester:
                 json={
                     "content": body,
                     "contentHash": content_hash,
+                    "source": "confluence",
                     "collection": f"confluence/{space_key}",
                     "metadata": {
                         "title": page['title'],
@@ -308,7 +315,7 @@ class ConfluenceIngester:
         # Prune deleted pages
         requests.post(
             f"{self.ragbox}/api/v1/sync",
-            json={"keepDocumentIds": source_doc_ids}
+            json={"keepDocumentIds": source_doc_ids, "source": "confluence"}
         )
 
 # Usage
@@ -375,6 +382,7 @@ class SharePointIngester {
           body: JSON.stringify({
             content: content,
             contentHash: contentHash,
+            source: "sharepoint",
             collection: `sharepoint/${siteId}`,
             metadata: {
               filename: file.name,
@@ -389,7 +397,7 @@ class SharePointIngester {
     await fetch(`${this.ragboxUrl}/api/v1/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keepDocumentIds: sourceDocIds }),
+      body: JSON.stringify({ keepDocumentIds: sourceDocIds, source: "sharepoint" }),
     });
   }
 }

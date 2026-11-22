@@ -99,6 +99,9 @@ conforms<Api.VisibilityStats>()(contract.DetailedStatsResponse, true)
 // Pipeline config and query metrics
 conforms<Api.RAGConfigInfo>()(contract.RAGConfigInfo, true)
 conforms<Api.QueryMetrics>()(contract.QueryMetrics, true)
+conforms<Api.ContextItem>()(contract.ContextItem, true)
+conforms<Api.UsageInfo>()(contract.UsageInfo, true)
+conforms<Api.QueryResponse>()(contract.QueryResponse, true)
 
 // Authentication
 conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, true)

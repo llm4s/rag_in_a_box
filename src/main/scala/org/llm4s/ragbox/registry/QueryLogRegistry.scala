@@ -40,9 +40,10 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     costUsd: Option[Double] = None,
     variant: Option[String] = None,
     failed: Boolean = false,
-    errorMessage: Option[String] = None
+    errorMessage: Option[String] = None,
+    id: Option[String] = None
   ): IO[String] = ConnectionPool.withConnection(dataSource) { conn =>
-    val id = UUID.randomUUID().toString
+    val logId = id.getOrElse(UUID.randomUUID().toString)
     val sql =
       """INSERT INTO query_logs
         |    (id, query_text, collection_pattern, user_id,
@@ -53,7 +54,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     val stmt = conn.prepareStatement(sql)
     try {
       stmt.setQueryTimeout(30)
-      stmt.setString(1, id)
+      stmt.setString(1, logId)
       stmt.setString(2, queryText)
       stmt.setString(3, collectionPattern.orNull)
       stmt.setString(4, userId.orNull)
@@ -80,7 +81,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       stmt.setBoolean(18, failed)
       stmt.setString(19, errorMessage.map(_.take(2000)).orNull)
       stmt.executeUpdate()
-      id
+      logId
     } finally {
       stmt.close()
     }

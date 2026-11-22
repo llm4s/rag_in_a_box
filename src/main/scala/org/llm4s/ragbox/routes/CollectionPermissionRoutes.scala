@@ -111,8 +111,13 @@ object CollectionPermissionRoutes {
       case Right(parsed) => f(parsed.getOrElse(CollectionPattern.All))
     }
 
-  // Creating and deleting collections and changing their permissions is admin-only; reads are filtered.
-  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/collections")(req))(AuthedRoutes.of[Principal, IO] {
+  // Creating and deleting collections and changing their permissions is admin-only; reads are
+  // filtered. The per-collection chunking config endpoints belong to CollectionConfigRoutes,
+  // which applies its own rule (the read-only preview is open to any authenticated user).
+  def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req =>
+    Authz.mutating(req) && Authz.under("/api/v1/collections")(req) &&
+      !CollectionRoute.isConfig(req.pathInfo) && !CollectionRoute.isConfigPreview(req.pathInfo)
+  )(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/collections - Create collection (409 if it exists)
     case (req @ POST -> Root / "api" / "v1" / "collections") as _ =>
@@ -141,22 +146,13 @@ object CollectionPermissionRoutes {
         }
       }
 
-    // GET /api/v1/collections/:path - Get collection by path
-    // Note: path can contain slashes, so we match the remainder
-    // Exclude "configs" which is handled by CollectionConfigRoutes
-    case GET -> Root / "api" / "v1" / "collections" / path as principal if !path.contains("/") && path != "configs" =>
-      ifVisible(collectionStore, principalStore, principal, path)(getCollection(collectionStore, path))
+    // GET /api/v1/collections/{path} - Get collection by path. Nested paths may be written with
+    // raw or encoded slashes (`eng/backend`, `eng%2Fbackend`): see CollectionRoute.
+    case GET -> "api" /: "v1" /: "collections" /: CollectionRoute.Bare(pathStr) as principal =>
+      ifVisible(collectionStore, principalStore, principal, pathStr)(getCollection(collectionStore, pathStr))
 
-    // Paths ending in /config belong to CollectionConfigRoutes (GET /collections/{c}/config);
-    // this catch-all is mounted later in the Router and would otherwise shadow it.
-    case GET -> "api" /: "v1" /: "collections" /: rest as principal
-        if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" &&
-          !(rest.segments.size > 1 && rest.segments.last.decoded() == "config") =>
-      val path = rest.segments.mkString("/")
-      ifVisible(collectionStore, principalStore, principal, path)(getCollection(collectionStore, path))
-
-    // PUT /api/v1/collections/:path/permissions - Update collection permissions
-    case (req @ PUT -> Root / "api" / "v1" / "collections" / pathStr / "permissions") as _ =>
+    // PUT /api/v1/collections/{path}/permissions - Update collection permissions
+    case (req @ PUT -> "api" /: "v1" /: "collections" /: CollectionRoute.Permissions(pathStr)) as _ =>
       for {
         body <- req.as[UpdatePermissionsRequest]
         path <- parsePath(pathStr)
@@ -165,12 +161,12 @@ object CollectionPermissionRoutes {
         response <- Ok(toResponse(updated).asJson)
       } yield response
 
-    // DELETE /api/v1/collections/:path - Delete collection
-    case DELETE -> Root / "api" / "v1" / "collections" / pathStr as _ =>
+    // DELETE /api/v1/collections/{path} - Delete collection
+    case DELETE -> "api" /: "v1" /: "collections" /: CollectionRoute.Bare(pathStr) as _ =>
       parsePath(pathStr).flatMap(path => store(collectionStore.delete(path))) *> NoContent()
 
-    // GET /api/v1/collections/:path/stats - Get collection statistics
-    case GET -> Root / "api" / "v1" / "collections" / pathStr / "stats" as principal =>
+    // GET /api/v1/collections/{path}/stats - Get collection statistics
+    case GET -> "api" /: "v1" /: "collections" /: CollectionRoute.Stats(pathStr) as principal =>
       ifVisible(collectionStore, principalStore, principal, pathStr) {
         for {
           path <- parsePath(pathStr)

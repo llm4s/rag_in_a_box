@@ -20,8 +20,10 @@ chunking configuration. See the [Chunking guide](/guide/chunking).
 
 ---
 
-**Auth:** reads and previews are open to any authenticated caller (access tokens need the
-`admin` scope). Changing collection configs, and `POST .../config/preview`, are **Admin** only.
+**Auth:** reads and previews (including the read-only `POST .../config/preview`) are open to
+any authenticated caller (access tokens need the `admin` scope). Changing collection configs is
+**Admin** only. Nested collection names may use raw or encoded slashes
+(`/collections/eng/backend/config`, `/collections/eng%2Fbackend/config`).
 
 Strategies: `simple`, `sentence`, `markdown`, `semantic` (`semantic` needs embeddings).
 

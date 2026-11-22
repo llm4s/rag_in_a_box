@@ -138,4 +138,45 @@ class CollectionConfigRoutesSpec extends AnyFlatSpec with Matchers with PgVector
     body should include("\"hasCustomConfig\":true")
     body should include("\"documentCount\":1")
   }
+
+  // ============================================================
+  // Nested collection names (#54)
+  // ============================================================
+
+  "The config routes" should "accept a nested collection with raw or encoded slashes" in {
+    val (raw, encoded, stored, removed) = withRoutes() { f =>
+      for {
+        raw <- call(f.app, json(Method.PUT, uri"/api/v1/collections/eng/backend/config", """{"strategy":"sentence"}"""))
+        encoded <- call(f.app, Request[IO](Method.GET, Uri.unsafeFromString("/api/v1/collections/eng%2Fbackend/config")))
+        stored <- f.configs.get("eng/backend")
+        removed <- call(f.app, Request[IO](Method.DELETE, Uri.unsafeFromString("/api/v1/collections/eng%2Fbackend/config")))
+      } yield (raw, encoded, stored, removed)
+    }
+    raw._1 shouldBe Status.Ok
+    raw._2 should include("\"collection\":\"eng/backend\"")
+    stored.flatMap(_.strategy) shouldBe Some("sentence")
+    encoded._1 shouldBe Status.Ok
+    encoded._2 should include("\"collection\":\"eng/backend\"")
+    encoded._2 should include("\"hasCustomConfig\":true")
+    removed._1 shouldBe Status.Ok
+  }
+
+  "POST /api/v1/collections/{name}/config/preview" should "be open to any authenticated user (it changes nothing)" in {
+    val (status, body) = withRoutes(user("alice")) { f =>
+      call(f.app, json(Method.POST, uri"/api/v1/collections/eng/backend/config/preview", """{"collection":"eng/backend","filename":"a.md"}"""))
+    }
+    status shouldBe Status.Ok
+    body should include("\"collection\":\"eng/backend\"")
+    body should include("\"configResolutionPath\"")
+  }
+
+  it should "leave changing the config admin-only" in {
+    val statuses = withRoutes(user("alice")) { f =>
+      for {
+        put <- f.app.run(json(Method.PUT, uri"/api/v1/collections/eng/backend/config", """{"strategy":"sentence"}"""))
+        delete <- f.app.run(Request[IO](Method.DELETE, uri"/api/v1/collections/eng/backend/config"))
+      } yield (put.status, delete.status)
+    }
+    statuses shouldBe (Status.Forbidden, Status.Forbidden)
+  }
 }

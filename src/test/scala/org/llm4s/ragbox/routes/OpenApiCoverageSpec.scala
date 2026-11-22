@@ -29,13 +29,22 @@ class OpenApiCoverageSpec extends AnyFlatSpec with Matchers {
    * cannot read, mapped to the route they serve (which must also be in the spec).
    */
   private val extractorRoutes: Map[String, Option[(String, String)]] = Map(
-    // GET /api/v1/collections/{path...}: a collection path with slashes
-    """case GET -> "api" /: "v1" /: "collections" /: rest as principal""" -> Some("get" -> "/api/v1/collections/{}"),
     // GET /admin/{file}: admin UI assets
     """case req @ GET -> "admin" /: path =>""" -> None
   )
 
   private val Method = "(GET|POST|PUT|DELETE|PATCH|HEAD)"
+
+  /**
+   * Per-collection routes: `"api" /: "v1" /: "collections" /: CollectionRoute.Stats(path)` serves
+   * `/api/v1/collections/{path}/stats` (the collection path may span several segments).
+   */
+  private val CollectionRoutePattern =
+    (Method + """\s*->\s*"api"\s*/:\s*"v1"\s*/:\s*"collections"\s*/:\s*CollectionRoute\.(\w+)\(""").r
+  private val CollectionSuffixes = Map(
+    "Bare" -> "", "Permissions" -> "/permissions", "Stats" -> "/stats", "Config" -> "/config",
+    "ConfigPreview" -> "/config/preview"
+  )
   private val Identifier = "[A-Za-z_][A-Za-z0-9_]*"
   // A segment: "literal", a variable, or an extractor such as IntVar(id)
   private val Segment = "\\s*/\\s*(\"[^\"]*\"|" + Identifier + "(?:\\(" + Identifier + "\\))?)"
@@ -60,9 +69,12 @@ class OpenApiCoverageSpec extends AnyFlatSpec with Matchers {
       line.contains("-> Root") || line.contains("/:")
     }
     declared.flatMap { case (file, line) =>
-      RoutePattern.findFirstMatchIn(line) match {
-        case Some(m) => Some(m.group(1).toLowerCase -> toPath(m.group(2)))
-        case None =>
+      (RoutePattern.findFirstMatchIn(line), CollectionRoutePattern.findFirstMatchIn(line)) match {
+        case (Some(m), _) => Some(m.group(1).toLowerCase -> toPath(m.group(2)))
+        case (None, Some(m)) =>
+          val suffix = CollectionSuffixes.getOrElse(m.group(2), fail(s"Unknown CollectionRoute extractor in '$line'"))
+          Some(m.group(1).toLowerCase -> s"/api/v1/collections/{}$suffix")
+        case (None, None) =>
           extractorRoutes.getOrElse(
             line,
             fail(s"Cannot read the route declared in ${file.getFileName}: '$line'. " +

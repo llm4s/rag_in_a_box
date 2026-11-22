@@ -38,6 +38,60 @@ object DocumentRoutes {
   val MaxPageSize: Int = 500
 
   /**
+   * The sync source of documents written with `PUT /api/v1/documents/{id}` without a `source`,
+   * and the source `POST /api/v1/sync` prunes when the request names none. Uploads
+   * (`POST /documents`, `/documents/upload`) belong to no source; configured ingestion sources
+   * own their documents under their own names.
+   */
+  val DefaultSyncSource: String = "api"
+
+  /** What a sync source name may look like: 1-128 of letters, digits and `._:/-`. */
+  private val SourcePattern = "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$".r
+
+  /** `Some(400)` when `source` is not a valid sync source name. */
+  private def invalidSource(source: String): Option[IO[Response[IO]]] =
+    Option.when(!SourcePattern.matches(source))(BadRequest(ErrorResponse.badRequest(
+      s"Invalid source '$source'",
+      Some("A source is 1-128 characters: letters, digits and . _ : / -, starting with a letter or digit")
+    ).asJson))
+
+  /** Which documents a `POST /sync` with a body prunes. */
+  private enum SyncScope {
+    /** The documents `source` owns. */
+    case Source(source: String)
+    /** Every document (admin-only opt-in). */
+    case All
+
+    def covers(entry: DocumentEntry): Boolean = this match {
+      case Source(s) => entry.sourceId.contains(s)
+      case All => true
+    }
+    def name: String = this match {
+      case Source(_) => "source"
+      case All => "all"
+    }
+    def sourceName: Option[String] = this match {
+      case Source(s) => Some(s)
+      case All => None
+    }
+  }
+
+  /** The scope a prune request asks for, or the error response (400, or 403 for `all` by a non-admin). */
+  private def syncScope(principal: Principal, request: SyncPruneRequest): Either[IO[Response[IO]], SyncScope] =
+    (request.scope.map(_.trim.toLowerCase), request.source) match {
+      case (Some("all"), Some(_)) =>
+        Left(BadRequest(ErrorResponse.badRequest("Give either scope=all or a source, not both").asJson))
+      case (Some("all"), None) =>
+        if (principal.isAdmin) Right(SyncScope.All)
+        else Left(Authz.forbidden("scope=all (pruning every document, whatever its source) is admin-only"))
+      case (None | Some("source"), source) =>
+        val s = source.getOrElse(DefaultSyncSource)
+        invalidSource(s).toLeft(SyncScope.Source(s))
+      case (Some(other), _) =>
+        Left(BadRequest(ErrorResponse.badRequest(s"Invalid scope '$other'", Some("scope is 'source' (the default) or 'all'")).asJson))
+    }
+
+  /**
    * Default and maximum page sizes for GET /api/v1/sync/documents. The default is large so that
    * ingesters written before the listing was paged still get every document of a typical
    * installation in one response; `hasMore` says when there are more.
@@ -358,13 +412,15 @@ object DocumentRoutes {
           InputValidation.validateDocumentContent(body.content),
           body.metadata.map(InputValidation.validateMetadata(_)).getOrElse(InputValidation.Valid)
         )
-        response <- InputValidation.toResponse(validation) match {
+        source = body.source.getOrElse(DefaultSyncSource)
+        response <- InputValidation.toResponse(validation).orElse(invalidSource(source)) match {
           case Some(errorResponse) => errorResponse
           // The target collection must be allowed, and so must the one an existing document is in
           case None => requireCollectionAccess(ragService, principal, body.collection.getOrElse(RAGService.DefaultCollection)) {
             requireDocumentsAccessible(ragService, principal, Seq(id)) {
               val metadata = body.metadata.getOrElse(Map.empty) ++ body.collection.map("collection" -> _).toMap
-              ragService.upsertAs(id, body.content, metadata, body.collection, body.readableBy, body.contentHash).flatMap { upserted =>
+              // The document belongs to `source` (default `api`), so that source's sync prunes it
+              ragService.upsertAs(id, body.content, metadata, body.collection, body.readableBy, body.contentHash, Some(source)).flatMap { upserted =>
                 if (upserted.action == "created") Created(upserted.asJson) else Ok(upserted.asJson)
               }
             }
@@ -399,46 +455,41 @@ object DocumentRoutes {
       }
 
     // POST /api/v1/sync - Mark sync complete and optionally prune
-    // Supports dryRun to preview what would be deleted
+    // Pruning is scoped: by default only the documents of one sync source (`source`, default
+    // `api`) that are not in keepDocumentIds; `scope: "all"` (admin-only) prunes every document.
+    // Supports dryRun to preview what would be deleted.
     case (req @ POST -> Root / "api" / "v1" / "sync") as principal =>
       Authz.requireIngester(principal, TokenScope.SyncWrite) { for {
         body <- decodeOptionalBody[SyncPruneRequest](req)
         response <- body match {
           case Left(err) => invalidBody(err)
-          case Right(Some(pruneReq)) =>
+          case Right(Some(pruneReq)) => syncScope(principal, pruneReq) match {
+            case Left(errorResponse) => errorResponse
+            case Right(scope) =>
             val isDryRun = pruneReq.dryRun.getOrElse(false)
-            // A collection-restricted token only prunes within its collections: every document
-            // outside them is kept
-            val keepIO: IO[Set[String]] =
-              if (!principal.isCollectionRestricted) IO.pure(pruneReq.keepDocumentIds.toSet)
-              else ragService.listDocumentEntries.map { all =>
-                pruneReq.keepDocumentIds.toSet ++
-                  all.filterNot(e => principal.canAccessCollection(collectionOf(e))).map(_.documentId)
-              }
+            val keep = pruneReq.keepDocumentIds.toSet
+            // In scope: the source's documents (or all), and for a collection-restricted token
+            // only those in its collections
+            val inScope: DocumentEntry => Boolean =
+              e => scope.covers(e) && principal.canAccessCollection(collectionOf(e))
+            def response(message: String, count: Int, ids: Option[Seq[String]]) = SyncPruneResponse(
+              message = message, prunedCount = count, prunedIds = ids, dryRun = isDryRun,
+              scope = Some(scope.name), source = scope.sourceName
+            )
             val result = if (isDryRun) {
               // Dry run - just find orphans without deleting
-              keepIO.flatMap(ragService.findOrphanedDocuments).map { orphans =>
-                SyncPruneResponse(
-                  message = s"Dry run: would delete ${orphans.size} documents",
-                  prunedCount = orphans.size,
-                  prunedIds = Some(orphans),
-                  dryRun = true
-                )
+              ragService.findOrphanedDocuments(keep, inScope).map { orphans =>
+                response(s"Dry run: would delete ${orphans.size} documents", orphans.size, Some(orphans))
               }
             } else {
               // Actual prune - delete orphans and mark sync complete
               for {
-                keep <- keepIO
-                deleted <- ragService.pruneDocuments(keep)
+                deleted <- ragService.pruneDocuments(keep, inScope)
                 _ <- ragService.markSyncComplete()
-              } yield SyncPruneResponse(
-                message = "Sync completed",
-                prunedCount = deleted,
-                prunedIds = None,
-                dryRun = false
-              )
+              } yield response("Sync completed", deleted, None)
             }
             result.flatMap(r => Ok(r.asJson))
+          }
           case Right(None) =>
             // No body - just mark sync complete
             ragService.markSyncComplete().as(SyncPruneResponse(

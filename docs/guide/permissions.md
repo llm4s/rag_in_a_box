@@ -157,11 +157,11 @@ curl -X POST http://localhost:8080/api/v1/collections \
 
 ### Updating Permissions
 
-The `PUT .../permissions`, `DELETE` and `.../stats` routes take the collection path as a single
-URL segment, so encode the `/` in nested paths as `%2F`:
+Every collection endpoint accepts nested paths with raw slashes (`finance/reports`) or encoded
+ones (`finance%2Freports`):
 
 ```bash
-curl -X PUT http://localhost:8080/api/v1/collections/finance%2Freports/permissions \
+curl -X PUT http://localhost:8080/api/v1/collections/finance/reports/permissions \
   -H "Content-Type: application/json" \
   -d '{
     "queryableBy": [

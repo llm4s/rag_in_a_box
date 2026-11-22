@@ -169,9 +169,14 @@ class MockRAGService(
     documentId: String,
     content: String,
     metadata: Map[String, String],
-    providedHash: Option[String]
+    providedHash: Option[String],
+    sourceId: Option[String]
   ): IO[DocumentUpsertResponse] = {
     val hash = providedHash.getOrElse(computeHash(content))
+    // Record the owner, as the real upsert does
+    val claim: IO[Unit] = sourceId.fold(IO.unit)(s =>
+      documentRegistry.get(documentId).flatMap(_.fold(IO.unit)(e => documentRegistry.put(e.copy(sourceId = Some(s)))))
+    )
 
     documentRegistry.get(documentId).flatMap {
       case Some(existing) if existing.contentHash == hash =>
@@ -187,7 +192,7 @@ class MockRAGService(
         ingestDocument(content, documentId, metadata).map { result =>
           DocumentUpsertResponse(documentId, result.chunks, "created", result.message)
         }
-    }
+    }.flatTap(_ => claim)
   }
 
   override def deleteDocument(documentId: String): IO[Unit] = {

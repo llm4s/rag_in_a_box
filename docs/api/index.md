@@ -143,7 +143,7 @@ in those collections (and their descendants), and may only query patterns inside
 | POST | [`/api/v1/chat/sessions/{id}/messages`](/api/chat#send-message) | `query` | Send a message |
 | POST | [`/api/v1/chat/sessions/{id}/messages/stream`](/api/chat#stream-message) | `query` | Send a message, SSE reply |
 | PUT | [`/api/v1/chat/messages/{id}/rate`](/api/chat#rate-message) | `query` | Rate an answer |
-| POST | [`/api/v1/feedback`](/api/analytics#feedback) | Authenticated (tokens: `admin`) | Rate a logged query |
+| POST | [`/api/v1/feedback`](/api/analytics#feedback) | The query's asker, or admin (tokens: `query`) | Rate a logged query |
 | GET | [`/api/v1/analytics/queries`](/api/analytics#list) | Admin | Query log |
 | GET | [`/api/v1/analytics/queries/summary`](/api/analytics#summary) | Admin | Query analytics summary |
 | GET | [`/api/v1/analytics/queries/{id}`](/api/analytics#get) | Admin | One query log entry |
@@ -171,7 +171,7 @@ in those collections (and their descendants), and may only query patterns inside
 | GET | [`/api/v1/collections/{name}/config`](/api/chunking#collection-config) | Authenticated | One collection's chunking config |
 | PUT | [`/api/v1/collections/{name}/config`](/api/chunking#collection-config-update) | Admin | Set a collection's chunking config |
 | DELETE | [`/api/v1/collections/{name}/config`](/api/chunking#collection-config-delete) | Admin | Remove it |
-| POST | [`/api/v1/collections/{name}/config/preview`](/api/chunking#collection-config-preview) | Admin | Effective config for a file |
+| POST | [`/api/v1/collections/{name}/config/preview`](/api/chunking#collection-config-preview) | Authenticated | Effective config for a file |
 | POST | [`/api/v1/chunking/preview`](/api/chunking#preview) | Authenticated | Preview chunking |
 | POST | [`/api/v1/chunking/compare`](/api/chunking#compare) | Authenticated | Compare strategies |
 | GET | [`/api/v1/chunking/strategies`](/api/chunking#strategies) | Authenticated | Strategies |
@@ -209,8 +209,8 @@ Error responses are JSON with this shape:
 | 404 | `not_found` | Resource not found, not visible to the caller, or an id that cannot exist (e.g. a query-log id that is not a UUID) |
 | 409 | `conflict` | The request conflicts with the current state: an existing collection, an ingestion run already in progress |
 | 415 | `unsupported_media_type` | The body is not JSON where JSON is expected |
-| 413 | | Request body larger than `MAX_BODY_SIZE_MB` (default 10). Body: `{error, maxSizeBytes, maxSizeMB}` |
-| 429 | | Rate limit exceeded (`RATE_LIMIT_ENABLED=true`, or too many failed logins). Body: `{error, retryAfter, limit, window}`, plus `Retry-After` |
+| 413 | `payload_too_large` | Request body larger than `MAX_BODY_SIZE_MB` (default 10). `details`: `maxSizeBytes=<n>`; also the `X-Max-Body-Size` header |
+| 429 | `rate_limited` | Rate limit exceeded (`RATE_LIMIT_ENABLED=true`, or too many failed logins). `details`: `limit=<n>; window=<s>s; retryAfter=<s>`; plus the `Retry-After` header |
 | 500 | `internal_error` | Server error. The message is always `Internal server error`; the cause is in the server log, never in the response |
 
 Every endpoint uses this shape except 413 and 429 (above). Paging parameters are clamped rather

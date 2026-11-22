@@ -527,6 +527,8 @@ export interface QueryResponse {
   contexts: ContextItem[]
   usage?: UsageInfo
   metrics?: QueryMetrics | null
+  /** The query-log id, for POST /feedback (only its asker, or an admin, may rate it) */
+  queryId?: string | null
 }
 
 /** Scala `RAGConfigInfo` (part of GET /config). */

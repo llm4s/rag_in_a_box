@@ -174,14 +174,14 @@ named scope).
 | Query | `POST /query`, `/query/stream` (SSE), `/search` | Auth (`query`) |
 | Chat | `GET`, `POST /chat/sessions`; `GET`, `PUT`, `DELETE /chat/sessions/{id}`; `POST /chat/sessions/{id}/messages`, `.../messages/stream`; `PUT /chat/messages/{id}/rate` | Auth (`query`), own sessions only |
 | Collections | `GET /collections`, `/collections/accessible`, `/collections/{path}`, `/collections/{path}/stats`; `POST /collections`; `PUT /collections/{path}/permissions`; `DELETE /collections/{path}` | Reads: Auth (filtered); writes: Admin |
-| Collection chunking | `GET /collections/configs`; `GET`, `PUT`, `DELETE /collections/{c}/config`; `POST /collections/{c}/config/preview` | Reads: Auth; writes and preview: Admin |
+| Collection chunking | `GET /collections/configs`; `GET`, `PUT`, `DELETE /collections/{c}/config`; `POST /collections/{c}/config/preview` | Reads and preview: Auth; writes: Admin |
 | Principals | `GET`, `POST /principals/users`, `/principals/groups`; `GET /principals/lookup/{id}`; `DELETE /principals/{type}/{id}` | Admin |
 | Configuration | `GET /config`, `/config/providers`, `/config/runtime`, `/config/runtime/meta`; `PUT /config/runtime`; `POST /config/runtime/validate`; `GET /config/runtime/history` | Reads: Auth; changes and history: Admin |
 | Chunking | `POST /chunking/preview`, `/chunking/compare`; `GET /chunking/strategies`, `/chunking/presets` | Auth |
 | Ingestion | `POST /ingest/directory`, `/ingest/url`, `/ingest/run`, `/ingest/run/{source}`; `GET /ingest/status`, `/ingest/sources` | Admin |
 | Visibility | `GET /visibility/config`, `/visibility/stats`, `/visibility/collections`, `/visibility/chunks`, `/visibility/chunks/{docId}`, `/visibility/chunks/{docId}/{index}` | Admin |
 | Analytics | `GET /analytics/queries`, `/analytics/queries/summary`, `/analytics/queries/{id}`; `GET /analytics/suggestions`, `.../summary`, `.../collection/{name}` | Admin |
-| Feedback | `POST /feedback` | Auth |
+| Feedback | `POST /feedback` (the `queryId` from `/query`) | The query's asker, or Admin (`query`) |
 | Experiments | `GET`, `POST /experiments`; `GET /experiments/running`, `/experiments/{id}`, `/experiments/{id}/results`; `PUT /experiments/{id}/start`, `/stop`, `/archive`; `DELETE /experiments/{id}` | Admin |
 | WebSocket | `GET /ws` (ingestion progress, stats updates; `?access_token=` accepted; browser `Origin` must be same-origin or in `ALLOWED_ORIGINS`) | Auth |
 

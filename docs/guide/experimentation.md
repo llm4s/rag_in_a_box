@@ -452,14 +452,15 @@ curl -s http://localhost:8080/api/v1/experiments/{id}/results \
 ### 4. Encourage User Feedback
 
 Results are more meaningful with user ratings. Ratings are attached to query log entries with
-`POST /api/v1/feedback` (see [Analytics](analytics.md#user-feedback)):
+`POST /api/v1/feedback`, using the `queryId` that `POST /api/v1/query` returns (see
+[Analytics](analytics.md#user-feedback)); only the user who asked, or an administrator, may rate:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/feedback \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-token" \
   -d '{
-    "queryId": "<query log id>",
+    "queryId": "<queryId from the /query response>",
     "rating": 4,
     "comment": "Good answer, but could include more examples"
   }'

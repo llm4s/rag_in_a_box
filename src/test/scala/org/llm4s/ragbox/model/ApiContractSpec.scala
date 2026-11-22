@@ -72,6 +72,11 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     name = "balanced", displayName = "Balanced", description = "Good default",
     targetSize = 800, maxSize = 1200, overlap = 150, bestFor = Seq("general")
   )
+  private val queryMetrics = QueryMetrics(
+    embeddingLatencyMs = Some(12), searchLatencyMs = Some(8), llmLatencyMs = Some(900), chunksRetrieved = 5,
+    chunksUsed = 5, embeddingTokens = Some(7), promptTokens = Some(1200), completionTokens = Some(80), costUsd = Some(0.0042)
+  )
+  private val contextItem = ContextItem("Solar panels convert light.", 0.92, Map("collection" -> "docs"), Some("doc-1"), Some(0))
   private val previewChunk = PreviewChunk(0, "Hello world.", 12, Seq("Intro"), isCodeBlock = false, Some("scala"))
   private val chunkingStats = ChunkingStats(1, 12, 12.0, 12, 12, 3)
   private val chunkingWarning = ChunkingWarning("info", "Short document", Some("Use smaller chunks"))
@@ -148,9 +153,13 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       rrfK = 60, searchMode = "vector", fusionApplies = false, reranking = "none", queryTransform = "none",
       limitations = Seq("fusionStrategy and rrfK have no effect (llm4s/llm4s#2716).")
     )),
-    entry("QueryMetrics", QueryMetrics(
-      embeddingLatencyMs = Some(12), searchLatencyMs = Some(8), llmLatencyMs = Some(900), chunksRetrieved = 5,
-      chunksUsed = 5, embeddingTokens = Some(7), promptTokens = Some(1200), completionTokens = Some(80), costUsd = Some(0.0042)
+    entry("QueryMetrics", queryMetrics),
+    // POST /query: the answer with the query-log id POST /feedback takes (#54)
+    entry("ContextItem", contextItem),
+    entry("UsageInfo", UsageInfo(1200, 80, 1280)),
+    entry("QueryResponse", QueryResponse(
+      answer = "An answer.", contexts = Seq(contextItem), usage = Some(UsageInfo(1200, 80, 1280)),
+      metrics = Some(queryMetrics), queryId = Some("5f0c7a9e-1b2d-4c3e-8f40-123456789abc")
     )),
     // Authentication
     entry("AuthModeResponse", org.llm4s.ragbox.routes.AuthModeResponse(

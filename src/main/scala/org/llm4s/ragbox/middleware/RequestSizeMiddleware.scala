@@ -7,6 +7,7 @@ import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.headers.`Content-Length`
+import org.llm4s.ragbox.model.ErrorResponse
 import org.typelevel.ci.CIStringSyntax
 
 import scala.util.control.NoStackTrace
@@ -78,13 +79,15 @@ object RequestSizeMiddleware {
     go(body, 0L).stream
   }
 
-  /** 413 Payload Too Large. */
+  /**
+   * 413 Payload Too Large, as the standard [[ErrorResponse]]: `details` carries the limit as
+   * `maxSizeBytes=<n>` (also in the `X-Max-Body-Size` header).
+   */
   private def payloadTooLarge(config: Config): Response[IO] = {
-    val maxSizeMB = config.maxBodySize / (1024 * 1024)
-    val body = Map(
-      "error" -> "Request body too large",
-      "maxSizeBytes" -> config.maxBodySize.toString,
-      "maxSizeMB" -> maxSizeMB.toString
+    val body = ErrorResponse(
+      error = "payload_too_large",
+      message = s"Request body too large (the limit is ${formatBytes(config.maxBodySize)})",
+      details = Some(s"maxSizeBytes=${config.maxBodySize}")
     )
 
     Response[IO](Status.PayloadTooLarge)

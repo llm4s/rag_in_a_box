@@ -116,6 +116,8 @@ PUT /api/v1/collections/{path}/permissions
 { "path": "company/engineering", "documentCount": 42, "chunkCount": 610 }
 ```
 
-{: .warning }
-`PUT .../permissions`, `DELETE` and `.../stats` match a single path segment, so for nested
-collections percent-encode the slash (`company%2Fengineering`).
+{: .note }
+Every collection endpoint accepts nested paths with raw slashes (`company/engineering/stats`) or
+percent-encoded ones (`company%2Fengineering/stats`). A trailing raw `permissions`, `stats`,
+`config` or `config/preview` segment always names the sub-resource; to address a collection
+whose last level is one of those words, encode the slash before it (`company%2Fstats`).

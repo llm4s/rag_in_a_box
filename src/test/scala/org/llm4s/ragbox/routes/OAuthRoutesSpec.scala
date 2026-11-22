@@ -152,9 +152,12 @@ class OAuthRoutesSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
             message shouldBe Some("Logged out successfully")
             // Check that cookie is being cleared
             val cookies = response.cookies
-            cookies.find(_.name == "ragbox_session").foreach { cookie =>
-              cookie.maxAge shouldBe Some(0)
-            }
+            val cookie = cookies.find(_.name == "ragbox_session").getOrElse(fail("no cleared session cookie"))
+            cookie.maxAge shouldBe Some(0)
+            cookie.httpOnly shouldBe true
+            // The same attributes as the session cookie it replaces (#54)
+            cookie.sameSite shouldBe Some(SameSite.Lax)
+            cookie.path shouldBe Some("/")
           }
         case None =>
           fail("Route not matched")

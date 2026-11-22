@@ -136,21 +136,25 @@ class RAGService(
       case None => ingestDocument(content, documentId, metadata)
     }
 
-  /** Upsert a document: into `collection` with the `readableBy` access list in permission mode. */
+  /**
+   * Upsert a document: into `collection` with the `readableBy` access list in permission mode.
+   * `sourceId` is the sync source recorded as the document's owner (see `POST /sync`).
+   */
   def upsertAs(
     documentId: String,
     content: String,
     metadata: Map[String, String],
     collection: Option[String],
     readableBy: Option[Seq[String]],
-    providedHash: Option[String]
+    providedHash: Option[String],
+    sourceId: Option[String] = None
   ): IO[DocumentUpsertResponse] =
     principals.filter(_ => hasPermissions) match {
       case Some(ps) =>
         RAGService.resolvePrincipals(readableBy.getOrElse(Nil), ps).flatMap { readers =>
-          upsertWithPermissions(collection.getOrElse(RAGService.DefaultCollection), documentId, content, metadata, readers, providedHash)
+          upsertWithPermissions(collection.getOrElse(RAGService.DefaultCollection), documentId, content, metadata, readers, providedHash, sourceId)
         }
-      case None => upsertDocument(documentId, content, metadata, providedHash)
+      case None => upsertDocument(documentId, content, metadata, providedHash, sourceId)
     }
 
   // ============================================================
@@ -171,7 +175,17 @@ class RAGService(
   def clearAll: IO[Unit] = documents.clearAll
 
   def upsertDocument(documentId: String, content: String, metadata: Map[String, String], providedHash: Option[String]): IO[DocumentUpsertResponse] =
-    documents.upsertDocument(documentId, content, metadata, providedHash)
+    upsertDocument(documentId, content, metadata, providedHash, None)
+
+  /** Upsert a document, recording `sourceId` (when given) as its owner. */
+  def upsertDocument(
+    documentId: String,
+    content: String,
+    metadata: Map[String, String],
+    providedHash: Option[String],
+    sourceId: Option[String]
+  ): IO[DocumentUpsertResponse] =
+    documents.upsertDocument(documentId, content, metadata, providedHash, sourceId)
 
   def upsertSourceDocument(sourceId: String, documentId: String, content: String, metadata: Map[String, String]): IO[DocumentUpsertResponse] =
     documents.upsertSourceDocument(sourceId, documentId, content, metadata)
@@ -179,6 +193,23 @@ class RAGService(
   def listSourceDocumentIds(sourceId: String): IO[Seq[String]] = documents.listSourceDocumentIds(sourceId)
 
   def pruneDocuments(keepDocumentIds: Set[String]): IO[Int] = documents.pruneDocuments(keepDocumentIds)
+
+  /**
+   * The documents a scoped sync would prune: those `inScope` that are not in `keepIds`. The
+   * scope is checked on each orphan's registry entry, so a document written meanwhile outside the
+   * scope (an upload, another source's) is never a candidate.
+   */
+  def findOrphanedDocuments(keepIds: Set[String], inScope: DocumentEntry => Boolean): IO[Seq[String]] =
+    findOrphanedDocuments(keepIds).flatMap { orphans =>
+      if (orphans.isEmpty) IO.pure(Seq.empty)
+      else getDocumentEntries(orphans).map(_.filter(inScope).map(_.documentId))
+    }
+
+  /** Delete the documents [[findOrphanedDocuments]] finds; returns how many were deleted. */
+  def pruneDocuments(keepIds: Set[String], inScope: DocumentEntry => Boolean): IO[Int] =
+    findOrphanedDocuments(keepIds, inScope).flatMap { ids =>
+      ids.toList.traverse(id => deleteDocument(id).attempt.map(_.isRight)).map(_.count(identity))
+    }
 
   def ingestWithPermissions(
     collectionPath: String,

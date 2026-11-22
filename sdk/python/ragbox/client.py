@@ -81,6 +81,8 @@ class QueryResult:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    query_id: Optional[str] = None
+    """The query-log id: pass it to :meth:`RagBoxClient.feedback` to rate the answer."""
 
 
 @dataclass
@@ -169,8 +171,11 @@ class RagBoxClient:
         result = client.query("What is PostgreSQL?")
         print(result.answer)
 
-        # Mark sync complete and prune orphaned documents
+        # Mark sync complete and prune this ingester's orphaned documents
         client.sync(keep_ids=[doc.id for doc in my_documents])
+
+    Give each ingester its own ``source`` (``RagBoxClient(..., source="confluence")``): every
+    upsert records it, and :meth:`sync` only prunes that source's documents.
     """
 
     def __init__(
@@ -179,6 +184,7 @@ class RagBoxClient:
         timeout: int = 30,
         api_key: Optional[str] = None,
         session: Optional[requests.Session] = None,
+        source: Optional[str] = None,
     ):
         """
         Initialize the RAG in a Box client.
@@ -191,8 +197,12 @@ class RagBoxClient:
                 (basic mode). Defaults to the ``RAGBOX_API_KEY`` environment variable; with
                 neither, requests are unauthenticated (open mode without ``API_KEY``).
             session: Optional ``requests.Session`` to use (e.g. for retries or proxies)
+            source: The sync source (ingester name) this client writes as. :meth:`upsert` records
+                it on every document and :meth:`sync` prunes only its documents. ``None`` uses
+                the server's default source, ``api``.
         """
         self.base_url = base_url.rstrip('/')
+        self.source = source
         self.timeout = timeout
         self._session = session or requests.Session()
 
@@ -337,6 +347,8 @@ class RagBoxClient:
             data["collection"] = doc.collection
         if doc.readable_by:
             data["readableBy"] = list(doc.readable_by)
+        if self.source:
+            data["source"] = self.source
 
         response = self._request(
             "PUT", f"/api/v1/documents/{quote(doc.id, safe='')}", json=data
@@ -498,8 +510,36 @@ class RagBoxClient:
             contexts=[_context(ctx) for ctx in result.get("contexts", [])],
             prompt_tokens=usage.get("promptTokens") if usage else None,
             completion_tokens=usage.get("completionTokens") if usage else None,
-            total_tokens=usage.get("totalTokens") if usage else None
+            total_tokens=usage.get("totalTokens") if usage else None,
+            query_id=result.get("queryId"),
         )
+
+    def feedback(
+        self,
+        query_id: str,
+        rating: int,
+        comment: Optional[str] = None,
+        relevant_chunks: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Rate a query's answer (``POST /api/v1/feedback``).
+
+        Args:
+            query_id: The :attr:`QueryResult.query_id` of the query. Only the caller who asked
+                it (or an administrator) may rate it; anyone else gets a 404 ``RagBoxError``.
+            rating: 1 to 5
+            comment: Optional free-text comment
+            relevant_chunks: Optional ids of the chunks that were relevant
+
+        Returns:
+            ``{"success", "message"}``
+        """
+        data: Dict[str, Any] = {"queryId": query_id, "rating": rating}
+        if comment is not None:
+            data["comment"] = comment
+        if relevant_chunks is not None:
+            data["relevantChunks"] = list(relevant_chunks)
+        return self._request("POST", "/api/v1/feedback", json=data).json()
 
     def search(
         self,
@@ -534,22 +574,38 @@ class RagBoxClient:
     # Sync Operations (administrators, or rat_ tokens with sync:read / sync:write)
     # ============================================================
 
-    def sync(self, keep_ids: Optional[Sequence[str]] = None, dry_run: bool = False) -> Dict[str, Any]:
+    def sync(
+        self,
+        keep_ids: Optional[Sequence[str]] = None,
+        dry_run: bool = False,
+        source: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Mark sync complete and optionally prune orphaned documents (``POST /api/v1/sync``).
 
+        Pruning is scoped to one sync source: only that source's documents not in ``keep_ids``
+        are deleted. Uploads and other sources' documents are never touched.
+
         Args:
-            keep_ids: If provided, documents not in this list will be deleted
+            keep_ids: If provided, the source's documents not in this list are deleted
             dry_run: With keep_ids, only report what would be deleted
+            source: The source to prune; defaults to the client's ``source`` (else ``api``)
+            scope: ``"all"`` prunes every document not in ``keep_ids``, whatever its source
+                (administrators only; not combined with a source)
 
         Returns:
-            ``{"message", "prunedCount", "prunedIds"? (dry run), "dryRun"}``
+            ``{"message", "prunedCount", "prunedIds"? (dry run), "dryRun", "scope", "source"}``
         """
         data = None
         if keep_ids is not None:
             data = {"keepDocumentIds": list(keep_ids)}
             if dry_run:
                 data["dryRun"] = True
+            if scope is not None:
+                data["scope"] = scope
+            if scope != "all" and (source or self.source):
+                data["source"] = source or self.source
 
         response = self._request("POST", "/api/v1/sync", json=data)
 

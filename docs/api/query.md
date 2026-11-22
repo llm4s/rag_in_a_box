@@ -116,9 +116,13 @@ curl -X POST http://localhost:8080/api/v1/query \
     "promptTokens": 450,
     "completionTokens": 120,
     "costUsd": 0.0023
-  }
+  },
+  "queryId": "5b0c2f4e-8a1d-4c7b-9e3f-0a1b2c3d4e5f"
 }
 ```
+
+`queryId` is the query's log id: pass it to [`POST /api/v1/feedback`](/api/analytics#feedback)
+to rate the answer (only you, or an administrator, may).
 
 `usage` is the answer completion's token usage. `metrics` comes from llm4s tracing: the
 query's embedding, search and answer-generation latencies, tokens over every completion it
@@ -143,7 +147,7 @@ events, each `data` a JSON object:
 | `context` | `{"context": <context item>, "index", "timestamp"}`, one per retrieved chunk |
 | `answer` | `{"answer", "timestamp"}`, the whole answer |
 | `usage` | `{"usage": {"promptTokens", "completionTokens", "totalTokens"}, "timestamp"}`, when known |
-| `complete` | `{"queryId", "totalContexts", "timestamp"}` |
+| `complete` | `{"queryId", "totalContexts", "timestamp"}`; `queryId` (as in `start`) is the query-log id for `POST /feedback` |
 | `error` | `{"error": "query_failed", "message", "timestamp"}`, instead of the events after `start` |
 
 ```

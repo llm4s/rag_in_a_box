@@ -672,7 +672,8 @@ paths:
       summary: Create or update a document with your own id (idempotent)
       description: |
         Auth: authenticated; access tokens need `documents:write` and access to the collection.
-        The document is re-indexed only if its content hash changed.
+        The document is re-indexed only if its content hash changed. It belongs to the sync
+        source `source` (default `api`), whose `POST /sync` may prune it.
       requestBody:
         required: true
         content:
@@ -751,8 +752,16 @@ paths:
       summary: Mark a sync complete and optionally prune
       description: |
         Auth: admin, or an access token with `sync:write`. Without a body, only records the sync
-        time. With `keepDocumentIds`, deletes every other document (a collection-restricted token
-        only prunes within its collections); `dryRun: true` reports what would be deleted.
+        time. With `keepDocumentIds`, prunes the documents **in scope** that are not listed:
+
+        - default (`scope: source`): only the documents of one sync source - `source`, or `api`
+          when absent, which is what `PUT /documents/{id}` records when it is given no `source`.
+          Uploads (`POST /documents`, `/documents/upload`), configured ingestion sources and other
+          sources' documents are never touched.
+        - `scope: all` (admin only; `403` otherwise): every document, whoever wrote it.
+
+        A collection-restricted token only prunes within its collections. `dryRun: true` reports
+        what would be deleted.
       requestBody:
         required: false
         content:
@@ -865,7 +874,8 @@ paths:
       description: |
         Auth: authenticated; access tokens need `query` and may only query their collections.
         Retrieval is filtered by the principal's collection permissions. While an experiment is
-        running, the query may be assigned to its variant configuration.
+        running, the query may be assigned to its variant configuration. The response's
+        `queryId` identifies the query log entry, for `POST /feedback`.
       requestBody:
         required: true
         content:
@@ -893,6 +903,7 @@ paths:
       description: |
         Auth: as `POST /api/v1/query`. Each SSE `data` is a JSON object whose `event` field is
         `start`, `context` (one per context), `answer`, `usage`, `complete` or `error`.
+        The `queryId` of `start` and `complete` is the query-log id `POST /feedback` takes.
       requestBody:
         required: true
         content:
@@ -942,7 +953,10 @@ paths:
     post:
       tags: [Analytics]
       summary: Rate a query's answer
-      description: "Auth: authenticated (access tokens need the `admin` scope)."
+      description: |
+        Auth: the user who asked the query, or an administrator (access tokens need `query`).
+        `queryId` is the `queryId` of the `POST /query` response, or of the query stream's
+        `start`/`complete` events. Rating someone else's query answers `404`, like an unknown id.
       requestBody:
         required: true
         content:
@@ -1369,6 +1383,7 @@ paths:
       - name: collection
         in: path
         required: true
+        description: Collection name; nested names may use raw or encoded slashes (see `CollectionPath`)
         schema:
           type: string
     get:
@@ -1441,11 +1456,12 @@ paths:
     post:
       tags: [Collections]
       summary: Which chunking configuration a file would get
-      description: "Auth: admin."
+      description: "Auth: authenticated (read-only; access tokens need the `admin` scope)."
       parameters:
         - name: collection
           in: path
           required: true
+          description: Collection name; nested names may use raw or encoded slashes (see `CollectionPath`)
           schema:
             type: string
       requestBody:
@@ -2683,9 +2699,11 @@ components:
       in: path
       required: true
       description: |
-        Collection path. `GET /api/v1/collections/{path}` accepts nested paths as is
-        (`/collections/eng/backend`); the other operations take one path segment, so encode
-        `/` as `%2F`.
+        Collection path. Nested paths may be written with raw or encoded slashes:
+        `/collections/eng/backend/stats` and `/collections/eng%2Fbackend/stats` are the same.
+        A trailing raw `permissions`, `stats`, `config` or `config/preview` segment is always
+        the sub-resource; to address a collection whose last level is one of those words,
+        encode the slash before it (`/collections/eng%2Fstats`).
       schema:
         type: string
     DocumentId:
@@ -2758,33 +2776,45 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     PayloadTooLarge:
-      description: Body larger than `MAX_BODY_SIZE_MB` (the limit is also in the `X-Max-Body-Size` header)
+      description: |
+        Body larger than `MAX_BODY_SIZE_MB`. An `ErrorResponse` with `error: payload_too_large`
+        and `details: "maxSizeBytes=<n>"`; the limit is also in the `X-Max-Body-Size` header.
+      headers:
+        X-Max-Body-Size:
+          description: The limit in bytes
+          schema:
+            type: integer
       content:
         application/json:
           schema:
-            type: object
-            properties:
-              error:
-                type: string
-              maxSizeBytes:
-                type: string
-              maxSizeMB:
-                type: string
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: payload_too_large
+            message: Request body too large (the limit is 10.0MB)
+            details: maxSizeBytes=10485760
     TooManyRequests:
-      description: Rate limited (see `Retry-After`)
+      description: |
+        Rate limited. An `ErrorResponse` with `error: rate_limited` and
+        `details: "limit=<n>; window=<seconds>s; retryAfter=<seconds>"`.
+      headers:
+        Retry-After:
+          description: Seconds until the window resets
+          schema:
+            type: integer
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
       content:
         application/json:
           schema:
-            type: object
-            properties:
-              error:
-                type: string
-              retryAfter:
-                type: string
-              limit:
-                type: string
-              window:
-                type: string
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: rate_limited
+            message: Rate limit exceeded
+            details: limit=100; window=60s; retryAfter=60
 
   schemas:
     ErrorResponse:
@@ -2793,7 +2823,7 @@ components:
       properties:
         error:
           type: string
-          description: Machine-readable code, e.g. `bad_request`, `validation_failed`, `configuration_error`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `unsupported_media_type`, `internal_error`
+          description: Machine-readable code, e.g. `bad_request`, `validation_failed`, `configuration_error`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `unsupported_media_type`, `payload_too_large`, `rate_limited`, `internal_error`
         message:
           type: string
         details:
@@ -3138,6 +3168,14 @@ components:
           type: array
           items:
             type: string
+        source:
+          type: string
+          default: api
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$'
+          description: |
+            The sync source (ingester) the document belongs to; `POST /sync` prunes one source's
+            documents at a time. Re-sending an unchanged document under another source moves it
+            there without re-indexing.
     DocumentUpsertResponse:
       type: object
       properties:
@@ -3216,10 +3254,20 @@ components:
       properties:
         keepDocumentIds:
           type: array
+          description: Documents to keep; the other documents in scope are deleted
           items:
             type: string
         dryRun:
           type: boolean
+        source:
+          type: string
+          default: api
+          description: "With `scope: source`, whose documents are pruned"
+        scope:
+          type: string
+          enum: [source, all]
+          default: source
+          description: "`all` prunes every document, whatever its source (admin only; not with `source`)"
     SyncPruneResponse:
       type: object
       properties:
@@ -3234,6 +3282,13 @@ components:
             type: string
         dryRun:
           type: boolean
+        scope:
+          type: string
+          enum: [source, all]
+          description: What was pruned (absent when only the sync time was recorded)
+        source:
+          type: string
+          description: "The source pruned, for `scope: source`"
     DocumentSyncState:
       type: object
       properties:
@@ -3360,6 +3415,9 @@ components:
             $ref: '#/components/schemas/ContextItem'
         usage:
           $ref: '#/components/schemas/UsageInfo'
+        queryId:
+          type: string
+          description: The query-log id; pass it to `POST /feedback` to rate this answer
         metrics:
           type: object
           properties:
@@ -4291,6 +4349,7 @@ components:
       properties:
         queryId:
           type: string
+          description: The `queryId` of a `POST /query` response or query stream
         rating:
           type: integer
           minimum: 1
