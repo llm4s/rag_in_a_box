@@ -120,7 +120,10 @@ GET /api/v1/stats
 
 ## Update Configuration
 
-Runtime configuration updates are not supported. Configuration must be changed via environment variables and requires a restart.
+`PUT /api/v1/config` does not change settings. Use `PUT /api/v1/config/runtime` for the
+settings that can change at runtime (topK, fusion, system prompt, temperature, chunking) - see
+[Runtime Settings](../guide/configuration.md#runtime-settings); everything else is set through
+environment variables and needs a restart.
 
 ```
 PUT /api/v1/config
