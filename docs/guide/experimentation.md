@@ -12,7 +12,7 @@ A/B test different RAG configurations to find optimal settings for your use case
 
 ## Overview
 
-The Experimentation Framework enables you to compare different RAG configurations without requiring full corpus re-indexing for every test. Create experiments to test different parameter combinations and analyze results with statistical significance calculations.
+The Experimentation Framework enables you to compare different RAG configurations without requiring full corpus re-indexing for every test. Create experiments to test different parameter combinations and compare the groups with two-sample significance tests.
 
 Key capabilities:
 
@@ -29,7 +29,7 @@ Parameters are categorized by how quickly changes can take effect:
 
 | Temperature | Parameters | Re-indexing? | Test Method |
 |-------------|-----------|--------------|-------------|
-| **Hot** | topK, fusionStrategy, systemPrompt, llmTemperature | No | Per-query override, instant |
+| **Hot** | topK, fusionStrategy, rrfK, systemPrompt, reranking | No | Per-query override, instant |
 | **Warm** | chunkStrategy, chunkSize, overlap | Preview only | Offline comparison (sample docs) |
 | **Cold** | embeddingModel, vectorDimensions | Yes | Requires re-indexing |
 
@@ -41,8 +41,20 @@ These can be changed per-query with immediate effect:
 |-----------|-------------|---------------|
 | `topK` | Number of chunks to retrieve | 3-20 |
 | `fusionStrategy` | How to combine search results | rrf, weighted, vector_only, keyword_only |
+| `rrfK` | RRF constant (with `rrf` fusion) | 1-1000 |
 | `systemPrompt` | Instructions for the LLM | Custom text |
-| `llmTemperature` | LLM response randomness | 0.0-1.0 |
+| `reranking` | Rerank candidates before top-k | none, cohere, llm |
+
+An experiment group runs with **all** of its settings: topK is passed with each query, and the
+others select an llm4s pipeline built for (and cached by) the group's settings, so a prompt or
+fusion experiment really compares two pipelines. In permission mode llm4s search is vector-only,
+so fusion, rrfK and reranking have no effect there
+([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/issues/2716)).
+
+**Temperature is not testable on `/query` yet.** llm4s 0.6.0 `RAG.queryWithAnswer` answers at
+temperature 0.0 ([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715), fixed upstream
+for the next release). An `llmTemperature` in a group's config is stored but not applied, and the
+logged config snapshot records no temperature.
 
 ### Warm Parameters
 
@@ -113,10 +125,14 @@ Response:
 |-------|------|-------------|
 | `topK` | int | Number of chunks to retrieve |
 | `fusionStrategy` | string | Search fusion strategy |
+| `rrfK` | int | RRF constant |
 | `systemPrompt` | string | LLM system prompt |
-| `llmTemperature` | double | LLM temperature setting |
-| `chunkSize` | int | Target chunk size (for reference) |
-| `chunkOverlap` | int | Chunk overlap (for reference) |
+| `reranking` | string | `none`, `cohere` (needs `COHERE_API_KEY`) or `llm` |
+| `llmTemperature` | double | Stored, not applied to `/query` in llm4s 0.6.0 (see above) |
+
+A setting a group leaves out is the runtime setting. Creating an experiment validates it (400
+Bad Request otherwise): a name of 1-255 characters, `trafficSplit` between 0 and 1, and valid
+values for each setting.
 
 ### Start an Experiment
 
@@ -128,6 +144,10 @@ curl -X PUT http://localhost:8080/api/v1/experiments/{id}/start \
 ```
 
 **Important**: Only one experiment can be running at a time. Starting a new experiment will fail if another is already running.
+
+Operations answer **404 Not Found** for an unknown experiment and **409 Conflict** when its status
+does not allow them (starting one that is not a draft, stopping one that is not running,
+archiving a running one, deleting one that is not a draft, or starting while another runs).
 
 ### Stop an Experiment
 
@@ -200,8 +220,12 @@ All queries during an experiment are tagged with:
 | `experimentId` | ID of the experiment |
 | `variant` | "baseline" or "variant" |
 | `configSnapshot` | Exact configuration used |
+| `failed` | Whether the query failed (with `errorMessage`) |
 
-This data is stored in `query_logs` and used for results analysis.
+This data is stored in `query_logs` (`experiment_id` and `variant` are separate columns; rows
+from earlier versions, which stored `<experiment>:<group>` in `experiment_id`, are split at
+startup) and used for results analysis. Failed queries are logged too, so each group's error
+rate is part of the results; analytics summaries leave them out.
 
 ---
 
@@ -218,7 +242,7 @@ curl -X POST http://localhost:8080/api/v1/query \
     "overrides": {
       "topK": 10,
       "fusionStrategy": "weighted",
-      "llmTemperature": 0.2
+      "systemPrompt": "Answer in one sentence."
     }
   }'
 ```
@@ -229,7 +253,9 @@ Manual overrides are useful for:
 - Debugging specific queries
 - Exploring parameter effects
 
-The query is logged with your custom `experimentId` and the override configuration.
+The overrides are applied (topK, fusionStrategy and systemPrompt; `llmTemperature` is not, see
+above), and the query is logged with your custom `experimentId` and the configuration it ran with.
+A running experiment's group config takes precedence over request overrides.
 
 ---
 
@@ -251,28 +277,34 @@ Response:
   "experimentId": "exp-abc123",
   "experimentName": "Test higher topK",
   "status": "completed",
-  "duration": "3 days 2 hours",
+  "duration": "3 days",
   "baseline": {
-    "queryCount": 150,
-    "avgLatencyMs": 320.5,
-    "avgRating": 3.8,
-    "avgChunksRetrieved": 5.0,
-    "avgChunksUsed": 4.2
+    "queryCount": 150, "failedCount": 3, "errorRate": 0.02,
+    "avgLatencyMs": 320.5, "latencyStdDevMs": 80.1,
+    "avgRating": 3.8, "ratingStdDev": 0.9, "ratedCount": 60, "positiveCount": 31,
+    "avgChunksRetrieved": 5.0, "avgChunksUsed": 5.0
   },
   "variant": {
-    "queryCount": 148,
-    "avgLatencyMs": 285.3,
-    "avgRating": 4.1,
-    "avgChunksRetrieved": 10.0,
-    "avgChunksUsed": 3.8
+    "queryCount": 148, "failedCount": 2, "errorRate": 0.0135,
+    "avgLatencyMs": 285.3, "latencyStdDevMs": 75.4,
+    "avgRating": 4.1, "ratingStdDev": 0.8, "ratedCount": 58, "positiveCount": 41,
+    "avgChunksRetrieved": 10.0, "avgChunksUsed": 10.0
   },
   "analysis": {
-    "latencyChange": "-10.9%",
+    "latencyChange": "-11.0%",
     "ratingChange": "+7.9%",
-    "chunksRetrievedChange": "+100.0%",
-    "chunksUsedChange": "-9.5%",
-    "statisticalSignificance": 0.92,
-    "recommendation": "Variant shows improved ratings with slightly lower latency. Consider adopting variant configuration."
+    "chunksUsedChange": "+100.0%",
+    "errorRateChange": "-32.4%",
+    "tests": [
+      { "metric": "latencyMs", "test": "welch-t", "baseline": 320.5, "variant": 285.3,
+        "statistic": -3.86, "pValue": 0.00014, "significant": true },
+      { "metric": "rating", "test": "welch-t", "baseline": 3.8, "variant": 4.1,
+        "statistic": 1.92, "pValue": 0.058, "significant": false },
+      { "metric": "errorRate", "test": "two-proportion-z", "baseline": 0.02, "variant": 0.0135,
+        "statistic": -0.43, "pValue": 0.66, "significant": false },
+      { "metric": "positiveRate", "test": "two-proportion-z", "baseline": 0.517, "variant": 0.707,
+        "statistic": 2.10, "pValue": 0.036, "significant": true }
+    ]
   }
 }
 ```
@@ -281,22 +313,32 @@ Response:
 
 | Metric | Description | Good Direction |
 |--------|-------------|----------------|
-| `avgLatencyMs` | Average query response time | Lower is better |
+| `queryCount` | Queries routed to the group, failed ones included | - |
+| `errorRate` | Share of the group's queries that failed | Lower is better |
+| `avgLatencyMs` | Average response time of the successful queries | Lower is better |
 | `avgRating` | Average user rating (1-5) | Higher is better |
+| `positiveCount` | Ratings of 4 or 5 | Higher is better |
 | `avgChunksRetrieved` | Chunks returned from search | Depends on use case |
-| `avgChunksUsed` | Chunks actually used in answer | Higher utilization is better |
+| `avgChunksUsed` | Chunks sent to the LLM (llm4s sends every retrieved chunk) | Depends on use case |
 
-### Statistical Significance
+### Significance Tests
 
-The `statisticalSignificance` field indicates confidence in the results:
+`analysis.tests` holds a two-sample test for each metric that has enough data:
 
-| Value | Interpretation |
-|-------|----------------|
-| > 0.95 | High confidence - results are likely real |
-| 0.80-0.95 | Moderate confidence - consider more data |
-| < 0.80 | Low confidence - need more queries |
+| Metric | Test | Needs |
+|--------|------|-------|
+| `latencyMs` | Welch's unequal-variances t-test | 2+ successful queries per group, some variance |
+| `rating` | Welch's unequal-variances t-test | 2+ ratings per group, some variance |
+| `errorRate` | Two-proportion z-test (pooled, no continuity correction) | a query per group, both outcomes seen |
+| `positiveRate` | Two-proportion z-test of the share of 4-5 ratings | a rating per group, both outcomes seen |
 
-Significance is calculated based on sample sizes and variance. Larger samples yield higher confidence.
+`pValue` is the two-sided p-value: the probability of a difference at least this large if the
+two configurations performed the same. `significant` is `pValue < 0.05`. A non-significant result
+does not show the groups are the same - it may only mean there is not enough data yet. Checking
+results repeatedly and stopping at the first significant one inflates false positives, so decide
+the sample size up front.
+
+Earlier versions returned a `statisticalSignificance` number that was not a p-value; it is gone.
 
 ---
 
@@ -461,20 +503,22 @@ curl -X POST http://localhost:8080/api/v1/experiments \
   }'
 ```
 
-### Experiment 4: Temperature Tuning
+### Experiment 4: Reranking
 
-Test LLM creativity levels:
+Test whether LLM reranking improves answers enough to pay for its latency:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/experiments \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "LLM temperature comparison",
-    "baselineConfig": { "llmTemperature": 0.1 },
-    "variantConfig": { "llmTemperature": 0.3 },
+    "name": "LLM reranking",
+    "baselineConfig": { "reranking": "none" },
+    "variantConfig": { "reranking": "llm" },
     "trafficSplit": 0.5
   }'
 ```
+
+(Temperature experiments wait for the llm4s release with llm4s/llm4s#2715.)
 
 ---
 
@@ -536,9 +580,9 @@ curl http://localhost:8080/api/v1/experiments/running
 curl -X PUT http://localhost:8080/api/v1/experiments/{id}/stop
 ```
 
-### Low Statistical Significance
+### No Significant Difference
 
-If significance is below 0.80:
+If the tests are not significant (`pValue` of 0.05 or more):
 
 1. Let the experiment run longer to gather more data
 2. Increase traffic split to variant (if safe)
