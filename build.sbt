@@ -62,6 +62,10 @@ lazy val root = (project in file("."))
       // Database connection pooling
       "com.zaxxer" % "HikariCP" % "5.1.0",
 
+      // Schema migrations (src/main/resources/db/migration), applied at startup
+      "org.flywaydb" % "flyway-core" % "13.12.2",
+      "org.flywaydb" % "flyway-database-postgresql" % "13.12.2",
+
       // OAuth2/OIDC - JWT validation and JWKS
       "com.auth0" % "java-jwt" % "4.4.0",
       "com.auth0" % "jwks-rsa" % "0.22.1",

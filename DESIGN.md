@@ -510,7 +510,7 @@ rag-in-a-box/
 │   └── postgres/
 │
 └── scripts/
-    ├── init-db.sql              # Database initialization
+    ├── init-db.sql              # Creates the pgvector extension (schema: db/migration)
     └── dev.sh                   # Development helper scripts
 ```
 

@@ -46,44 +46,6 @@ class RuntimeConfigManager private (
   override def current: RuntimeConfig = currentConfig.get()
 
   /**
-   * Create the tables and apply the stored runtime settings over the configuration file's.
-   */
-  def initialize(): IO[Unit] = createTables() *> loadStored()
-
-  private def createTables(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS config_history (
-          |    id SERIAL PRIMARY KEY,
-          |    field TEXT NOT NULL,
-          |    old_value TEXT,
-          |    new_value TEXT,
-          |    changed_at TIMESTAMPTZ DEFAULT NOW(),
-          |    changed_by TEXT
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_config_history_field
-          |    ON config_history(field)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_config_history_changed_at
-          |    ON config_history(changed_at DESC)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS runtime_config (
-          |    field TEXT PRIMARY KEY,
-          |    value TEXT NOT NULL,
-          |    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          |)""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
-  /**
    * Apply the stored runtime settings. A stored value that no longer parses or validates (the
    * valid range changed, say) is skipped with a warning, and the configuration file's value is used.
    */
@@ -544,7 +506,7 @@ object RuntimeConfigManager {
   }
 
   /**
-   * Create and initialize a RuntimeConfigManager over the shared connection pool: the stored
+   * Create a RuntimeConfigManager over the shared (migrated) connection pool: the stored
    * runtime settings are applied over `config`'s.
    *
    * @param permissionMode whether the service runs with a permission `SearchIndex`, where fusion
@@ -554,6 +516,6 @@ object RuntimeConfigManager {
     for {
       lock <- Mutex[IO]
       manager = new RuntimeConfigManager(config, dataSource, lock, permissionMode)
-      _ <- manager.initialize()
+      _ <- manager.loadStored()
     } yield manager
 }

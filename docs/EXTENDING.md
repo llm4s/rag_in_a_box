@@ -313,11 +313,12 @@ When upgrading from a base RAG in a Box version:
 
 2. **Check for breaking changes** in CHANGELOG.md
 
-3. **Update database schema** if needed:
-   ```sql
-   -- Run any migration scripts
-   ALTER TABLE document_registry ADD COLUMN new_field TEXT;
-   ```
+3. **Database schema**: upstream migrations are applied automatically at startup (Flyway,
+   `src/main/resources/db/migration`). Put your own schema changes in migrations too and never
+   edit a migration that has been applied anywhere. Flyway refuses to start when a migration
+   with a lower version than the database's appears later, so if your fork adds migrations,
+   upstream's new ones must keep higher versions than yours when you merge. See CONTRIBUTING.md,
+   "Database migrations".
 
 4. **Test your extensions** against the new version
 

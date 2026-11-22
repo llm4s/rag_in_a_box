@@ -19,11 +19,6 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
   private val feedback: mutable.Map[String, (Int, Option[Seq[String]], Option[String])] = mutable.Map.empty
 
   /**
-   * Initialize the registry (no-op for in-memory).
-   */
-  override def initialize(): IO[Unit] = IO.unit
-
-  /**
    * Log a query execution.
    */
   override def logQuery(
@@ -124,7 +119,7 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
     }
 
     val total = filtered.size
-    val sorted = filtered.sortBy(_.createdAt)(Ordering[Instant].reverse)
+    val sorted = filtered.sortBy(_.createdAt)(using Ordering[Instant].reverse)
     val offset = (page - 1) * pageSize
     val paginated = sorted.slice(offset, offset + pageSize)
 

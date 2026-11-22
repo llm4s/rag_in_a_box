@@ -96,7 +96,7 @@ object SessionRegistry:
       case OAuthSessionStorage.Memory => InMemorySessionRegistry.create.widen
       case OAuthSessionStorage.Postgres =>
         pool match
-          case Some(ds) => PgSessionRegistry.initializeTables(ds) *> PgSessionRegistry.create(ds).widen
+          case Some(ds) => PgSessionRegistry.create(ds).widen
           case None =>
             IO.raiseError(
               OidcError.ConfigurationError("OAUTH_SESSION_STORAGE=postgres requires a database connection pool")

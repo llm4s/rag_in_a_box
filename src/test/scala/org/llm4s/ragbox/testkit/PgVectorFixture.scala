@@ -7,7 +7,9 @@ import org.llm4s.rag.permissions.pg.PgSearchIndex
 import com.zaxxer.hikari.HikariDataSource
 import org.llm4s.ragbox.config.{ApiKeysConfig, AppConfig, DatabaseConfig, EmbeddingConfig, RuntimeConfigManager}
 import org.llm4s.ragbox.registry.PgCollectionConfigRegistry
-import org.llm4s.ragbox.db.ConnectionPool
+import org.llm4s.ragbox.db.{ConnectionPool, Migrations}
+import cats.effect.unsafe.implicits.global
+import org.postgresql.ds.PGSimpleDataSource
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.security.Secret
@@ -17,6 +19,7 @@ import org.testcontainers.containers.wait.strategy.Wait
 import java.sql.{Connection, DriverManager}
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
+import javax.sql.DataSource
 import scala.util.Using
 
 /**
@@ -56,8 +59,12 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
 
   private val databaseCounter = new AtomicInteger(0)
 
-  /** Create an empty database in the container and return a config pointing at it. */
-  def freshDatabase(container: GenericContainer, tableName: String = "vectors"): DatabaseConfig = {
+  /**
+   * Create a database in the container and return a config pointing at it. The database has
+   * ragbox's schema, applied by the real Flyway migrations as `Main` applies them at startup,
+   * unless `migrate` is false (an empty database, for migration tests).
+   */
+  def freshDatabase(container: GenericContainer, tableName: String = "vectors", migrate: Boolean = true): DatabaseConfig = {
     val host = container.container.getHost
     val port = container.container.getMappedPort(5432).intValue
     val name = s"test_${databaseCounter.incrementAndGet()}"
@@ -67,7 +74,7 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     Using.resource(DriverManager.getConnection(s"jdbc:postgresql://$host:$port/postgres", User, Password)) { conn =>
       Using.resource(conn.createStatement())(_.execute(s"CREATE DATABASE $name"))
     }
-    DatabaseConfig(
+    val db = DatabaseConfig(
       host = host,
       port = port,
       database = name,
@@ -76,6 +83,17 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
       tableName = tableName,
       url = None
     )
+    if (migrate) Migrations.migrate(dataSource(db)).unsafeRunSync()
+    db
+  }
+
+  /** A plain (unpooled) data source over `db`, e.g. for running migrations. */
+  def dataSource(db: DatabaseConfig): DataSource = {
+    val ds = new PGSimpleDataSource()
+    ds.setURL(db.connectionString)
+    ds.setUser(User)
+    ds.setPassword(Password)
+    ds
   }
 
   /** Open a JDBC connection to `db`, for assertions on what is actually stored. */

@@ -33,7 +33,6 @@ class AuthRoutesSpec extends AnyFlatSpec with Matchers {
     private var users = Map[String, User]()
     private var nextId = 1
 
-    override def initialize() = IO.unit
 
     override def exists(username: String) = IO.pure(users.contains(username))
 

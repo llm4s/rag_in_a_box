@@ -34,7 +34,6 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
     private var users = Map[String, User]()
     private var nextId = 1
 
-    override def initialize() = IO.unit
     override def exists(username: String) = IO.pure(users.contains(username))
     override def create(username: String, passwordHash: String, role: UserRole) = IO {
       val user = User(nextId, username, passwordHash, role, Instant.now())
@@ -54,7 +53,6 @@ class TokenRoutesSpec extends AnyFlatSpec with Matchers {
   private class InMemoryTokenRegistry extends AccessTokenRegistry(null) {
     private var tokens = Map[String, (AccessToken, String)]()  // id -> (token, fullToken)
 
-    override def initialize() = IO.unit
 
     override def create(
       name: String,

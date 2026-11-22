@@ -43,56 +43,6 @@ class ExperimentRegistry(dataSource: DataSource) {
   import ExperimentRegistry._
 
   /**
-   * Initialize the registry and ensure tables and indexes exist.
-   *
-   * The single-running-experiment index is created only if no two experiments are running
-   * already (possible in data written before it existed); otherwise the oldest-started running
-   * experiments beyond the most recent one are marked completed first.
-   */
-  def initialize(): IO[Unit] = ConnectionPool.withTransaction(dataSource) { conn =>
-    val stmt = conn.createStatement()
-    try {
-      stmt.execute("SELECT pg_advisory_xact_lock(hashtext('ragbox.experiments.schema'))")
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS experiments (
-          |    id VARCHAR(64) PRIMARY KEY,
-          |    name VARCHAR(255) NOT NULL,
-          |    description TEXT,
-          |    status VARCHAR(32) NOT NULL DEFAULT 'draft',
-          |    baseline_config JSONB NOT NULL,
-          |    variant_config JSONB NOT NULL,
-          |    traffic_split DOUBLE PRECISION NOT NULL DEFAULT 0.5,
-          |    collection VARCHAR(255),
-          |    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          |    started_at TIMESTAMPTZ,
-          |    ended_at TIMESTAMPTZ
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_experiments_status
-          |    ON experiments(status)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_experiments_created_at
-          |    ON experiments(created_at)""".stripMargin
-      )
-      // Pre-existing data may have several running experiments; keep the latest one running
-      stmt.execute(
-        """UPDATE experiments SET status = 'completed', ended_at = NOW()
-          |WHERE status = 'running'
-          |  AND id <> (SELECT id FROM experiments WHERE status = 'running'
-          |             ORDER BY started_at DESC NULLS LAST, id LIMIT 1)""".stripMargin
-      )
-      stmt.execute(
-        s"""CREATE UNIQUE INDEX IF NOT EXISTS $SingleRunningIndex
-           |    ON experiments ((status)) WHERE status = 'running'""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
-  /**
    * Create a new experiment.
    */
   def create(request: CreateExperimentRequest): IO[Experiment] = ConnectionPool.withConnection(dataSource) { conn =>
@@ -332,17 +282,12 @@ object ExperimentRegistry {
   val DefaultListLimit: Int = 100
   val MaxListLimit: Int = 1000
 
-  private val SingleRunningIndex = "uq_experiments_single_running"
-
   private val Columns =
     """id, name, description, status, baseline_config, variant_config,
       |traffic_split, collection, created_at, started_at, ended_at""".stripMargin
 
   /**
-   * Create and initialize an experiment registry backed by a connection pool.
+   * An experiment registry over the connection pool. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[ExperimentRegistry] = {
-    val registry = new ExperimentRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[ExperimentRegistry] = IO.pure(new ExperimentRegistry(dataSource))
 }

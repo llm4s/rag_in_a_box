@@ -145,21 +145,6 @@ class ExperimentIntegrationSpec extends AnyFlatSpec with Matchers with PgVectorF
     results.analysis.tests.find(_.metric == "positiveRate").map(_.variant) shouldBe Some(1.0)
   }
 
-  "query_logs" should "split ids packed as '<experiment>:<group>' into their own columns, once" in withContainers { pg =>
-    val db = freshDatabase(pg)
-    val rows = run(pool(db).use { ds =>
-      for {
-        logs <- QueryLogRegistry(ds)
-        _ <- logs.logQuery("old", None, None, None, None, None, 10, 1, 1, None, experimentId = Some("exp-1:variant"))
-        _ <- logs.logQuery("new", None, None, None, None, None, 10, 1, 1, None, experimentId = Some("exp-2"), variant = Some("baseline"))
-        // Columns added, data migrated; running it again changes nothing
-        _ <- logs.initialize() *> logs.initialize()
-        listed <- logs.list(None, None, None)
-      } yield listed._1.map(e => (e.queryText, e.experimentId, e.variant)).sortBy(_._1)
-    })
-    rows shouldBe Seq(("new", Some("exp-2"), Some("baseline")), ("old", Some("exp-1"), Some("variant")))
-  }
-
   "The experiment API" should "answer 404 for unknown experiments, 409 for invalid transitions and 400 for invalid definitions" in withContainers { pg =>
     val db = freshDatabase(pg)
     val statuses = run(stack(db, None).use { s =>

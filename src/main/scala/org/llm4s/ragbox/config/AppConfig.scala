@@ -160,7 +160,8 @@ final case class DatabaseConfig(
   password: Secret,
   tableName: String,
   url: Option[String],
-  poolSize: Int = DatabaseConfig.DefaultPoolSize
+  poolSize: Int = DatabaseConfig.DefaultPoolSize,
+  migrateOnStart: Boolean = true
 ) {
   /**
    * DATABASE_URL parsed once. None when no (non-blank) URL is configured;
@@ -648,7 +649,8 @@ object AppConfig {
         password = Secret(config.getString("database.password")),
         tableName = config.getString("database.table-name"),
         url = getOptionalString(config, "database.url"),
-        poolSize = getOptionalInt(config, "database.pool-size").getOrElse(DatabaseConfig.DefaultPoolSize)
+        poolSize = getOptionalInt(config, "database.pool-size").getOrElse(DatabaseConfig.DefaultPoolSize),
+        migrateOnStart = !config.hasPath("database.migrate-on-start") || config.getBoolean("database.migrate-on-start")
       ),
       embedding = EmbeddingConfig(
         provider = config.getString("embedding.provider"),

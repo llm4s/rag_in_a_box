@@ -42,30 +42,6 @@ final case class User(
 class UserRegistry(dataSource: DataSource) {
 
   /**
-   * Initialize the registry and ensure tables exist.
-   */
-  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS users (
-          |    id SERIAL PRIMARY KEY,
-          |    username TEXT UNIQUE NOT NULL,
-          |    password_hash TEXT NOT NULL,
-          |    role TEXT NOT NULL DEFAULT 'user',
-          |    created_at TIMESTAMPTZ DEFAULT NOW()
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_users_username
-          |    ON users(username)""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
-  /**
    * Create a new user.
    */
   def create(username: String, passwordHash: String, role: UserRole): IO[User] = ConnectionPool.withConnection(dataSource) { connection =>
@@ -226,10 +202,7 @@ class UserRegistry(dataSource: DataSource) {
 object UserRegistry {
 
   /**
-   * Create and initialize a user registry.
+   * A user registry. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[UserRegistry] = {
-    val registry = new UserRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[UserRegistry] = IO.pure(new UserRegistry(dataSource))
 }

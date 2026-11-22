@@ -16,51 +16,6 @@ import javax.sql.DataSource
  */
 class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 
-  override def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS chunk_registry (
-          |    id SERIAL PRIMARY KEY,
-          |    document_id TEXT NOT NULL,
-          |    chunk_index INTEGER NOT NULL,
-          |    content TEXT NOT NULL,
-          |    content_length INTEGER NOT NULL,
-          |    metadata JSONB DEFAULT '{}',
-          |    headings TEXT[] DEFAULT '{}',
-          |    is_code_block BOOLEAN DEFAULT FALSE,
-          |    language TEXT,
-          |    start_offset INTEGER,
-          |    end_offset INTEGER,
-          |    collection TEXT,
-          |    created_at TIMESTAMPTZ DEFAULT NOW(),
-          |    UNIQUE(document_id, chunk_index)
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chunk_registry_document
-          |    ON chunk_registry(document_id)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chunk_registry_collection
-          |    ON chunk_registry(collection)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chunk_registry_length
-          |    ON chunk_registry(content_length)""".stripMargin
-      )
-      // The id llm4s indexed the chunk under (`<doc>-chunk-<n>`, or `coll-<id>-<doc>-chunk-<n>`
-      // in permission mode), so a chunk can be matched with a search result. Rows written before
-      // it existed have none and show their serial id.
-      stmt.execute("ALTER TABLE chunk_registry ADD COLUMN IF NOT EXISTS chunk_id TEXT")
-      // Chunks without a collection used to be stored with collection '' rather than NULL, so the
-      // default-collection statistics (`collection IS NULL`) missed them
-      stmt.execute("UPDATE chunk_registry SET collection = NULL WHERE collection = ''")
-    } finally {
-      stmt.close()
-    }
-  }
-
   /**
    * Replace a document's chunks atomically: the delete and the inserts run in one transaction,
    * so a failure part-way leaves the previous chunks in place. A transaction-scoped advisory
@@ -413,10 +368,7 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 object PgChunkStore {
 
   /**
-   * Create and initialize a PostgreSQL chunk store.
+   * A PostgreSQL chunk store. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[PgChunkStore] = {
-    val store = new PgChunkStore(dataSource)
-    store.initialize().as(store)
-  }
+  def apply(dataSource: DataSource): IO[PgChunkStore] = IO.pure(new PgChunkStore(dataSource))
 }

@@ -5,7 +5,7 @@ import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import com.zaxxer.hikari.HikariDataSource
 import org.llm4s.ragbox.config.{DatabaseConfig, RuntimeConfigManager}
-import org.llm4s.ragbox.db.ConnectionPool
+import org.llm4s.ragbox.db.{ConnectionPool, Migrations}
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry._
 import org.llm4s.ragbox.service.{ExperimentService, RAGService}
@@ -205,8 +205,8 @@ class PersistenceSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     })
   }
 
-  "ChatSessionRegistry.initialize" should "renumber duplicate message indexes left by older versions and add the constraint" in withContainers { pg =>
-    val db = freshDatabase(pg)
+  "The migrations" should "renumber duplicate message indexes left by older versions and add the constraint" in withContainers { pg =>
+    val db = freshDatabase(pg, migrate = false)
     run(pool(db).use { ds =>
       for {
         // An older schema without the constraint, holding the duplicates the old race produced
@@ -216,6 +216,7 @@ class PersistenceSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
           execute(db, "INSERT INTO chat_sessions (id, message_count) VALUES ('chat-1a2b3c4d', 3)")
           execute(db, "INSERT INTO chat_messages (id, session_id, role, content, message_index, created_at) VALUES ('msg-00000001', 'chat-1a2b3c4d', 'user', 'a', 0, NOW() - INTERVAL '3 seconds'), ('msg-00000002', 'chat-1a2b3c4d', 'assistant', 'b', 1, NOW() - INTERVAL '2 seconds'), ('msg-00000003', 'chat-1a2b3c4d', 'user', 'c', 1, NOW() - INTERVAL '1 second')")
         }
+        _ <- Migrations.migrate(ds)
         chats <- ChatSessionRegistry(ds)
         // Old short ids are still found
         session <- chats.getSession("chat-1a2b3c4d")
@@ -293,7 +294,10 @@ class PersistenceSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
           execute(db, "DROP INDEX uq_experiments_single_running")
           execute(db, s"UPDATE experiments SET status = 'running', started_at = NOW() - INTERVAL '1 hour' WHERE id = '${a.id}'")
           execute(db, s"UPDATE experiments SET status = 'running', started_at = NOW() WHERE id = '${b.id}'")
+          // ...as a database created before Flyway, which the migrations adopt and upgrade
+          execute(db, "DROP TABLE flyway_schema_history")
         }
+        _ <- Migrations.migrate(ds)
         second <- ExperimentRegistry(ds)
         running <- second.getRunning()
         aNow <- second.get(a.id)

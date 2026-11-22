@@ -29,91 +29,6 @@ final case class ChatSessionNotFoundError(sessionId: String)
 class ChatSessionRegistry(dataSource: DataSource) {
   import ChatSessionRegistry._
 
-  /**
-   * Initialize the registry and ensure tables, indexes and constraints exist.
-   *
-   * Runs in one transaction under an advisory lock, so instances starting together do not race
-   * on the DDL. Adds `UNIQUE(session_id, message_index)` if missing; sessions whose messages got
-   * duplicate indexes from the old read-count-then-insert race are renumbered first (in their
-   * existing order), so the constraint can be added.
-   */
-  def initialize(): IO[Unit] = ConnectionPool.withTransaction(dataSource) { conn =>
-    val stmt = conn.createStatement()
-    try {
-      stmt.execute("SELECT pg_advisory_xact_lock(hashtext('ragbox.chat_sessions.schema'))")
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS chat_sessions (
-          |    id VARCHAR(64) PRIMARY KEY,
-          |    title VARCHAR(255),
-          |    collection_pattern VARCHAR(255) DEFAULT '*',
-          |    message_count INTEGER NOT NULL DEFAULT 0,
-          |    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          |    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          |    is_archived BOOLEAN NOT NULL DEFAULT FALSE
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated_at
-          |    ON chat_sessions(updated_at DESC)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chat_sessions_archived
-          |    ON chat_sessions(is_archived)""".stripMargin
-      )
-      // Session owner (the authenticated principal's id). Sessions created before owners
-      // existed keep NULL and are visible to administrators only.
-      stmt.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS owner_id VARCHAR(255)")
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner
-          |    ON chat_sessions(owner_id, updated_at DESC)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS chat_messages (
-          |    id VARCHAR(64) PRIMARY KEY,
-          |    session_id VARCHAR(64) NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-          |    role VARCHAR(16) NOT NULL,
-          |    content TEXT NOT NULL,
-          |    contexts JSONB,
-          |    usage_info JSONB,
-          |    rating INTEGER,
-          |    query_log_id VARCHAR(64),
-          |    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          |    message_index INTEGER NOT NULL
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id
-          |    ON chat_messages(session_id, message_index)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_chat_messages_query_log_id
-          |    ON chat_messages(query_log_id)""".stripMargin
-      )
-      stmt.execute(
-        s"""DO $$$$
-           |BEGIN
-           |    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '$MessageIndexConstraint') THEN
-           |        -- Renumber sessions that have duplicate indexes, keeping their current order
-           |        UPDATE chat_messages m SET message_index = r.rn - 1
-           |        FROM (
-           |            SELECT id, ROW_NUMBER() OVER (
-           |                       PARTITION BY session_id ORDER BY message_index, created_at, id) AS rn
-           |            FROM chat_messages
-           |            WHERE session_id IN (
-           |                SELECT session_id FROM chat_messages
-           |                GROUP BY session_id, message_index HAVING COUNT(*) > 1)
-           |        ) r
-           |        WHERE m.id = r.id AND m.message_index <> r.rn - 1;
-           |        ALTER TABLE chat_messages
-           |            ADD CONSTRAINT $MessageIndexConstraint UNIQUE (session_id, message_index);
-           |    END IF;
-           |END $$$$""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
   // ============================================================
   // Session Operations
   // ============================================================
@@ -491,8 +406,6 @@ object ChatSessionRegistry {
   val DefaultMessageLimit: Int = 1000
   val MaxMessageLimit: Int = 1000
 
-  private val MessageIndexConstraint = "uq_chat_messages_session_index"
-
   private val SessionColumns =
     "id, title, collection_pattern, message_count, created_at, updated_at, is_archived, owner_id"
 
@@ -500,10 +413,7 @@ object ChatSessionRegistry {
     "id, session_id, role, content, contexts, usage_info, rating, query_log_id, created_at, message_index"
 
   /**
-   * Create and initialize a chat session registry backed by a connection pool.
+   * A chat session registry over the connection pool. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[ChatSessionRegistry] = {
-    val registry = new ChatSessionRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[ChatSessionRegistry] = IO.pure(new ChatSessionRegistry(dataSource))
 }

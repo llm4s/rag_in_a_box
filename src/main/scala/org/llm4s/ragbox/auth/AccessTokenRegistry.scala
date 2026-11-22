@@ -49,35 +49,6 @@ class AccessTokenRegistry(dataSource: DataSource) {
   private val secureRandom = new SecureRandom()
 
   /**
-   * Initialize the registry and ensure tables exist.
-   */
-  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS access_tokens (
-          |    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          |    name TEXT NOT NULL,
-          |    token_hash TEXT NOT NULL,
-          |    token_prefix TEXT NOT NULL,
-          |    scopes TEXT[] NOT NULL,
-          |    collections TEXT[],
-          |    created_by INTEGER REFERENCES users(id),
-          |    expires_at TIMESTAMPTZ,
-          |    last_used_at TIMESTAMPTZ,
-          |    created_at TIMESTAMPTZ DEFAULT NOW()
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_access_tokens_name
-          |    ON access_tokens(name)""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
-  /**
    * Create a new access token.
    * Returns the full token (only returned once).
    */
@@ -281,10 +252,7 @@ class AccessTokenRegistry(dataSource: DataSource) {
 object AccessTokenRegistry {
 
   /**
-   * Create and initialize an access token registry.
+   * An access token registry. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[AccessTokenRegistry] = {
-    val registry = new AccessTokenRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[AccessTokenRegistry] = IO.pure(new AccessTokenRegistry(dataSource))
 }

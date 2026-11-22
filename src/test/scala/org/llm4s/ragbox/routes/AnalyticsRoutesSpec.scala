@@ -26,7 +26,6 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
       logs = logs + (entry.id -> entry)
     }
 
-    override def initialize() = IO.unit
 
     override def logQuery(
       queryText: String,
@@ -84,7 +83,7 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
         .filter(e => from.forall(f => !e.createdAt.isBefore(f)))
         .filter(e => to.forall(t => !e.createdAt.isAfter(t)))
         .filter(e => collection.forall(c => e.collectionPattern.contains(c)))
-        .sortBy(_.createdAt)(Ordering[Instant].reverse)
+        .sortBy(_.createdAt)(using Ordering[Instant].reverse)
 
       val paginated = filtered.drop((page - 1) * pageSize).take(pageSize)
       (paginated, filtered.size)

@@ -125,6 +125,34 @@ Build the complete Docker image:
 docker compose build
 ```
 
+### Database migrations
+
+ragbox's schema is managed by [Flyway](https://documentation.red-gate.com/flyway). Components
+never run DDL themselves; every table, column, index and constraint comes from the SQL scripts
+in `src/main/resources/db/migration`, which `Main` applies at startup (and `--migrate-only`
+applies on its own). Tables owned by llm4s (the vector/keyword table, `llm4s_collections`,
+`llm4s_principals`) are not in the migrations.
+
+To change the schema:
+
+1. Add a new file `V<next>__<what_it_does>.sql` (e.g. `V3__add_documents_language.sql`, two
+   underscores), one higher than the latest version. **Never edit a migration that has been
+   merged**: deployed databases have already run it, and Flyway rejects a changed checksum.
+2. Write plain PostgreSQL. Each migration runs in one transaction, so a failure leaves the
+   database unchanged. Avoid `CREATE INDEX CONCURRENTLY` (it cannot run in a transaction) unless
+   the migration is split out and configured for it. Do not use `${...}`: Flyway treats it as a
+   placeholder.
+3. Think about existing data: give new `NOT NULL` columns a default, and backfill in the same
+   migration where needed.
+4. Update the code that reads and writes the table, and extend `MigrationSpec` (it checks that
+   a fresh database and an upgraded legacy one end with the same schema) or the integration
+   spec of the component you changed. Every Postgres integration test runs against a database
+   built by the real migrations (`PgVectorFixture.freshDatabase`).
+
+`V1__baseline.sql` is special: it also upgrades databases created before Flyway (which are
+baselined at version 0), so it is idempotent. Later migrations only ever run on databases
+that have completed every earlier one, so they need not be.
+
 ## Code Style
 
 ### Scala
