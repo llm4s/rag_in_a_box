@@ -118,4 +118,23 @@ class IngestionScheduleSpec extends AsyncFlatSpec with AsyncIOSpec with Matchers
 
     TestControl.executeEmbed(program).asserting(_ shouldBe 3)
   }
+
+  it should "run a cron schedule in the configured INGEST_SCHEDULE_TZ" in {
+    // 02:30 in New York (UTC-5 in January) is 07:30 UTC
+    val config = IngestionConfig(schedule = Some("30 2 * * *"), scheduleTimeZone = Some("America/New_York"))
+    val schedule = config.parsedSchedule.get.fold(e => fail(e), identity)
+    val program = for {
+      runs <- Ref.of[IO, Vector[Instant]](Vector.empty)
+      scheduler = new IngestionScheduler(IO.realTimeInstant.flatMap(now => runs.update(_ :+ now)).as(Seq.empty), _ => IO.unit, schedule)
+      fiber <- scheduler.run.start
+      _ <- IO.sleep(2.days)
+      ran <- runs.get
+      _ <- fiber.cancel
+    } yield ran
+
+    TestControl.executeEmbed(program).asserting { ran =>
+      ran shouldBe Vector(at("1970-01-01T07:30:00Z"), at("1970-01-02T07:30:00Z"))
+      schedule.describe should include("America/New_York")
+    }
+  }
 }

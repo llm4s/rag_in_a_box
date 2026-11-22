@@ -153,7 +153,8 @@ final case class DocumentSyncState(
   id: String,
   hash: Option[String] = None,
   updatedAt: Option[Instant] = None,
-  collection: Option[String] = None
+  collection: Option[String] = None,
+  source: Option[String] = None  // the sync source that owns the document (none for uploads)
 ) derives Codec.AsObject
 
 /**
@@ -553,12 +554,15 @@ object ErrorResponse {
 /**
  * Configuration snapshot for experiment tracking.
  * Records the effective configuration used for a query.
+ *
+ * @param similarityThreshold the minimum chunk similarity the query applied (none: no threshold)
  */
 final case class QueryConfigSnapshot(
   topK: Int,
   fusionStrategy: String,
   systemPrompt: Option[String] = None,
-  llmTemperature: Option[Double] = None
+  llmTemperature: Option[Double] = None,
+  similarityThreshold: Option[Double] = None
 ) derives Codec.AsObject
 
 /**

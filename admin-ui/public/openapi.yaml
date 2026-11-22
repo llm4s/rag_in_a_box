@@ -673,7 +673,9 @@ paths:
       description: |
         Auth: authenticated; access tokens need `documents:write` and access to the collection.
         The document is re-indexed only if its content hash changed. It belongs to the sync
-        source `source` (default `api`), whose `POST /sync` may prune it.
+        source `source` (default `api`), whose `POST /sync` may prune it. A `source` that is an
+        ingestion source's name (a configured source, `api:url` or `api:directory:*`) is a 409:
+        the two would prune each other's documents.
       requestBody:
         required: true
         content:
@@ -699,6 +701,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
     delete:
       tags: [Documents]
       summary: Delete a document
@@ -761,7 +765,8 @@ paths:
         - `scope: all` (admin only; `403` otherwise): every document, whoever wrote it.
 
         A collection-restricted token only prunes within its collections. `dryRun: true` reports
-        what would be deleted.
+        what would be deleted. A `source` that is an ingestion source's name (a configured
+        source, `api:url` or `api:directory:*`) is a 409: those are pruned by their own runs.
       requestBody:
         required: false
         content:
@@ -781,6 +786,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /api/v1/sync/documents:
     get:
@@ -808,6 +815,15 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: source
+          in: query
+          description: |
+            Only the documents this sync source owns (`api` for `PUT /documents/{id}` without a
+            `source`, or a configured ingestion source's name). Uploads belong to no source.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$'
+            example: confluence
       responses:
         '200':
           description: Document states
@@ -815,6 +831,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentSyncListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1303,7 +1321,7 @@ paths:
     delete:
       tags: [Collections]
       summary: Delete a collection
-      description: "Auth: admin."
+      description: "Auth: admin. 404 if the collection does not exist."
       responses:
         '204':
           description: Deleted
@@ -1318,7 +1336,7 @@ paths:
     put:
       tags: [Collections]
       summary: Replace who may query a collection
-      description: "Auth: admin. An empty list makes the collection public."
+      description: "Auth: admin. An empty list makes the collection public. 404 if the collection does not exist."
       parameters:
         - $ref: '#/components/parameters/CollectionPath'
       requestBody:
@@ -1354,7 +1372,7 @@ paths:
     get:
       tags: [Collections]
       summary: Document and chunk counts of a collection
-      description: "Auth: authenticated (access tokens need the `admin` scope); 404 for collections you cannot see."
+      description: "Auth: authenticated (access tokens need the `admin` scope); 404 for collections that do not exist or you cannot see."
       parameters:
         - $ref: '#/components/parameters/CollectionPath'
       responses:
@@ -2472,8 +2490,10 @@ paths:
       summary: Update a draft experiment
       description: |
         Auth: admin. Each field given replaces the experiment's; the ones left out are unchanged.
-        The result is validated like a new experiment (400). Only draft experiments can change
-        (409 otherwise).
+        `description` and `collection` are cleared with an explicit `null` (a cleared collection
+        means the experiment applies to queries on every collection); `null` for any other field
+        is a 400. The result is validated like a new experiment (400). Only draft experiments can
+        change (409 otherwise).
       requestBody:
         required: true
         content:
@@ -3301,6 +3321,10 @@ components:
           format: date-time
         collection:
           type: string
+        source:
+          type: string
+          nullable: true
+          description: The sync source that owns the document (null for uploads)
     DocumentSyncListResponse:
       type: object
       properties:
@@ -4268,6 +4292,10 @@ components:
               type: string
             llmTemperature:
               type: number
+            similarityThreshold:
+              type: number
+              nullable: true
+              description: The minimum chunk similarity the query applied (null when none)
         createdAt:
           type: string
           format: date-time
@@ -4480,17 +4508,25 @@ components:
           type: string
     UpdateExperimentRequest:
       type: object
+      description: Left out = unchanged. Only `description` and `collection` may be `null` (cleared).
       properties:
         name:
           type: string
         description:
           type: string
+          nullable: true
+          description: "`null` clears the description"
         baselineConfig:
           $ref: '#/components/schemas/ExperimentConfig'
         variantConfig:
           $ref: '#/components/schemas/ExperimentConfig'
         trafficSplit:
           type: number
+        collection:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: "The collection the experiment applies to; `null` clears it (every collection)"
     VariantMetrics:
       type: object
       properties:

@@ -3,6 +3,7 @@ package org.llm4s.ragbox.ingestion
 import com.typesafe.config.Config
 import org.llm4s.security.Secret
 
+import java.time.ZoneId
 import scala.jdk.CollectionConverters._
 import scala.util.Try
 
@@ -152,8 +153,25 @@ final case class IngestionConfig(
   runOnStartup: Boolean = false,
   schedule: Option[String] = None, // see IngestionSchedule.parse
   sources: Seq[SourceConfig] = Seq.empty,
-  policy: IngestionPolicyConfig = IngestionPolicyConfig()
+  policy: IngestionPolicyConfig = IngestionPolicyConfig(),
+  scheduleTimeZone: Option[String] = None // INGEST_SCHEDULE_TZ; the server's time zone when None
 ) {
+
+  /**
+   * The time zone cron schedules are evaluated in: [[scheduleTimeZone]] (an IANA name such as
+   * `Europe/London`, `UTC`, or an offset such as `+02:00`), or the server's time zone when it is
+   * not set. Left(reason) when it is not a valid time zone.
+   */
+  def scheduleZone: Either[String, ZoneId] =
+    scheduleTimeZone.fold[Either[String, ZoneId]](Right(ZoneId.systemDefault())) { tz =>
+      Try(ZoneId.of(tz)).toEither.left.map(_ =>
+        s"Invalid INGEST_SCHEDULE_TZ '$tz': use an IANA time zone such as Europe/London or UTC, or an offset such as +02:00"
+      )
+    }
+
+  /** What is wrong with the schedule settings (the time zone, then the schedule); empty when valid. */
+  def scheduleErrors: Seq[String] =
+    scheduleZone.left.toSeq ++ scheduleZone.toOption.flatMap(_ => parsedSchedule.flatMap(_.left.toOption))
 
   /**
    * The directories directory ingestion may read under: `policy.allowedRoots` when configured,
@@ -162,8 +180,12 @@ final case class IngestionConfig(
   def allowedRoots: Seq[String] =
     policy.allowedRoots.getOrElse(sources.collect { case d: DirectorySourceConfig => d.path })
 
-  /** The parsed [[schedule]]: None without one, Some(Left(reason)) when it is invalid. */
-  def parsedSchedule: Option[Either[String, IngestionSchedule]] = schedule.map(IngestionSchedule.parse(_))
+  /**
+   * The parsed [[schedule]], cron schedules in [[scheduleZone]]: None without one,
+   * Some(Left(reason)) when it (or the time zone) is invalid.
+   */
+  def parsedSchedule: Option[Either[String, IngestionSchedule]] =
+    schedule.map(s => scheduleZone.flatMap(IngestionSchedule.parse(s, _)))
 
   /** Sources a run ingests from. */
   def activeSources: Seq[SourceConfig] = if (enabled) sources.filter(_.enabled) else Seq.empty
@@ -186,6 +208,7 @@ object IngestionConfig {
     val enabled = Try(ingestion.getBoolean("enabled")).getOrElse(false)
     val runOnStartup = Try(ingestion.getBoolean("run-on-startup")).getOrElse(false)
     val schedule = Try(ingestion.getString("schedule")).toOption.map(_.trim).filter(_.nonEmpty)
+    val scheduleTimeZone = Try(ingestion.getString("schedule-time-zone")).toOption.map(_.trim).filter(_.nonEmpty)
 
     val sources = if (ingestion.hasPath("sources")) {
       ingestion.getConfigList("sources").asScala.toSeq.flatMap(parseSource)
@@ -198,7 +221,8 @@ object IngestionConfig {
       runOnStartup = runOnStartup,
       schedule = schedule,
       sources = sources,
-      policy = policyFromConfig(config)
+      policy = policyFromConfig(config),
+      scheduleTimeZone = scheduleTimeZone
     )
   }
 
@@ -233,7 +257,8 @@ object IngestionConfig {
    *  - `INGEST_DIR` adds a directory source named `env-directory` (with `INGEST_PATTERNS` and
    *    `INGEST_RECURSIVE`) to the configured sources and enables ingestion;
    *  - `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and `schedule`, which apply
-   *    to every configured source, whether or not `INGEST_DIR` is set.
+   *    to every configured source, whether or not `INGEST_DIR` is set;
+   *  - `INGEST_SCHEDULE_TZ` sets `schedule-time-zone`, the time zone of a cron schedule.
    */
   def withEnv(base: IngestionConfig, env: Map[String, String] = sys.env): IngestionConfig = {
     def value(name: String): Option[String] = env.get(name).map(_.trim).filter(_.nonEmpty)
@@ -252,6 +277,7 @@ object IngestionConfig {
       enabled = base.enabled || envDirectory.isDefined,
       runOnStartup = value("INGEST_ON_STARTUP").map(_.equalsIgnoreCase("true")).getOrElse(base.runOnStartup),
       schedule = value("INGEST_SCHEDULE").orElse(base.schedule),
+      scheduleTimeZone = value("INGEST_SCHEDULE_TZ").orElse(base.scheduleTimeZone),
       sources = base.sources.filterNot(s => envDirectory.isDefined && s.name == EnvDirectorySourceName) ++ envDirectory
     )
   }

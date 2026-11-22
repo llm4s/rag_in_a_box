@@ -769,12 +769,17 @@ export interface CreateExperimentRequest {
   collection?: string
 }
 
+/**
+ * PATCH /experiments/{id}: fields left out are unchanged; `null` clears `description` or
+ * `collection` (the other fields cannot be cleared).
+ */
 export interface UpdateExperimentRequest {
   name?: string
-  description?: string
+  description?: string | null
   baselineConfig?: ExperimentConfigSnapshot
   variantConfig?: ExperimentConfigSnapshot
   trafficSplit?: number
+  collection?: string | null
 }
 
 /** One experiment group's metrics; latency, chunks and ratings are over successful queries. */

@@ -175,7 +175,7 @@ object RagboxApp {
 
       // Order matters where paths overlap (e.g. /collections/...): same order as before
       val authed = (Seq(
-        DocumentRoutes.routes(ragService),
+        DocumentRoutes.routes(ragService, config.ingestion.sources.map(_.name).toSet),
         QueryRoutes.routes(ragService, queryLogRegistry, Some(config), Some(experimentService)),
         ConfigRoutes.routes(ragService),
         IngestionRoutes.routes(ingestionService),

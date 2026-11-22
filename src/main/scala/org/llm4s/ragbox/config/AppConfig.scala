@@ -135,7 +135,12 @@ final case class AppConfig(
       errors += s"RAG_RERANKING_CANDIDATES must be at least 1 (got ${rag.reranking.candidates})"
     }
     // An invalid schedule fails startup instead of silently never running
-    ingestion.parsedSchedule.flatMap(_.left.toOption).foreach(errors += _)
+    ingestion.scheduleErrors.foreach(errors += _)
+    // `api` and `api:*` are the API sync's sources (PUT /documents, one-shot ingestion): a
+    // configured source of that name would prune their documents, and they its
+    ingestion.sources.map(_.name).filter(n => n == "api" || n.startsWith("api:")).distinct.foreach { name =>
+      errors += s"Ingestion source name '$name' is reserved for API sync sources (api, api:*); rename the source"
+    }
 
     if (rag.chat.historyMessages < 0) {
       errors += s"RAG_CHAT_HISTORY_MESSAGES must be non-negative (got ${rag.chat.historyMessages})"

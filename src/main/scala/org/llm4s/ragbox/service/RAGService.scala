@@ -245,8 +245,14 @@ class RAGService(
   def listDocumentEntries: IO[Seq[DocumentEntry]] = documentRegistry.listEntries()
 
   /** A page of registry entries for the sync API (see `DocumentRegistry.listEntriesPage`). */
-  def listDocumentEntriesPage(since: Option[java.time.Instant], collections: Option[Set[String]], offset: Int, limit: Int): IO[DocumentEntryPage] =
-    documentRegistry.listEntriesPage(since, collections, offset, limit)
+  def listDocumentEntriesPage(
+    since: Option[java.time.Instant],
+    collections: Option[Set[String]],
+    offset: Int,
+    limit: Int,
+    source: Option[String] = None
+  ): IO[DocumentEntryPage] =
+    documentRegistry.listEntriesPage(since, collections, offset, limit, source)
 
   def getDocumentEntries(documentIds: Seq[String]): IO[Seq[DocumentEntry]] = documentRegistry.getMultiple(documentIds)
 

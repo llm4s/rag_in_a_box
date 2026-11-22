@@ -305,4 +305,49 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
     config.copy(ingestion = IngestionConfig(schedule = Some("every day"))).validate().exists(_.contains("Invalid ingestion schedule")) shouldBe true
     config.copy(ingestion = IngestionConfig(schedule = Some("0 3 * * 1"))).validate().exists(_.contains("schedule")) shouldBe false
   }
+
+  "INGEST_SCHEDULE_TZ" should "set the time zone cron schedules are evaluated in" in {
+    val config = IngestionConfig.withEnv(hoconWithUrlSource, Map("INGEST_SCHEDULE" -> "0 2 * * *", "INGEST_SCHEDULE_TZ" -> " Asia/Tokyo "))
+    config.scheduleTimeZone shouldBe Some("Asia/Tokyo")
+    config.scheduleZone shouldBe Right(java.time.ZoneId.of("Asia/Tokyo"))
+    // 02:00 in Tokyo is 17:00 UTC the day before
+    config.parsedSchedule.get.toOption.get.nextRun(java.time.Instant.parse("2026-03-10T12:00:00Z")) shouldBe
+      Some(java.time.Instant.parse("2026-03-10T17:00:00Z"))
+  }
+
+  it should "default to the server's time zone, and be read from HOCON schedule-time-zone" in {
+    IngestionConfig().scheduleZone shouldBe Right(java.time.ZoneId.systemDefault())
+    IngestionConfig.withEnv(IngestionConfig(), Map("INGEST_SCHEDULE_TZ" -> "  ")).scheduleTimeZone shouldBe None
+    val hocon = IngestionConfig.fromConfig(ConfigFactory.parseString(
+      """ingestion { schedule = "daily", schedule-time-zone = "+02:00" }"""
+    ))
+    hocon.scheduleZone shouldBe Right(java.time.ZoneOffset.ofHours(2))
+    IngestionConfig.withEnv(hocon, Map("INGEST_SCHEDULE_TZ" -> "UTC")).scheduleTimeZone shouldBe Some("UTC")
+  }
+
+  it should "fail startup when it is not a time zone, schedule or not" in {
+    val config = org.llm4s.ragbox.testkit.TestFixtures.testAppConfig
+    val withSchedule = config.copy(ingestion = IngestionConfig(schedule = Some("daily"), scheduleTimeZone = Some("Mars/Olympus")))
+    val errors = withSchedule.validate()
+    errors.filter(_.contains("INGEST_SCHEDULE_TZ")) shouldBe Seq(
+      "Invalid INGEST_SCHEDULE_TZ 'Mars/Olympus': use an IANA time zone such as Europe/London or UTC, or an offset such as +02:00"
+    )
+    // Reported once, not again as a schedule error
+    errors.exists(_.contains("Invalid ingestion schedule")) shouldBe false
+    withSchedule.ingestion.parsedSchedule.get.isLeft shouldBe true
+    config.copy(ingestion = IngestionConfig(scheduleTimeZone = Some("nowhere"))).validate().exists(_.contains("INGEST_SCHEDULE_TZ")) shouldBe true
+    config.copy(ingestion = IngestionConfig(schedule = Some("daily"), scheduleTimeZone = Some("Europe/Berlin"))).validate()
+      .exists(_.contains("INGEST_SCHEDULE_TZ")) shouldBe false
+  }
+
+  "AppConfig.validate" should "reject ingestion sources named like API sync sources" in {
+    val config = org.llm4s.ragbox.testkit.TestFixtures.testAppConfig
+    def errors(name: String) = config.copy(ingestion = IngestionConfig(sources = Seq(UrlSourceConfig(name, Seq("https://example.com/")))))
+      .validate().filter(_.contains("reserved for API sync sources"))
+    errors("api") should have size 1
+    errors("api:url") should have size 1
+    errors("api:directory:/data") should have size 1
+    errors("apis") shouldBe empty
+    errors("docs") shouldBe empty
+  }
 }

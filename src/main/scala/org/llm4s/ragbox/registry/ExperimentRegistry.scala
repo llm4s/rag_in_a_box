@@ -197,14 +197,15 @@ class ExperimentRegistry(dataSource: DataSource) {
 
   /**
    * Replace a draft experiment's definition with `updated`'s name, description, group configs and
-   * traffic split.
+   * traffic split and collection.
    *
    * @return the updated experiment, or None if `updated.id` is not (or no longer) a draft
    */
   def updateDraft(updated: Experiment): IO[Option[Experiment]] = ConnectionPool.withConnection(dataSource) { conn =>
     val stmt = conn.prepareStatement(
       s"""UPDATE experiments
-         |SET name = ?, description = ?, baseline_config = ?::jsonb, variant_config = ?::jsonb, traffic_split = ?
+         |SET name = ?, description = ?, baseline_config = ?::jsonb, variant_config = ?::jsonb, traffic_split = ?,
+         |    collection = ?
          |WHERE id = ? AND status = 'draft'
          |RETURNING $Columns""".stripMargin
     )
@@ -214,7 +215,8 @@ class ExperimentRegistry(dataSource: DataSource) {
       stmt.setString(3, updated.baselineConfig.asJson.noSpaces)
       stmt.setString(4, updated.variantConfig.asJson.noSpaces)
       stmt.setDouble(5, updated.trafficSplit)
-      stmt.setString(6, updated.id)
+      stmt.setString(6, updated.collection.orNull)
+      stmt.setString(7, updated.id)
       val rs = stmt.executeQuery()
       if (rs.next()) Some(rowToExperiment(rs)) else None
     } finally {

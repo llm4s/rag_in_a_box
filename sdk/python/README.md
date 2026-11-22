@@ -173,8 +173,8 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None
 |--------|----------|-------------|
 | `sync(keep_ids, dry_run, source, scope)` | `POST /api/v1/sync` | Mark sync complete, optionally prune the source's documents (`scope="all"`: every document, admin only) |
 | `sync_status()` | `GET /api/v1/sync/status` | Get sync status |
-| `synced_documents(include_hash, include_updated_at, since)` | `GET /api/v1/sync/documents` | Synced documents as `SyncedDocument` (follows the pages) |
-| `list_synced_documents(since)` | `GET /api/v1/sync/documents` | Synced document IDs |
+| `synced_documents(include_hash, include_updated_at, since, source)` | `GET /api/v1/sync/documents` | Synced documents as `SyncedDocument`, with their `source` (follows the pages; `source` filters to one sync source) |
+| `list_synced_documents(since, source)` | `GET /api/v1/sync/documents` | Synced document IDs |
 | `get_synced_document(document_id)` | `GET /api/v1/sync/documents/{id}` | One document's hash and update time |
 | `check_documents(document_ids)` | `POST /api/v1/sync/check` | Which of these IDs exist (`found` / `missing`) |
 

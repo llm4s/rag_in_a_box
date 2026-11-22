@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.model
 
-import io.circe.{Codec, Decoder, Encoder, Json}
+import io.circe.{Codec, Decoder, Encoder, Json, JsonObject}
+import io.circe.syntax._
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 
 import java.time.Instant
@@ -105,14 +106,44 @@ object CreateExperimentRequest {
 /**
  * Request to update a draft experiment (`PATCH /api/v1/experiments/{id}`). Each field given
  * replaces the experiment's; the ones left out are unchanged.
+ *
+ * `description` and `collection` can be cleared with an explicit JSON `null` (no description;
+ * the experiment applies to queries on every collection). The other fields cannot be cleared:
+ * `null` for one of them is a 400.
  */
 final case class UpdateExperimentRequest(
   name: Option[String] = None,
-  description: Option[String] = None,
+  description: FieldPatch[String] = FieldPatch.Unchanged,
   baselineConfig: Option[ExperimentConfigSnapshot] = None,
   variantConfig: Option[ExperimentConfigSnapshot] = None,
-  trafficSplit: Option[Double] = None
-) derives Codec.AsObject
+  trafficSplit: Option[Double] = None,
+  collection: FieldPatch[String] = FieldPatch.Unchanged
+)
+
+object UpdateExperimentRequest {
+  given Decoder[UpdateExperimentRequest] = Decoder.instance { c =>
+    for {
+      name <- FieldPatch.notNull[String](c, "name")
+      description <- c.downField("description").as[FieldPatch[String]]
+      baselineConfig <- FieldPatch.notNull[ExperimentConfigSnapshot](c, "baselineConfig")
+      variantConfig <- FieldPatch.notNull[ExperimentConfigSnapshot](c, "variantConfig")
+      trafficSplit <- FieldPatch.notNull[Double](c, "trafficSplit")
+      collection <- c.downField("collection").as[FieldPatch[String]]
+    } yield UpdateExperimentRequest(name, description, baselineConfig, variantConfig, trafficSplit, collection)
+  }
+
+  /** The request as a client sends it: fields left unchanged are left out, cleared ones are `null`. */
+  given Encoder.AsObject[UpdateExperimentRequest] = Encoder.AsObject.instance { r =>
+    JsonObject.fromIterable(
+      r.name.map(n => "name" -> Json.fromString(n)).toList ++
+        r.description.toJson(Json.fromString).map("description" -> _) ++
+        r.baselineConfig.map(b => "baselineConfig" -> b.asJson) ++
+        r.variantConfig.map(v => "variantConfig" -> v.asJson) ++
+        r.trafficSplit.map(t => "trafficSplit" -> Json.fromDoubleOrNull(t)) ++
+        r.collection.toJson(Json.fromString).map("collection" -> _)
+    )
+  }
+}
 
 /**
  * Metrics for one group of an experiment. Latency, chunk and rating figures are over the
