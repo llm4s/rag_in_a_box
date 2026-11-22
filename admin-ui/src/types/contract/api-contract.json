@@ -1,0 +1,549 @@
+{
+  "AllCollectionConfigsResponse" : {
+    "collections" : [
+      {
+        "collection" : "docs",
+        "config" : {
+          "collection" : "docs",
+          "fileTypeStrategies" : {
+            ".md" : "markdown"
+          },
+          "maxSize" : 1600,
+          "overlap" : 100,
+          "strategy" : "markdown",
+          "targetSize" : 800,
+          "updatedAt" : "2024-01-01T00:00:00Z"
+        },
+        "documentCount" : 3,
+        "effectiveConfig" : {
+          "appliedFileTypeOverride" : ".md",
+          "maxSize" : 1600,
+          "overlap" : 100,
+          "source" : "file-type",
+          "strategy" : "markdown",
+          "targetSize" : 800
+        },
+        "hasCustomConfig" : true
+      }
+    ],
+    "defaultConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    }
+  },
+  "ChunkInfo" : {
+    "chunkMetadata" : {
+      "endOffset" : 12,
+      "headings" : [
+        "Intro"
+      ],
+      "isCodeBlock" : false,
+      "language" : "scala",
+      "startOffset" : 0
+    },
+    "content" : "Hello world.",
+    "contentLength" : 12,
+    "documentId" : "doc-1",
+    "id" : "doc-1-0",
+    "index" : 0,
+    "metadata" : {
+      "collection" : "docs"
+    }
+  },
+  "ChunkMetadataInfo" : {
+    "endOffset" : 12,
+    "headings" : [
+      "Intro"
+    ],
+    "isCodeBlock" : false,
+    "language" : "scala",
+    "startOffset" : 0
+  },
+  "ChunkSizeDistribution" : {
+    "avg" : 450.0,
+    "buckets" : [
+      {
+        "count" : 10,
+        "rangeEnd" : 500,
+        "rangeStart" : 0
+      }
+    ],
+    "max" : 900,
+    "median" : 430.0,
+    "min" : 10,
+    "p90" : 800.0
+  },
+  "ChunkingCompareResponse" : {
+    "recommendation" : {
+      "reason" : "Fewest warnings",
+      "strategy" : "sentence"
+    },
+    "results" : [
+      {
+        "chunks" : [
+          {
+            "content" : "Hello world.",
+            "headings" : [
+              "Intro"
+            ],
+            "index" : 0,
+            "isCodeBlock" : false,
+            "language" : "scala",
+            "length" : 12
+          }
+        ],
+        "stats" : {
+          "avgChunkSize" : 12.0,
+          "chunkCount" : 1,
+          "estimatedTokens" : 3,
+          "maxChunkSize" : 12,
+          "minChunkSize" : 12,
+          "totalLength" : 12
+        },
+        "strategy" : "sentence",
+        "warnings" : [
+          {
+            "level" : "info",
+            "message" : "Short document",
+            "suggestion" : "Use smaller chunks"
+          }
+        ]
+      }
+    ]
+  },
+  "ChunkingStats" : {
+    "avgChunkSize" : 12.0,
+    "chunkCount" : 1,
+    "estimatedTokens" : 3,
+    "maxChunkSize" : 12,
+    "minChunkSize" : 12,
+    "totalLength" : 12
+  },
+  "ChunkingWarning" : {
+    "level" : "info",
+    "message" : "Short document",
+    "suggestion" : "Use smaller chunks"
+  },
+  "CollectionChunkingConfig" : {
+    "collection" : "docs",
+    "fileTypeStrategies" : {
+      ".md" : "markdown"
+    },
+    "maxSize" : 1600,
+    "overlap" : 100,
+    "strategy" : "markdown",
+    "targetSize" : 800,
+    "updatedAt" : "2024-01-01T00:00:00Z"
+  },
+  "CollectionConfigResponse" : {
+    "collection" : "docs",
+    "config" : {
+      "collection" : "docs",
+      "fileTypeStrategies" : {
+        ".md" : "markdown"
+      },
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "strategy" : "markdown",
+      "targetSize" : 800,
+      "updatedAt" : "2024-01-01T00:00:00Z"
+    },
+    "documentCount" : 3,
+    "effectiveConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    },
+    "hasCustomConfig" : true
+  },
+  "CollectionConfigUpdateResponse" : {
+    "collection" : "docs",
+    "config" : {
+      "collection" : "docs",
+      "fileTypeStrategies" : {
+        ".md" : "markdown"
+      },
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "strategy" : "markdown",
+      "targetSize" : 800,
+      "updatedAt" : "2024-01-01T00:00:00Z"
+    },
+    "message" : "Updated"
+  },
+  "ConfigChange" : {
+    "changedAt" : "2024-01-01T00:00:00Z",
+    "changedBy" : "admin",
+    "field" : "topK",
+    "id" : 1,
+    "newValue" : "8",
+    "oldValue" : "5"
+  },
+  "ConfigHistoryResponse" : {
+    "changes" : [
+      {
+        "changedAt" : "2024-01-01T00:00:00Z",
+        "changedBy" : "admin",
+        "field" : "topK",
+        "id" : 1,
+        "newValue" : "8",
+        "oldValue" : "5"
+      }
+    ],
+    "hasMore" : false,
+    "page" : 1,
+    "pageSize" : 50,
+    "total" : 1
+  },
+  "ConfigMetaItem" : {
+    "description" : "Number of chunks",
+    "key" : "topK",
+    "requiresRestart" : false,
+    "type" : "hot",
+    "value" : "5"
+  },
+  "DetailedCollectionStats" : {
+    "avgChunkSize" : 450.0,
+    "avgChunksPerDoc" : 3.0,
+    "chunkCount" : 9,
+    "chunkingStrategy" : "sentence",
+    "documentCount" : 3,
+    "name" : "docs"
+  },
+  "DetailedStatsResponse" : {
+    "avgChunksPerDocument" : 3.0,
+    "chunkCount" : 9,
+    "chunkSizeDistribution" : {
+      "avg" : 450.0,
+      "buckets" : [
+        {
+          "count" : 10,
+          "rangeEnd" : 500,
+          "rangeStart" : 0
+        }
+      ],
+      "max" : 900,
+      "median" : 430.0,
+      "min" : 10,
+      "p90" : 800.0
+    },
+    "collectionCount" : 1,
+    "collections" : [
+      {
+        "avgChunkSize" : 450.0,
+        "avgChunksPerDoc" : 3.0,
+        "chunkCount" : 9,
+        "chunkingStrategy" : "sentence",
+        "documentCount" : 3,
+        "name" : "docs"
+      }
+    ],
+    "currentConfig" : {
+      "maxSize" : 1200,
+      "overlap" : 150,
+      "strategy" : "sentence",
+      "targetSize" : 800
+    },
+    "documentCount" : 3,
+    "indexedSince" : "2024-01-01T00:00:00Z",
+    "lastIngestion" : "2024-01-01T00:00:00Z",
+    "vectorCount" : 9
+  },
+  "DocumentChunksResponse" : {
+    "chunkCount" : 1,
+    "chunkingConfig" : {
+      "maxSize" : 1200,
+      "overlap" : 150,
+      "strategy" : "sentence",
+      "targetSize" : 800
+    },
+    "chunks" : [
+      {
+        "chunkMetadata" : {
+          "endOffset" : 12,
+          "headings" : [
+            "Intro"
+          ],
+          "isCodeBlock" : false,
+          "language" : "scala",
+          "startOffset" : 0
+        },
+        "content" : "Hello world.",
+        "contentLength" : 12,
+        "documentId" : "doc-1",
+        "id" : "doc-1-0",
+        "index" : 0,
+        "metadata" : {
+          "collection" : "docs"
+        }
+      }
+    ],
+    "collection" : "docs",
+    "documentId" : "doc-1",
+    "filename" : "guide.md"
+  },
+  "DocumentInfo" : {
+    "chunkCount" : 3,
+    "collection" : "docs",
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "filename" : "guide.md",
+    "id" : "doc-1",
+    "metadata" : {
+      "author" : "alice"
+    },
+    "updatedAt" : "2024-01-01T00:00:00Z"
+  },
+  "DocumentListResponse" : {
+    "documents" : [
+      {
+        "chunkCount" : 3,
+        "collection" : "docs",
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "filename" : "guide.md",
+        "id" : "doc-1",
+        "metadata" : {
+          "author" : "alice"
+        },
+        "updatedAt" : "2024-01-01T00:00:00Z"
+      }
+    ],
+    "hasMore" : false,
+    "page" : 1,
+    "pageSize" : 50,
+    "total" : 1
+  },
+  "DocumentUploadResponse" : {
+    "chunks" : 3,
+    "documentId" : "doc-1",
+    "message" : "Successfully ingested"
+  },
+  "EffectiveCollectionConfig" : {
+    "appliedFileTypeOverride" : ".md",
+    "maxSize" : 1600,
+    "overlap" : 100,
+    "source" : "file-type",
+    "strategy" : "markdown",
+    "targetSize" : 800
+  },
+  "EffectiveConfigPreviewResponse" : {
+    "collection" : "docs",
+    "configResolutionPath" : [
+      "Using collection config"
+    ],
+    "effectiveConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    },
+    "filename" : "guide.md"
+  },
+  "ErrorResponse" : {
+    "details" : "topK: too large",
+    "error" : "validation_failed",
+    "message" : "Configuration validation failed"
+  },
+  "PresetInfo" : {
+    "bestFor" : [
+      "general"
+    ],
+    "description" : "Good default",
+    "displayName" : "Balanced",
+    "maxSize" : 1200,
+    "name" : "balanced",
+    "overlap" : 150,
+    "targetSize" : 800
+  },
+  "PresetsResponse" : {
+    "current" : {
+      "bestFor" : [
+        "general"
+      ],
+      "description" : "Good default",
+      "displayName" : "Balanced",
+      "maxSize" : 1200,
+      "name" : "balanced",
+      "overlap" : 150,
+      "targetSize" : 800
+    },
+    "presets" : [
+      {
+        "bestFor" : [
+          "general"
+        ],
+        "description" : "Good default",
+        "displayName" : "Balanced",
+        "maxSize" : 1200,
+        "name" : "balanced",
+        "overlap" : 150,
+        "targetSize" : 800
+      }
+    ]
+  },
+  "PreviewChunk" : {
+    "content" : "Hello world.",
+    "headings" : [
+      "Intro"
+    ],
+    "index" : 0,
+    "isCodeBlock" : false,
+    "language" : "scala",
+    "length" : 12
+  },
+  "RuntimeConfig" : {
+    "chunkOverlap" : 150,
+    "chunkSize" : 800,
+    "chunkingStrategy" : "sentence",
+    "fusionStrategy" : "rrf",
+    "llmTemperature" : 0.1,
+    "rrfK" : 60,
+    "systemPrompt" : "You are helpful.",
+    "topK" : 5
+  },
+  "RuntimeConfigResponse" : {
+    "config" : {
+      "chunkOverlap" : 150,
+      "chunkSize" : 800,
+      "chunkingStrategy" : "sentence",
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.1,
+      "rrfK" : 60,
+      "systemPrompt" : "You are helpful.",
+      "topK" : 5
+    },
+    "hotSettings" : [
+      "topK"
+    ],
+    "lastModified" : "2024-01-01T00:00:00Z",
+    "warmSettings" : [
+      "chunkSize"
+    ]
+  },
+  "RuntimeConfigUpdateResponse" : {
+    "changes" : [
+      {
+        "changeability" : "hot",
+        "effectiveImmediately" : true,
+        "field" : "topK",
+        "newValue" : "8",
+        "oldValue" : "5"
+      }
+    ],
+    "current" : {
+      "chunkOverlap" : 150,
+      "chunkSize" : 800,
+      "chunkingStrategy" : "sentence",
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.1,
+      "rrfK" : 60,
+      "systemPrompt" : "You are helpful.",
+      "topK" : 5
+    },
+    "message" : "Updated",
+    "success" : true
+  },
+  "RuntimeConfigValidateResponse" : {
+    "valid" : false,
+    "validations" : [
+      {
+        "currentValue" : "5",
+        "error" : "topK must be between 1 and 100",
+        "field" : "topK",
+        "proposedValue" : "500",
+        "valid" : false,
+        "warning" : "Large topK increases latency"
+      }
+    ],
+    "warnings" : [
+      "warning"
+    ]
+  },
+  "SettingUpdateResult" : {
+    "changeability" : "hot",
+    "effectiveImmediately" : true,
+    "field" : "topK",
+    "newValue" : "8",
+    "oldValue" : "5"
+  },
+  "SettingValidation" : {
+    "currentValue" : "5",
+    "error" : "topK must be between 1 and 100",
+    "field" : "topK",
+    "proposedValue" : "500",
+    "valid" : false,
+    "warning" : "Large topK increases latency"
+  },
+  "SizeBucket" : {
+    "count" : 10,
+    "rangeEnd" : 500,
+    "rangeStart" : 0
+  },
+  "StrategiesResponse" : {
+    "currentDefault" : "sentence",
+    "strategies" : [
+      {
+        "bestFor" : [
+          "prose"
+        ],
+        "description" : "Splits on sentence boundaries",
+        "displayName" : "Sentence",
+        "name" : "sentence",
+        "requiresEmbeddings" : false,
+        "tradeoffs" : [
+          "slower"
+        ]
+      }
+    ]
+  },
+  "StrategyInfo" : {
+    "bestFor" : [
+      "prose"
+    ],
+    "description" : "Splits on sentence boundaries",
+    "displayName" : "Sentence",
+    "name" : "sentence",
+    "requiresEmbeddings" : false,
+    "tradeoffs" : [
+      "slower"
+    ]
+  },
+  "StrategyResult" : {
+    "chunks" : [
+      {
+        "content" : "Hello world.",
+        "headings" : [
+          "Intro"
+        ],
+        "index" : 0,
+        "isCodeBlock" : false,
+        "language" : "scala",
+        "length" : 12
+      }
+    ],
+    "stats" : {
+      "avgChunkSize" : 12.0,
+      "chunkCount" : 1,
+      "estimatedTokens" : 3,
+      "maxChunkSize" : 12,
+      "minChunkSize" : 12,
+      "totalLength" : 12
+    },
+    "strategy" : "sentence",
+    "warnings" : [
+      {
+        "level" : "info",
+        "message" : "Short document",
+        "suggestion" : "Use smaller chunks"
+      }
+    ]
+  }
+}

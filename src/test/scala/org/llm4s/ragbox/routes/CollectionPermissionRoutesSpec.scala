@@ -25,6 +25,11 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
     routes = CollectionPermissionRoutes.routes(mockCollectionStore, mockPrincipalStore)
   }
 
+  "GET /api/v1/collections/{c}/config" should "fall through to CollectionConfigRoutes" in {
+    val request = Request[IO](Method.GET, uri"/api/v1/collections/docs/config")
+    routes.run(request).value.unsafeRunSync() shouldBe None
+  }
+
   // ============================================================
   // POST /api/v1/collections - Create collection
   // ============================================================

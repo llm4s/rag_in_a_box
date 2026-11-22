@@ -40,23 +40,10 @@ export default defineConfig(({ mode }) => {
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/.*\/api\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60 // 1 hour
-              },
-              cacheableResponse: {
-                statuses: [0, 200]
-              }
-            }
-          }
-        ]
+        // Precache the app shell only. API responses are deliberately NOT
+        // cached: they are authenticated, per-user and must not be served
+        // stale (or leak between sessions) from the service worker.
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}']
       }
     }),
   ].filter(Boolean),
@@ -75,6 +62,12 @@ export default defineConfig(({ mode }) => {
       },
       '/health': {
         target: 'http://localhost:8080',
+        changeOrigin: true
+      },
+      // Live updates (stores/websocket.ts)
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
         changeOrigin: true
       }
     }

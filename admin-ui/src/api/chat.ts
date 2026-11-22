@@ -1,4 +1,5 @@
 import client from './client'
+import { getAuthHeaders } from './credentials'
 import type {
   ChatSession,
   ChatSessionListResponse,
@@ -152,25 +153,6 @@ export function sendMessageStream(
 export async function rateMessage(messageId: string, request: RateChatMessageRequest): Promise<ChatOperationResponse> {
   const response = await client.put<ChatOperationResponse>(`/chat/messages/${messageId}/rate`, request)
   return response.data
-}
-
-/**
- * Get authentication headers from the current session.
- */
-function getAuthHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {}
-
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
-  const apiKey = localStorage.getItem('api_key')
-  if (apiKey) {
-    headers['X-API-Key'] = apiKey
-  }
-
-  return headers
 }
 
 /**

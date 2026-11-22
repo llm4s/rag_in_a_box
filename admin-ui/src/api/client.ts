@@ -1,5 +1,6 @@
 import axios, { type AxiosError } from 'axios'
 import { transformAxiosError } from '@/composables/useApiError'
+import { getAuthHeaders } from './credentials'
 
 const client = axios.create({
   baseURL: '/api/v1',
@@ -9,11 +10,10 @@ const client = axios.create({
   timeout: 30000, // 30 second timeout
 })
 
-// Request interceptor for API key
+// Attach credentials (see ./credentials.ts) to every request
 client.interceptors.request.use((config) => {
-  const apiKey = localStorage.getItem('ragbox_api_key')
-  if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
+  for (const [name, value] of Object.entries(getAuthHeaders())) {
+    config.headers[name] = value
   }
   return config
 })

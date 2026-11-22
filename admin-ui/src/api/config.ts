@@ -1,73 +1,81 @@
 import client from './client'
-import type { RuntimeConfig, ConfigMeta, ConfigHistory, CollectionConfig } from '@/types/api'
+import type {
+  RuntimeConfigResponse,
+  RuntimeConfigUpdate,
+  RuntimeConfigUpdateResponse,
+  RuntimeConfigValidateResponse,
+  ConfigMeta,
+  ConfigHistoryResponse,
+  AllCollectionConfigsResponse,
+  CollectionConfigResponse,
+  CollectionConfigUpdateRequest,
+  CollectionConfigUpdateResponse,
+  EffectiveConfigPreviewResponse
+} from '@/types/api'
 
 // Runtime Config
-export async function getRuntimeConfig(): Promise<RuntimeConfig> {
-  const response = await client.get('/config/runtime')
+
+export async function getRuntimeConfig(): Promise<RuntimeConfigResponse> {
+  const response = await client.get<RuntimeConfigResponse>('/config/runtime')
   return response.data
 }
 
-export async function updateRuntimeConfig(config: Partial<RuntimeConfig>): Promise<RuntimeConfig> {
-  const response = await client.put('/config/runtime', config)
+/** Send only the fields that changed; omitted fields are left untouched by the backend. */
+export async function updateRuntimeConfig(update: RuntimeConfigUpdate): Promise<RuntimeConfigUpdateResponse> {
+  const response = await client.put<RuntimeConfigUpdateResponse>('/config/runtime', update)
   return response.data
 }
 
-export async function validateRuntimeConfig(config: Partial<RuntimeConfig>): Promise<{ valid: boolean; errors?: string[] }> {
-  const response = await client.post('/config/runtime/validate', config)
+export async function validateRuntimeConfig(update: RuntimeConfigUpdate): Promise<RuntimeConfigValidateResponse> {
+  const response = await client.post<RuntimeConfigValidateResponse>('/config/runtime/validate', update)
   return response.data
 }
 
 export async function getConfigMeta(): Promise<ConfigMeta[]> {
-  const response = await client.get('/config/runtime/meta')
+  const response = await client.get<ConfigMeta[]>('/config/runtime/meta')
   return response.data
 }
 
-export async function getConfigHistory(key?: string): Promise<ConfigHistory[]> {
-  const params = key ? { key } : undefined
-  const response = await client.get('/config/runtime/history', { params })
-  return response.data.history
+export async function getConfigHistory(params?: { page?: number; pageSize?: number }): Promise<ConfigHistoryResponse> {
+  const response = await client.get<ConfigHistoryResponse>('/config/runtime/history', { params })
+  return response.data
 }
 
 // Collection Config
-export async function getCollectionConfigs(): Promise<CollectionConfig[]> {
-  const response = await client.get('/collections/configs')
-  // Map backend response to frontend CollectionConfig type
-  return response.data.collections.map((c: {
-    collection: string
-    hasCustomConfig: boolean
-    config: unknown
-    effectiveConfig: {
-      strategy: string
-      targetSize: number
-      maxSize: number
-      overlap: number
-      source: string
-    }
-  }) => ({
-    name: c.collection,
-    chunkingStrategy: c.effectiveConfig.strategy,
-    chunkSize: c.effectiveConfig.targetSize,
-    chunkOverlap: c.effectiveConfig.overlap,
-    customSettings: c.hasCustomConfig ? { source: 'custom' } : undefined
-  }))
-}
 
-export async function getCollectionConfig(name: string): Promise<CollectionConfig> {
-  const response = await client.get(`/collections/${name}/config`)
+export async function getCollectionConfigs(): Promise<AllCollectionConfigsResponse> {
+  const response = await client.get<AllCollectionConfigsResponse>('/collections/configs')
   return response.data
 }
 
-export async function updateCollectionConfig(name: string, config: Partial<CollectionConfig>): Promise<CollectionConfig> {
-  const response = await client.put(`/collections/${name}/config`, config)
+export async function getCollectionConfig(name: string): Promise<CollectionConfigResponse> {
+  const response = await client.get<CollectionConfigResponse>(`/collections/${encodeURIComponent(name)}/config`)
+  return response.data
+}
+
+export async function updateCollectionConfig(
+  name: string,
+  config: CollectionConfigUpdateRequest
+): Promise<CollectionConfigUpdateResponse> {
+  const response = await client.put<CollectionConfigUpdateResponse>(
+    `/collections/${encodeURIComponent(name)}/config`,
+    config
+  )
   return response.data
 }
 
 export async function deleteCollectionConfig(name: string): Promise<void> {
-  await client.delete(`/collections/${name}/config`)
+  await client.delete(`/collections/${encodeURIComponent(name)}/config`)
 }
 
-export async function getEffectiveConfig(collection: string, fileType?: string): Promise<CollectionConfig> {
-  const params = fileType ? { fileType } : undefined
-  const response = await client.get(`/collections/${collection}/effective-config`, { params })
+/** Resolve the effective chunking config a file would get in a collection. */
+export async function previewEffectiveConfig(
+  collection: string,
+  filename?: string
+): Promise<EffectiveConfigPreviewResponse> {
+  const response = await client.post<EffectiveConfigPreviewResponse>(
+    `/collections/${encodeURIComponent(collection)}/config/preview`,
+    { collection, filename: filename || undefined }
+  )
   return response.data
 }

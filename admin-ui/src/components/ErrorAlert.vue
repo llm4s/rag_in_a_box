@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { isAppError, type AppError } from '@/composables/useApiError'
+import { isAppError, getErrorMessage, type AppError } from '@/composables/useApiError'
 
 const props = defineProps<{
   error: AppError | Error | string | null
@@ -14,9 +14,7 @@ const emit = defineEmits<{
 
 const errorMessage = computed(() => {
   if (!props.error) return ''
-  if (isAppError(props.error)) return props.error.message
-  if (props.error instanceof Error) return props.error.message
-  return props.error
+  return getErrorMessage(props.error)
 })
 
 const isRetryable = computed(() => {

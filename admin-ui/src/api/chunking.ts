@@ -1,13 +1,13 @@
 import client from './client'
-import type { ChunkingStrategy, ChunkingPreset, ChunkPreview, ChunkingCompareResult } from '@/types/api'
+import type { ChunkingStrategy, ChunkingPreset, ChunkPreview, ChunkingCompareResult, StrategiesResponse, PresetsResponse } from '@/types/api'
 
 export async function getStrategies(): Promise<ChunkingStrategy[]> {
-  const response = await client.get('/chunking/strategies')
+  const response = await client.get<StrategiesResponse>('/chunking/strategies')
   return response.data.strategies
 }
 
 export async function getPresets(): Promise<ChunkingPreset[]> {
-  const response = await client.get('/chunking/presets')
+  const response = await client.get<PresetsResponse>('/chunking/presets')
   return response.data.presets
 }
 

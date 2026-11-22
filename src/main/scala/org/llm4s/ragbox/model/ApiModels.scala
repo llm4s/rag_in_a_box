@@ -11,7 +11,8 @@ import java.util.UUID
  * Request to upload a document.
  *
  * @param content The document content
- * @param filename The filename for the document
+ * @param filename Optional filename for the document. When omitted (e.g. pasted
+ *                 text) the server assigns `untitled-<id prefix>.txt`.
  * @param metadata Optional metadata key-value pairs
  * @param collection Optional collection path (e.g., "acme/engineering")
  * @param readableBy Optional list of principals who can read this document.
@@ -20,7 +21,7 @@ import java.util.UUID
  */
 final case class DocumentUploadRequest(
   content: String,
-  filename: String,
+  filename: Option[String] = None,
   metadata: Option[Map[String, String]] = None,
   collection: Option[String] = None,
   readableBy: Option[Seq[String]] = None
@@ -36,22 +37,35 @@ final case class DocumentUploadResponse(
 )
 
 /**
- * Document information for listing.
+ * Document information for listing and detail views.
+ *
+ * @param collection Collection the document belongs to (if any)
+ * @param updatedAt  When the document was last re-indexed
  */
 final case class DocumentInfo(
   id: String,
   filename: String,
   chunkCount: Int,
   metadata: Map[String, String],
-  createdAt: Option[Instant]
+  createdAt: Option[Instant],
+  collection: Option[String] = None,
+  updatedAt: Option[Instant] = None
 )
 
 /**
  * Response for listing documents.
+ *
+ * @param total    Number of documents matching the filters (across all pages)
+ * @param page     1-based page number returned
+ * @param pageSize Page size used
+ * @param hasMore  Whether more pages are available
  */
 final case class DocumentListResponse(
   documents: Seq[DocumentInfo],
-  total: Int
+  total: Int,
+  page: Int = 1,
+  pageSize: Int = 0,
+  hasMore: Boolean = false
 )
 
 /**

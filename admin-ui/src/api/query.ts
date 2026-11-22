@@ -1,4 +1,5 @@
 import client from './client'
+import { getAuthHeaders } from './credentials'
 import type {
   QueryRequest,
   QueryResponse,
@@ -93,27 +94,6 @@ export function executeQueryStream(
     })
 
   return controller
-}
-
-/**
- * Get authentication headers from the current session.
- */
-function getAuthHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {}
-
-  // Get JWT token from localStorage if available
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
-  // Get API key if available
-  const apiKey = localStorage.getItem('api_key')
-  if (apiKey) {
-    headers['X-API-Key'] = apiKey
-  }
-
-  return headers
 }
 
 /**

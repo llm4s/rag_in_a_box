@@ -181,8 +181,11 @@ object CollectionPermissionRoutes {
     case GET -> Root / "api" / "v1" / "collections" / path if !path.contains("/") && path != "configs" =>
       getCollection(collectionStore, path)
 
+    // Paths ending in /config belong to CollectionConfigRoutes (GET /collections/{c}/config);
+    // this catch-all is mounted later in the Router and would otherwise shadow it.
     case GET -> "api" /: "v1" /: "collections" /: rest
-        if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" =>
+        if rest.segments.mkString("/") != "accessible" && rest.segments.mkString("/") != "configs" &&
+          !(rest.segments.size > 1 && rest.segments.last.decoded() == "config") =>
       val path = rest.segments.mkString("/")
       getCollection(collectionStore, path)
 

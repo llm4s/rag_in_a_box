@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, computed } from 'vue'
 import type {
   ChatMessage,
@@ -87,7 +88,7 @@ export const useChatStore = defineStore('chat', () => {
       return response.session
     } catch (e) {
       console.error('Failed to create session', e)
-      error.value = e instanceof Error ? e.message : 'Failed to create session'
+      error.value = getErrorMessage(e)
       return null
     }
   }
@@ -107,7 +108,7 @@ export const useChatStore = defineStore('chat', () => {
       messages.value = response.messages.map(recordToMessage)
     } catch (e) {
       console.error('Failed to load session', e)
-      error.value = e instanceof Error ? e.message : 'Failed to load session'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -354,7 +355,7 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to get response'
+      error.value = getErrorMessage(e)
 
       // Add local error message
       const userMsg: ChatMessage = {

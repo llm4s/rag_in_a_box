@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { getErrorMessage } from '@/composables/useApiError'
 import { ref, computed } from 'vue'
 import type {
   Experiment,
@@ -52,7 +53,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       const response = await experimentsApi.listExperiments()
       experiments.value = response.experiments
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch experiments'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -64,7 +65,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     try {
       runningExperiment.value = await experimentsApi.getRunningExperiment()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch running experiment'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -76,7 +77,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     try {
       currentExperiment.value = await experimentsApi.getExperiment(id)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch experiment'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -88,7 +89,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     try {
       currentResults.value = await experimentsApi.getExperimentResults(id)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch experiment results'
+      error.value = getErrorMessage(e)
     } finally {
       loading.value = false
     }
@@ -102,7 +103,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       experiments.value.unshift(response.experiment)
       return response.experiment
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create experiment'
+      error.value = getErrorMessage(e)
       return null
     } finally {
       loading.value = false
@@ -126,7 +127,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       return response.success
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to start experiment'
+      error.value = getErrorMessage(e)
       return false
     } finally {
       loading.value = false
@@ -152,7 +153,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       return response.success
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to stop experiment'
+      error.value = getErrorMessage(e)
       return false
     } finally {
       loading.value = false
@@ -175,7 +176,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       return response.success
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to archive experiment'
+      error.value = getErrorMessage(e)
       return false
     } finally {
       loading.value = false
@@ -195,7 +196,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       return response.success
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete experiment'
+      error.value = getErrorMessage(e)
       return false
     } finally {
       loading.value = false

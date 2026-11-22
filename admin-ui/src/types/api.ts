@@ -1,30 +1,84 @@
-// Document types
-export interface Document {
-  id: string
-  filename?: string
-  collection: string
-  metadata?: Record<string, string>
-  content?: string
-  chunkCount?: number
-  createdAt?: string
-  updatedAt?: string
+// ============================================================
+// Backend response types
+//
+// Interfaces mirroring Scala response models are checked against
+// `src/types/contract/api-contract.json` (generated from the Scala models by
+// ApiContractSpec) in `src/types/contract/contract.check.ts`. Scala `Option`
+// fields are encoded as `null` when absent, hence `?: T | null`.
+// ============================================================
+
+/** Error body returned by the backend (Scala `ErrorResponse`). */
+export interface ApiErrorBody {
+  error: string
+  message: string
+  details?: string | null
 }
 
+// Document types
+
+/** Scala `DocumentInfo` (GET /documents, GET /documents/{id}). */
+export interface Document {
+  id: string
+  filename: string
+  chunkCount: number
+  metadata: Record<string, string>
+  createdAt?: string | null
+  collection?: string | null
+  updatedAt?: string | null
+}
+
+/** Scala `DocumentListResponse`. `total` counts all matches, not just this page. */
 export interface DocumentListResponse {
   documents: Document[]
   total: number
   page: number
   pageSize: number
+  hasMore: boolean
 }
 
+/** Scala `DocumentUploadResponse` (POST /documents). */
+export interface DocumentUploadResponse {
+  documentId: string
+  chunks: number
+  message: string
+}
+
+/** Scala `ChunkMetadataInfo`. */
+export interface ChunkMetadataInfo {
+  headings: string[]
+  isCodeBlock: boolean
+  language?: string | null
+  startOffset?: number | null
+  endOffset?: number | null
+}
+
+/** Scala `ChunkInfo` (visibility chunk endpoints). */
 export interface Chunk {
   id: string
   documentId: string
+  index: number
   content: string
-  metadata?: Record<string, string>
-  chunkIndex: number
-  startOffset?: number
-  endOffset?: number
+  contentLength: number
+  metadata: Record<string, string>
+  chunkMetadata: ChunkMetadataInfo
+}
+
+/** Scala `ChunkConfigSnapshot`. */
+export interface ChunkConfigSnapshot {
+  strategy: string
+  targetSize: number
+  maxSize: number
+  overlap: number
+}
+
+/** Scala `DocumentChunksResponse` (GET /visibility/chunks/{docId}). */
+export interface DocumentChunksResponse {
+  documentId: string
+  filename?: string | null
+  collection?: string | null
+  chunkCount: number
+  chunks: Chunk[]
+  chunkingConfig: ChunkConfigSnapshot
 }
 
 // Stats types
@@ -41,38 +95,107 @@ export interface CollectionStats {
   chunkCount: number
 }
 
+/** Scala `DetailedCollectionStats`. */
+export interface DetailedCollectionStats {
+  name: string
+  documentCount: number
+  chunkCount: number
+  avgChunksPerDoc: number
+  avgChunkSize: number
+  chunkingStrategy?: string | null
+}
+
+/** Scala `DetailedStatsResponse` (GET /visibility/stats). */
 export interface VisibilityStats {
   documentCount: number
   chunkCount: number
+  vectorCount: number
   collectionCount: number
   avgChunksPerDocument: number
-  totalContentSize: number
+  collections: DetailedCollectionStats[]
   chunkSizeDistribution: ChunkSizeDistribution
-  collections?: CollectionStats[]
+  indexedSince?: string | null
+  lastIngestion?: string | null
+  currentConfig: ChunkConfigSnapshot
 }
 
+/** Scala `SizeBucket`: chunk sizes in [rangeStart, rangeEnd). */
+export interface SizeBucket {
+  rangeStart: number
+  rangeEnd: number
+  count: number
+}
+
+/** Scala `ChunkSizeDistribution`. */
 export interface ChunkSizeDistribution {
   min: number
   max: number
   avg: number
   median: number
-  buckets: { range: string; count: number }[]
+  p90: number
+  buckets: SizeBucket[]
 }
 
-// Config types
+// Runtime config types
+
+/** Scala `RuntimeConfig`: the hot/warm settings that can change at runtime. */
 export interface RuntimeConfig {
-  defaultChunkSize: number
-  defaultChunkOverlap: number
-  defaultChunkingStrategy: string
-  maxContentLength: number
-  enabledFileTypes: string[]
-  llmProvider: string
-  llmModel: string
-  embeddingProvider: string
-  embeddingModel: string
-  embeddingDimensions: number
+  topK: number
+  fusionStrategy: string
+  rrfK: number
+  systemPrompt: string
+  llmTemperature: number
+  chunkingStrategy: string
+  chunkSize: number
+  chunkOverlap: number
 }
 
+/** Body for PUT /config/runtime and POST /config/runtime/validate (only changed fields). */
+export type RuntimeConfigUpdate = Partial<RuntimeConfig>
+
+/** Scala `RuntimeConfigResponse` (GET /config/runtime). */
+export interface RuntimeConfigResponse {
+  config: RuntimeConfig
+  lastModified?: string | null
+  hotSettings: string[]
+  warmSettings: string[]
+}
+
+/** Scala `SettingUpdateResult`. */
+export interface SettingUpdateResult {
+  field: string
+  oldValue: string
+  newValue: string
+  changeability: string
+  effectiveImmediately: boolean
+}
+
+/** Scala `RuntimeConfigUpdateResponse` (PUT /config/runtime). */
+export interface RuntimeConfigUpdateResponse {
+  success: boolean
+  changes: SettingUpdateResult[]
+  current: RuntimeConfig
+  message: string
+}
+
+/** Scala `SettingValidation`. */
+export interface SettingValidation {
+  field: string
+  valid: boolean
+  currentValue: string
+  proposedValue: string
+  error?: string | null
+  warning?: string | null
+}
+
+/** Scala `RuntimeConfigValidateResponse` (POST /config/runtime/validate). */
+export interface RuntimeConfigValidateResponse {
+  valid: boolean
+  validations: SettingValidation[]
+  warnings: string[]
+}
+
+/** Scala `ConfigMetaItem` (GET /config/runtime/meta). */
 export interface ConfigMeta {
   key: string
   value: string
@@ -81,45 +204,123 @@ export interface ConfigMeta {
   requiresRestart: boolean
 }
 
-export interface ConfigHistory {
+/** Scala `ConfigChange`. */
+export interface ConfigChange {
   id: number
-  key: string
+  field: string
   oldValue: string
   newValue: string
   changedAt: string
-  changedBy?: string
+  changedBy?: string | null
 }
 
-export interface CollectionConfig {
-  name: string
-  chunkingStrategy: string
-  chunkSize: number
-  chunkOverlap: number
-  customSettings?: Record<string, string>
+/** Scala `ConfigHistoryResponse` (GET /config/runtime/history). */
+export interface ConfigHistoryResponse {
+  changes: ConfigChange[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
+// Collection config types
+
+/** Scala `CollectionChunkingConfig`: a collection's custom overrides. */
+export interface CollectionChunkingConfig {
+  collection: string
+  strategy?: string | null
+  targetSize?: number | null
+  maxSize?: number | null
+  overlap?: number | null
+  fileTypeStrategies: Record<string, string>
+  updatedAt?: string | null
+}
+
+/** Scala `EffectiveCollectionConfig`: overrides merged with defaults. */
+export interface EffectiveCollectionConfig {
+  strategy: string
+  targetSize: number
+  maxSize: number
+  overlap: number
+  source: string
+  appliedFileTypeOverride?: string | null
+}
+
+/** Scala `CollectionConfigResponse` (GET /collections/{c}/config). */
+export interface CollectionConfigResponse {
+  collection: string
+  hasCustomConfig: boolean
+  config?: CollectionChunkingConfig | null
+  effectiveConfig: EffectiveCollectionConfig
+  documentCount: number
+}
+
+/** Scala `AllCollectionConfigsResponse` (GET /collections/configs). */
+export interface AllCollectionConfigsResponse {
+  collections: CollectionConfigResponse[]
+  defaultConfig: EffectiveCollectionConfig
+}
+
+/** Scala `CollectionConfigUpdateRequest` (PUT /collections/{c}/config). */
+export interface CollectionConfigUpdateRequest {
+  strategy?: string
+  targetSize?: number
+  maxSize?: number
+  overlap?: number
+  fileTypeStrategies?: Record<string, string>
+}
+
+/** Scala `CollectionConfigUpdateResponse`. */
+export interface CollectionConfigUpdateResponse {
+  collection: string
+  config: CollectionChunkingConfig
+  message: string
+}
+
+/** Scala `EffectiveConfigPreviewResponse` (POST /collections/{c}/config/preview). */
+export interface EffectiveConfigPreviewResponse {
+  collection: string
+  filename?: string | null
+  effectiveConfig: EffectiveCollectionConfig
+  configResolutionPath: string[]
 }
 
 // Chunking types
+
+/** Scala `StrategyInfo`. */
 export interface ChunkingStrategy {
   name: string
+  displayName: string
   description: string
-  parameters: ChunkingParameter[]
+  bestFor: string[]
+  tradeoffs: string[]
+  requiresEmbeddings: boolean
 }
 
-export interface ChunkingParameter {
-  name: string
-  type: string
-  defaultValue: string
-  description: string
+/** Scala `StrategiesResponse` (GET /chunking/strategies). */
+export interface StrategiesResponse {
+  strategies: ChunkingStrategy[]
+  currentDefault: string
 }
 
+/** Scala `PresetInfo`. */
 export interface ChunkingPreset {
   name: string
-  strategy: string
-  chunkSize: number
-  chunkOverlap: number
+  displayName: string
   description: string
+  targetSize: number
+  maxSize: number
+  overlap: number
+  bestFor: string[]
 }
 
+/** Scala `PresetsResponse` (GET /chunking/presets). */
+export interface PresetsResponse {
+  presets: ChunkingPreset[]
+  current: ChunkingPreset
+}
+
+/** Frontend view of a single-strategy preview (derived from ChunkingPreviewResponse). */
 export interface ChunkPreview {
   chunks: PreviewChunk[]
   totalChunks: number
@@ -127,6 +328,7 @@ export interface ChunkPreview {
   avgChunkSize: number
 }
 
+/** Frontend view of a preview chunk. */
 export interface PreviewChunk {
   index: number
   content: string
@@ -135,12 +337,13 @@ export interface PreviewChunk {
   size: number
 }
 
-// Chunking comparison types (matches backend ChunkingCompareResponse)
+/** Scala `ChunkingCompareResponse`. */
 export interface ChunkingCompareResult {
   results: StrategyResult[]
-  recommendation?: StrategyRecommendation
+  recommendation?: StrategyRecommendation | null
 }
 
+/** Scala `StrategyResult`. */
 export interface StrategyResult {
   strategy: string
   chunks: ComparePreviewChunk[]
@@ -148,15 +351,17 @@ export interface StrategyResult {
   warnings: ChunkingWarning[]
 }
 
+/** Scala `PreviewChunk`. */
 export interface ComparePreviewChunk {
   index: number
   content: string
   length: number
   headings: string[]
   isCodeBlock: boolean
-  language?: string
+  language?: string | null
 }
 
+/** Scala `ChunkingStats`. */
 export interface ChunkingStats {
   chunkCount: number
   totalLength: number
@@ -166,12 +371,14 @@ export interface ChunkingStats {
   estimatedTokens: number
 }
 
+/** Scala `ChunkingWarning`. */
 export interface ChunkingWarning {
   level: 'info' | 'warning' | 'error'
   message: string
-  suggestion?: string
+  suggestion?: string | null
 }
 
+/** Scala `StrategyRecommendation`. */
 export interface StrategyRecommendation {
   strategy: string
   reason: string

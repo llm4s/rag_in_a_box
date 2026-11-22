@@ -44,6 +44,28 @@ const retryableCodes: Set<string> = new Set([
   ErrorCodes.SERVER_ERROR
 ])
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+/**
+ * Build a human-readable message from a backend error body.
+ *
+ * The backend's `ErrorResponse` is `{ error, message, details? }` where `error`
+ * is a machine code (e.g. `validation_failed`), so prefer `message` and append
+ * `details` when present. Fall back to `error` only for bodies that carry a
+ * human message there (e.g. middleware responses like `{ error: "Rate limit exceeded" }`).
+ */
+export function extractServerMessage(data: Record<string, unknown> | undefined): string | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const message = nonEmptyString(data.message)
+  const details = nonEmptyString(data.details)
+  if (message) {
+    return details && details !== message ? `${message}: ${details}` : message
+  }
+  return nonEmptyString(data.error) ?? details
+}
+
 export function transformAxiosError(error: AxiosError): AppError {
   // Network error (no response)
   if (!error.response) {
@@ -64,9 +86,7 @@ export function transformAxiosError(error: AxiosError): AppError {
   const status = error.response.status
   const data = error.response.data as Record<string, unknown> | undefined
 
-  // Extract server error message if available
-  const serverMessage = data?.error as string | undefined
-    || data?.message as string | undefined
+  const serverMessage = extractServerMessage(data)
 
   let code: string
   let message: string
@@ -125,6 +145,21 @@ export function isAppError(error: unknown): error is AppError {
     'message' in error &&
     'retryable' in error
   )
+}
+
+/** Normalise anything thrown into an AppError (API errors pass through unchanged). */
+export function toAppError(error: unknown, retryable = true): AppError {
+  if (isAppError(error)) return error
+  return {
+    code: ErrorCodes.UNKNOWN,
+    message: getErrorMessage(error),
+    retryable
+  }
+}
+
+/** True when `error` is an API error with the given HTTP status. */
+export function isHttpStatus(error: unknown, status: number): boolean {
+  return isAppError(error) && error.statusCode === status
 }
 
 export function getErrorMessage(error: unknown): string {

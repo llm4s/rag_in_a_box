@@ -101,6 +101,95 @@ class DocumentRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEa
     body should include("doc-3")
   }
 
+  private def getJson(uri: Uri): io.circe.Json = {
+    val response = routes.orNotFound.run(Request[IO](Method.GET, uri)).unsafeRunSync()
+    response.status shouldBe Status.Ok
+    parse(response.as[String].unsafeRunSync()).toOption.get
+  }
+
+  private def ids(json: io.circe.Json): Seq[String] =
+    json.hcursor.downField("documents").as[Seq[io.circe.Json]].toOption.get
+      .flatMap(_.hcursor.get[String]("id").toOption)
+
+  it should "return newest first with pagination metadata" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val json = getJson(uri"/api/v1/documents")
+    ids(json) shouldBe Seq("doc-3", "doc-2", "doc-1")
+    json.hcursor.get[Int]("total").toOption shouldBe Some(3)
+    json.hcursor.get[Int]("page").toOption shouldBe Some(1)
+    json.hcursor.get[Int]("pageSize").toOption shouldBe Some(DocumentRoutes.DefaultPageSize)
+    json.hcursor.get[Boolean]("hasMore").toOption shouldBe Some(false)
+  }
+
+  it should "paginate with page and pageSize" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val first = getJson(uri"/api/v1/documents?page=1&pageSize=2")
+    ids(first) shouldBe Seq("doc-3", "doc-2")
+    first.hcursor.get[Int]("total").toOption shouldBe Some(3)
+    first.hcursor.get[Boolean]("hasMore").toOption shouldBe Some(true)
+
+    val second = getJson(uri"/api/v1/documents?page=2&pageSize=2")
+    ids(second) shouldBe Seq("doc-1")
+    second.hcursor.get[Boolean]("hasMore").toOption shouldBe Some(false)
+
+    val beyond = getJson(uri"/api/v1/documents?page=9&pageSize=2")
+    ids(beyond) shouldBe empty
+    beyond.hcursor.get[Int]("total").toOption shouldBe Some(3)
+  }
+
+  it should "clamp pageSize and page into range" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+    val json = getJson(uri"/api/v1/documents?pageSize=100000&page=0")
+    json.hcursor.get[Int]("pageSize").toOption shouldBe Some(DocumentRoutes.MaxPageSize)
+    json.hcursor.get[Int]("page").toOption shouldBe Some(1)
+  }
+
+  it should "filter by collection and expose it as a top-level field" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+    val json = getJson(uri"/api/v1/documents?collection=another-collection")
+    ids(json) shouldBe Seq("doc-2")
+    json.hcursor.get[Int]("total").toOption shouldBe Some(1)
+    json.hcursor.downField("documents").downArray.get[String]("collection").toOption shouldBe Some("another-collection")
+  }
+
+  it should "filter by case-insensitive search on id and filename" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments :+
+      TestFixtures.sampleDocument1.copy(documentId = "doc-4", metadata = Map("filename" -> "Quarterly-Report.pdf")))
+    ids(getJson(uri"/api/v1/documents?search=QUARTERLY")) shouldBe Seq("doc-4")
+    ids(getJson(uri"/api/v1/documents?search=doc-2")) shouldBe Seq("doc-2")
+  }
+
+  // ============================================================
+  // GET /api/v1/documents/:id - Document detail
+  // ============================================================
+
+  "GET /api/v1/documents/:id" should "return document details from the registry" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+    val json = getJson(uri"/api/v1/documents/doc-1")
+    json.hcursor.get[String]("id").toOption shouldBe Some("doc-1")
+    json.hcursor.get[Int]("chunkCount").toOption shouldBe Some(3)
+    json.hcursor.get[String]("collection").toOption shouldBe Some("test-collection")
+    json.hcursor.get[String]("updatedAt").toOption shouldBe Some("2024-01-01T00:00:00Z")
+  }
+
+  it should "return 404 for unknown documents" in {
+    val response = routes.orNotFound.run(Request[IO](Method.GET, uri"/api/v1/documents/missing")).unsafeRunSync()
+    response.status shouldBe Status.NotFound
+  }
+
+  "POST /api/v1/documents without filename" should "assign a default filename" in {
+    val request = Request[IO](Method.POST, uri"/api/v1/documents")
+      .withEntity("""{"content": "Pasted text"}""")
+      .withContentType(`Content-Type`(MediaType.application.json))
+
+    val response = routes.orNotFound.run(request).unsafeRunSync()
+    response.status shouldBe Status.Created
+    val (_, _, metadata) = mockService.getIngestCalls.head
+    metadata.get("filename").exists(_.startsWith("untitled-")) shouldBe true
+  }
+
   // ============================================================
   // PUT /api/v1/documents/:id - Upsert document
   // ============================================================

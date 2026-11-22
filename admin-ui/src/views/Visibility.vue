@@ -118,7 +118,7 @@ function onPageChange(newPage: number) {
       <v-expansion-panels v-if="chunks?.length">
         <v-expansion-panel v-for="chunk in chunks" :key="chunk.id">
           <v-expansion-panel-title>
-            <v-chip size="x-small" class="mr-2">#{{ chunk.chunkIndex }}</v-chip>
+            <v-chip size="x-small" class="mr-2">#{{ chunk.index }}</v-chip>
             <span class="text-truncate">{{ chunk.content.substring(0, 80) }}...</span>
           </v-expansion-panel-title>
           <v-expansion-panel-text>
