@@ -6,9 +6,12 @@ A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](htt
 - REST API for document ingestion and querying
 - PostgreSQL + pgvector for scalable vector storage
 - **Persistent document registry** - survives restarts, tracks content changes
-- Multiple embedding providers (OpenAI, VoyageAI, Ollama)
-- Multiple LLM providers for answer generation (OpenAI, Anthropic)
-- Hybrid search (vector + keyword) with RRF fusion
+- Built on [llm4s](https://github.com/llm4s/llm4s): every LLM and embedding provider is resolved through the llm4s provider registry (OpenAI, Anthropic, VoyageAI, Ollama, or any provider module on the classpath)
+- Hybrid search (pgvector + PostgreSQL full-text BM25) with RRF or weighted fusion
+- Optional reranking (Cohere or LLM) and LLM query rewriting, through llm4s
+- PDF, DOCX, HTML and text uploads (Apache Tika via llm4s)
+- Chat with conversation history
+- Per-query latency, token and cost accounting from llm4s tracing
 - Incremental ingestion with content hash change detection
 - Built-in connectors (directory, URL) with scheduled sync
 - **Visibility API** - inspect chunks, view config, understand RAG behavior
@@ -76,7 +79,7 @@ RAG in a Box includes a built-in web-based admin interface for managing document
 
 - **Dashboard** - Overview of document counts, chunk statistics, and system health
 - **Documents** - Browse, search, upload, and delete documents
-- **Upload** - Add documents via text, file upload, or URL ingestion
+- **Upload** - Add documents via text, file upload (PDF, DOCX, HTML, text, ...), or URL ingestion
 - **Configuration** - View and modify runtime settings
 - **Collections** - Manage per-collection chunking configurations
 - **Chunking Preview** - Test and compare chunking strategies before applying
