@@ -50,14 +50,13 @@ object Main extends IOApp {
       _ <- logger.info(s"Server will listen on ${config.server.host}:${config.server.port}")
       _ <- logger.info(s"Embedding provider: ${config.embedding.provider}/${config.embedding.model}")
       _ <- logger.info(s"LLM model: ${config.llm.model}")
-      _ <- logger.info(s"Database: ${config.database.host}:${config.database.port}/${config.database.database}")
+      _ <- logger.info(s"Database: ${config.database.effectiveHost}:${config.database.effectivePort}/${config.database.effectiveDatabase}${if (config.database.parsedUrl.isDefined) " (from DATABASE_URL)" else ""}")
       _ <- logger.info("Document registry: PostgreSQL (persistent)")
       _ <- logger.info(s"API authentication: ${if (config.security.isEnabled) "enabled" else "disabled"}")
       _ <- logger.info(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}")
       _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}")
       _ <- logger.info(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}")
       _ <- logger.info(s"CORS: ${if (config.production.cors.isAllowAll) "allow all origins" else s"restricted to ${config.production.cors.allowedOrigins.mkString(", ")}"}")
-      _ <- logger.info("Permission-based RAG: enabled (LLM4S v0.2.6+)")
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
   }
@@ -70,6 +69,10 @@ object Main extends IOApp {
       // Try to create SearchIndex for permission-based RAG
       // Falls back to legacy mode if SearchIndex creation fails
       searchIndexOpt <- Resource.eval(createSearchIndex(config))
+      _ <- Resource.eval(searchIndexOpt match {
+        case Some(_) => logger.info("Permission-based RAG: enabled")
+        case None => logger.warn("Permission-based RAG: DISABLED (legacy mode, queries ignore permissions)")
+      })
 
       // Create RAG service with PostgreSQL-backed document registry
       // Use permission-aware mode if SearchIndex is available
@@ -261,32 +264,46 @@ object Main extends IOApp {
 
   /**
    * Create SearchIndex for permission-based RAG.
-   * Returns None if creation fails (falls back to legacy mode).
+   *
+   * Uses the same effective connection settings (DATABASE_URL or host/port/database) as the
+   * rest of the application. On failure the error is logged and, unless
+   * `permissions.required` is set, None is returned (legacy mode, no permissions).
+   * With `permissions.required = true` a failure aborts startup.
    */
   private def createSearchIndex(config: AppConfig): IO[Option[SearchIndex]] = {
-    val jdbcUrl = s"jdbc:postgresql://${config.database.host}:${config.database.port}/${config.database.database}"
-    IO {
+    val db = config.database
+    val attempt: IO[Either[String, SearchIndex]] = IO {
       PgSearchIndex.fromJdbcUrl(
-        jdbcUrl = jdbcUrl,
-        user = config.database.user,
-        password = config.database.password,
-        vectorTableName = config.database.tableName
-      ).toOption.flatMap { si =>
-        // Initialize schema (adds permission columns if missing)
-        si.initializeSchema() match {
-          case Right(_) =>
-            Some(si)
-          case Left(err) =>
-            None
+        jdbcUrl = db.connectionString,
+        user = db.effectiveUser,
+        password = db.effectivePassword,
+        vectorTableName = db.tableName
+      ).left.map(err => s"Failed to create SearchIndex: ${err.message}")
+        .flatMap { si =>
+          // Initialize schema (adds permission columns if missing)
+          si.initializeSchema() match {
+            case Right(_) => Right(si)
+            case Left(err) =>
+              si.close()
+              Left(s"Failed to initialize permission schema: ${err.message}")
+          }
         }
-      }
-    }.flatTap {
-      case Some(_) => logger.info("SearchIndex initialized with permission schema")
-      case None => IO.unit
-    }.handleErrorWith { e =>
-      logger.warn(s"Failed to create SearchIndex: ${e.getMessage}") *>
-      logger.warn("Falling back to legacy RAG mode (no permissions)") *>
-      IO.pure(None)
+    }.handleError(e => Left(s"Failed to create SearchIndex: ${e.getMessage}"))
+
+    attempt.flatMap {
+      case Right(si) =>
+        logger.info("SearchIndex initialized with permission schema").as(Some(si))
+      case Left(error) if config.permissions.required =>
+        logger.error(error) *>
+          IO.raiseError(new IllegalStateException(
+            s"$error. Refusing to start without permission-based RAG because PERMISSIONS_REQUIRED=true"
+          ))
+      case Left(error) =>
+        logger.warn(error) *>
+          logger.warn(
+            "Falling back to legacy RAG mode (no permissions). " +
+              "Set PERMISSIONS_REQUIRED=true to fail startup instead."
+          ).as(None)
     }
   }
 

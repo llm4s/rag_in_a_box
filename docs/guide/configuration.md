@@ -37,7 +37,8 @@ PostgreSQL with pgvector is required for vector storage.
 | `PG_USER` | `rag` | Database user |
 | `PG_PASSWORD` | `rag` | Database password |
 | `PG_TABLE_NAME` | `rag_embeddings` | Table for vector embeddings |
-| `DATABASE_URL` | - | Alternative: full connection URL |
+| `DATABASE_URL` | - | Alternative: full connection URL (overrides the settings above) |
+| `PERMISSIONS_REQUIRED` | `false` | Fail startup if permission-based RAG cannot be initialized (see below) |
 
 ### Using DATABASE_URL
 
@@ -46,6 +47,35 @@ Instead of individual settings, you can use a single connection URL:
 ```bash
 DATABASE_URL=postgresql://user:password@host:5432/database
 ```
+
+Format: `postgresql://[user[:password]@]host[:port][/database][?params]`
+
+- `postgres://` and `jdbc:postgresql://` are also accepted.
+- Credentials are taken from the URL and passed to the driver separately, so
+  they never appear in the JDBC URL. Percent-encode special characters in the
+  user name or password (for example `@` is `%40`, `/` is `%2F`, `:` is `%3A`).
+- A missing port defaults to `5432` (not `PG_PORT`). A missing user, password
+  or database falls back to `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`.
+- Query parameters are passed through to the PostgreSQL JDBC driver, e.g.
+  `?sslmode=require`.
+- Multiple hosts are not supported. Wrap IPv6 addresses in brackets:
+  `postgresql://user:pass@[::1]:5432/ragdb`.
+- An invalid `DATABASE_URL` fails startup with a configuration error.
+
+Every database consumer (document registry, vector store, permission search
+index, auth, analytics) uses the same effective connection settings.
+
+### Permission-based RAG
+
+At startup the server initializes a permission-aware search index. If that fails
+(for example the database is unreachable or the schema cannot be migrated), the
+default behaviour is to log a warning and fall back to **legacy mode, in which
+queries ignore all document permissions**. The startup log always states the
+actual mode (`Permission-based RAG: enabled` or `Permission-based RAG: DISABLED`).
+
+Set `PERMISSIONS_REQUIRED=true` (HOCON `permissions.required`) to make this a
+startup failure instead. This is recommended for any deployment that relies on
+document permissions.
 
 ---
 
