@@ -18,11 +18,11 @@ export default defineConfig(({ mode }) => {
       target: apiTarget,
       changeOrigin: true
     },
-    // Live updates (stores/websocket.ts)
+    // Live updates (stores/websocket.ts). The Host header is kept (no changeOrigin) so the
+    // server sees the handshake's Origin (e.g. localhost:3000) as same-origin (#45).
     '/ws': {
       target: apiTarget.replace(/^http/, 'ws'),
-      ws: true,
-      changeOrigin: true
+      ws: true
     }
   }
 

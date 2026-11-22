@@ -63,7 +63,7 @@ final class RagboxApp private (
   def httpApp(wsb: WebSocketBuilder2[IO]): HttpApp[IO] = {
     // Errors raised by any route (or the authenticator) become ErrorResponses here
     val all: HttpRoutes[IO] = ErrorHandling(
-      routes.public <+> authenticator(Authz.tokenAllowlist(routes.authed <+> WebSocketRoutes.routes(wsb, hub)))
+      routes.public <+> authenticator(Authz.tokenAllowlist(routes.authed <+> WebSocketRoutes.routes(wsb, hub, config.production.cors)))
     )
 
     val limited = RequestSizeMiddleware(RequestSizeMiddleware.Config(
