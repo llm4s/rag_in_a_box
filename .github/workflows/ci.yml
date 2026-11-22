@@ -111,7 +111,7 @@ jobs:
 
       - name: Run tests with coverage
         run: sbt clean coverage test coverageReport coverageAggregate
-        # Coverage minimum (20%) enforced via coverageFailOnMinimum in build.sbt
+        # Coverage minimum (83%) enforced via coverageFailOnMinimum in build.sbt
 
       - name: Locate coverage report
         id: coverage

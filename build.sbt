@@ -10,10 +10,15 @@ def isLicenseOrNotice(name: String): Boolean = {
 
 // Code coverage settings (ThisBuild scope for scoverage)
 ThisBuild / coverageEnabled := false
-ThisBuild / coverageMinimumStmtTotal := 20  // Minimum 20% statement coverage (baseline)
+// Just below the measured total (see codecov.yml), so coverage cannot silently regress; raise it
+// as coverage grows
+ThisBuild / coverageMinimumStmtTotal := 83  // measured: 84.39% (#48)
 ThisBuild / coverageFailOnMinimum := true   // Fail build if below minimum
 ThisBuild / coverageHighlighting := true
-ThisBuild / coverageExcludedPackages := "<empty>;.*Main.*;.*StaticRoutes.*;.*BuildInfo.*"
+// Regexes on fully qualified class names. Only startup code that no test can run is excluded:
+// Main (process entry point, signal handling, the --migrate-only path) and the generated
+// BuildInfo. RagboxApp's wiring is measured - the full-stack specs build the real app with it.
+ThisBuild / coverageExcludedPackages := "<empty>;org\\.llm4s\\.ragbox\\.Main.*;org\\.llm4s\\.ragbox\\.BuildInfo.*"
 
 lazy val root = (project in file("."))
   .enablePlugins(BuildInfoPlugin)
