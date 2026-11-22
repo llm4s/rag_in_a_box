@@ -10,7 +10,6 @@ import org.http4s.headers.{Location, `Set-Cookie`, `WWW-Authenticate`}
 import org.http4s.Challenge
 import org.llm4s.ragbox.auth.*
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs.given
 
 /**
  * HTTP routes for OAuth2/OIDC authentication.

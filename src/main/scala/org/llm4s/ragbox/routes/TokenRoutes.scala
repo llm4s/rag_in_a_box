@@ -10,7 +10,6 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.auth._
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs._
 
 import java.time.Instant
 
@@ -42,7 +41,6 @@ final case class CreateTokenResponse(
 )
 
 object CreateTokenResponse {
-  implicit val instantEncoder: Encoder[Instant] = Encoder.encodeString.contramap(_.toString)
   implicit val encoder: Encoder[CreateTokenResponse] = deriveEncoder
   implicit val decoder: Decoder[CreateTokenResponse] = deriveDecoder
 }
@@ -62,7 +60,6 @@ final case class TokenInfoResponse(
 )
 
 object TokenInfoResponse {
-  implicit val instantEncoder: Encoder[Instant] = Encoder.encodeString.contramap(_.toString)
   implicit val encoder: Encoder[TokenInfoResponse] = deriveEncoder
   implicit val decoder: Decoder[TokenInfoResponse] = deriveDecoder
 

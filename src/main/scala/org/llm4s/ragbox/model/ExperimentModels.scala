@@ -1,5 +1,8 @@
 package org.llm4s.ragbox.model
 
+import io.circe.{Codec, Decoder, Encoder, Json}
+import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
+
 import java.time.Instant
 
 /**
@@ -24,6 +27,11 @@ object ExperimentStatus {
   /** The status whose [[ExperimentStatus.value]] is `value` (case-insensitive). */
   def fromString(value: String): Option[ExperimentStatus] =
     values.find(_.value == value.trim.toLowerCase)
+
+  given Encoder[ExperimentStatus] = Encoder.encodeString.contramap(_.value)
+  given Decoder[ExperimentStatus] = Decoder.decodeString.emap { s =>
+    fromString(s).toRight(s"Unknown experiment status: $s")
+  }
 }
 
 /**
@@ -42,7 +50,7 @@ final case class ExperimentConfigSnapshot(
   llmTemperature: Option[Double] = None,
   rrfK: Option[Int] = None,
   reranking: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * An experiment definition for A/B testing.
@@ -71,7 +79,7 @@ final case class Experiment(
   createdAt: Instant,
   startedAt: Option[Instant] = None,
   endedAt: Option[Instant] = None
-)
+) derives Codec.AsObject
 
 /**
  * Request to create a new experiment.
@@ -85,6 +93,15 @@ final case class CreateExperimentRequest(
   collection: Option[String] = None
 )
 
+object CreateExperimentRequest {
+  given Encoder[CreateExperimentRequest] = deriveEncoder
+  // A request without a baselineConfig (the admin UI leaves an empty one out) gets the default
+  given Decoder[CreateExperimentRequest] =
+    deriveDecoder[CreateExperimentRequest].prepare(_.withFocus(_.mapObject { o =>
+      if (o.contains("baselineConfig")) o else o.add("baselineConfig", Json.obj())
+    }))
+}
+
 /**
  * Request to update an experiment.
  */
@@ -94,7 +111,7 @@ final case class UpdateExperimentRequest(
   baselineConfig: Option[ExperimentConfigSnapshot] = None,
   variantConfig: Option[ExperimentConfigSnapshot] = None,
   trafficSplit: Option[Double] = None
-)
+) derives Codec.AsObject
 
 /**
  * Metrics for one group of an experiment. Latency, chunk and rating figures are over the
@@ -119,7 +136,7 @@ final case class ExperimentVariantMetrics(
   latencyStdDevMs: Option[Double] = None,
   ratingStdDev: Option[Double] = None,
   positiveCount: Int = 0
-)
+) derives Codec.AsObject
 
 /**
  * A two-sample test of one metric, variant against baseline.
@@ -140,7 +157,7 @@ final case class SignificanceTest(
   statistic: Double,
   pValue: Double,
   significant: Boolean
-)
+) derives Codec.AsObject
 
 /**
  * Comparison of an experiment's variant with its baseline.
@@ -154,7 +171,7 @@ final case class ExperimentAnalysis(
   chunksUsedChange: String,
   errorRateChange: String,
   tests: Seq[SignificanceTest]
-)
+) derives Codec.AsObject
 
 object ExperimentAnalysis {
 
@@ -173,7 +190,7 @@ final case class ExperimentResults(
   baseline: ExperimentVariantMetrics,
   variant: ExperimentVariantMetrics,
   analysis: ExperimentAnalysis
-)
+) derives Codec.AsObject
 
 /**
  * Response for listing experiments.
@@ -181,7 +198,7 @@ final case class ExperimentResults(
 final case class ExperimentListResponse(
   experiments: Seq[Experiment],
   total: Int
-)
+) derives Codec.AsObject
 
 /**
  * Response after creating an experiment.
@@ -189,7 +206,7 @@ final case class ExperimentListResponse(
 final case class CreateExperimentResponse(
   experiment: Experiment,
   message: String
-)
+) derives Codec.AsObject
 
 /**
  * Response for experiment operations.
@@ -198,4 +215,4 @@ final case class ExperimentOperationResponse(
   success: Boolean,
   message: String,
   experiment: Option[Experiment] = None
-)
+) derives Codec.AsObject

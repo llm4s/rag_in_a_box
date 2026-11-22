@@ -5,7 +5,6 @@ import io.circe.syntax._
 import io.circe.parser._
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 import java.sql.{Connection, PreparedStatement, ResultSet, Timestamp}
 import java.time.Instant

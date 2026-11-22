@@ -16,7 +16,6 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
 import org.llm4s.ragbox.testkit.{MockRAGService, InMemoryQueryLogRegistry, TestFixtures}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
 

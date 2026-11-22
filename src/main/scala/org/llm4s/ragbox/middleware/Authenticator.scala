@@ -11,7 +11,6 @@ import org.http4s.server.AuthMiddleware
 import org.llm4s.ragbox.auth._
 import org.llm4s.ragbox.config.{AuthMode, SecurityConfig}
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs._
 import org.typelevel.ci.CIStringSyntax
 
 import java.nio.charset.StandardCharsets

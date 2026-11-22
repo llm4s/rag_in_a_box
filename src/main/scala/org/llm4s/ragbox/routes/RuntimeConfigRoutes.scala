@@ -9,7 +9,6 @@ import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.config.RuntimeConfigManager
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for runtime configuration management.
@@ -37,16 +36,7 @@ object RuntimeConfigRoutes {
       for {
         request <- req.as[RuntimeConfigUpdateRequest]
         // First validate
-        validation <- configManager.validate(RuntimeConfigValidateRequest(
-          topK = request.topK,
-          fusionStrategy = request.fusionStrategy,
-          rrfK = request.rrfK,
-          systemPrompt = request.systemPrompt,
-          llmTemperature = request.llmTemperature,
-          chunkingStrategy = request.chunkingStrategy,
-          chunkSize = request.chunkSize,
-          chunkOverlap = request.chunkOverlap
-        ))
+        validation <- configManager.validate(request)
         response <- if (validation.valid) {
           configManager.update(request).flatMap(result => Ok(result.asJson))
         } else {
@@ -61,7 +51,7 @@ object RuntimeConfigRoutes {
     // POST /api/v1/config/runtime/validate - Validate proposed changes
     case (req @ POST -> Root / "api" / "v1" / "config" / "runtime" / "validate") as principal =>
       for {
-        request <- req.as[RuntimeConfigValidateRequest]
+        request <- req.as[RuntimeConfigUpdateRequest]
         result <- configManager.validate(request)
         response <- Ok(result.asJson)
       } yield response
@@ -93,20 +83,4 @@ object RuntimeConfigRoutes {
         response <- Ok(meta.asJson)
       } yield response
   })
-}
-
-/**
- * Metadata about a configuration item.
- */
-final case class ConfigMetaItem(
-  key: String,
-  value: String,
-  `type`: String,  // "hot", "warm", or "cold"
-  description: String,
-  requiresRestart: Boolean
-)
-
-object ConfigMetaItem {
-  import io.circe.generic.semiauto._
-  implicit val encoder: io.circe.Encoder[ConfigMetaItem] = deriveEncoder
 }

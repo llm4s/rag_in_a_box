@@ -9,7 +9,6 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.ingestion.{IngestionAlreadyRunning, IngestionRequestRejected, IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for document ingestion.

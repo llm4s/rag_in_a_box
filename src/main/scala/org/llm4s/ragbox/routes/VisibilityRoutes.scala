@@ -7,7 +7,6 @@ import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.service.RAGService
 
 /**

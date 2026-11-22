@@ -3,8 +3,6 @@ package org.llm4s.ragbox.model
 import io.circe.{Encoder, Json, Printer}
 import io.circe.parser.parse
 import io.circe.syntax._
-import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.routes.ConfigMetaItem
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 

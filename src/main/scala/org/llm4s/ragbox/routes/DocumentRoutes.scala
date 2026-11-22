@@ -17,7 +17,6 @@ import java.time.Instant
 import java.time.format.DateTimeParseException
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.DocumentEntry
 import org.llm4s.ragbox.service.{InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation

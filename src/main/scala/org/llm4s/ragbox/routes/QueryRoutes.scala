@@ -12,7 +12,6 @@ import org.http4s.headers.`Content-Type`
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{QueryLogRegistryBase, QueryLogging}
 import org.llm4s.ragbox.service.{ExperimentService, InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation

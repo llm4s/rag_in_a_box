@@ -13,7 +13,6 @@ import org.http4s.dsl.io._
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for collection management with permission controls.

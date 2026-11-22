@@ -10,7 +10,6 @@ import org.http4s.dsl.io._
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.http4s.QueryParamDecoder
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.service.SuggestionService
 
 import java.time.Instant

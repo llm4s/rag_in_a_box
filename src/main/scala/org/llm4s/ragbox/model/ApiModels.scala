@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 import java.time.Instant
 import java.util.UUID
 
@@ -25,7 +27,7 @@ final case class DocumentUploadRequest(
   metadata: Option[Map[String, String]] = None,
   collection: Option[String] = None,
   readableBy: Option[Seq[String]] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response after uploading a document.
@@ -34,7 +36,7 @@ final case class DocumentUploadResponse(
   documentId: String,
   chunks: Int,
   message: String
-)
+) derives Codec.AsObject
 
 /**
  * Document information for listing and detail views.
@@ -50,7 +52,7 @@ final case class DocumentInfo(
   createdAt: Option[Instant],
   collection: Option[String] = None,
   updatedAt: Option[Instant] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response for listing documents.
@@ -66,7 +68,7 @@ final case class DocumentListResponse(
   page: Int = 1,
   pageSize: Int = 0,
   hasMore: Boolean = false
-)
+) derives Codec.AsObject
 
 /**
  * Request to upload document from URL.
@@ -75,7 +77,7 @@ final case class UrlIngestionRequest(
   url: String,
   metadata: Option[Map[String, String]] = None,
   collection: Option[String] = None
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Upsert Models (for SDK/Sidecar pattern)
@@ -98,7 +100,7 @@ final case class DocumentUpsertRequest(
   contentHash: Option[String] = None,
   collection: Option[String] = None,
   readableBy: Option[Seq[String]] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response after upserting a document.
@@ -108,7 +110,7 @@ final case class DocumentUpsertResponse(
   chunks: Int,
   action: String,  // "created", "updated", "unchanged"
   message: String
-)
+) derives Codec.AsObject
 
 /**
  * Request to prune documents not in the provided list.
@@ -120,7 +122,7 @@ final case class DocumentUpsertResponse(
 final case class SyncPruneRequest(
   keepDocumentIds: Seq[String],
   dryRun: Option[Boolean] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from prune operation.
@@ -130,7 +132,7 @@ final case class SyncPruneResponse(
   prunedCount: Int,
   prunedIds: Option[Seq[String]] = None,  // Only included when dryRun=true
   dryRun: Boolean = false
-)
+) derives Codec.AsObject
 
 /**
  * Document state for sync operations.
@@ -141,7 +143,7 @@ final case class DocumentSyncState(
   hash: Option[String] = None,
   updatedAt: Option[Instant] = None,
   collection: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response for listing document sync states.
@@ -149,14 +151,14 @@ final case class DocumentSyncState(
 final case class DocumentSyncListResponse(
   documents: Seq[DocumentSyncState],
   total: Int
-)
+) derives Codec.AsObject
 
 /**
  * Request to batch check document states.
  */
 final case class SyncCheckRequest(
   documentIds: Seq[String]
-)
+) derives Codec.AsObject
 
 /**
  * Response from batch document state check.
@@ -164,7 +166,7 @@ final case class SyncCheckRequest(
 final case class SyncCheckResponse(
   found: Seq[DocumentSyncState],
   missing: Seq[String]
-)
+) derives Codec.AsObject
 
 /**
  * Request to delete multiple documents at once.
@@ -175,7 +177,7 @@ final case class SyncCheckResponse(
 final case class BatchDeleteRequest(
   documentIds: Seq[String],
   dryRun: Option[Boolean] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from batch delete operation.
@@ -186,7 +188,7 @@ final case class BatchDeleteResponse(
   deletedIds: Option[Seq[String]] = None,
   failedIds: Option[Seq[String]] = None,
   dryRun: Boolean = false
-)
+) derives Codec.AsObject
 
 /**
  * Sync status response.
@@ -196,7 +198,7 @@ final case class SyncStatusResponse(
   documentCount: Int,
   chunkCount: Int,
   pendingDeletes: Int
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Query Models
@@ -212,7 +214,7 @@ final case class QueryOverrides(
   systemPrompt: Option[String] = None,
   llmTemperature: Option[Double] = None,
   similarityThreshold: Option[Double] = None
-)
+) derives Codec.AsObject
 
 /**
  * Request to query the RAG system with answer generation.
@@ -231,7 +233,7 @@ final case class QueryRequest(
   includeMetadata: Option[Boolean] = Some(true),
   experimentId: Option[String] = None,
   overrides: Option[QueryOverrides] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from query with answer.
@@ -241,7 +243,7 @@ final case class QueryResponse(
   contexts: Seq[ContextItem],
   usage: Option[UsageInfo] = None,
   metrics: Option[QueryMetrics] = None
-)
+) derives Codec.AsObject
 
 /**
  * Per-query metrics, from what llm4s traced while answering (`RAGConfig.withTracing` and
@@ -266,7 +268,7 @@ final case class QueryMetrics(
   promptTokens: Option[Int] = None,
   completionTokens: Option[Int] = None,
   costUsd: Option[Double] = None
-)
+) derives Codec.AsObject
 
 /**
  * A context item (chunk) used to generate the answer.
@@ -277,7 +279,7 @@ final case class ContextItem(
   metadata: Map[String, String],
   documentId: Option[String] = None,
   chunkIndex: Option[Int] = None
-)
+) derives Codec.AsObject
 
 /**
  * Token usage information.
@@ -286,7 +288,7 @@ final case class UsageInfo(
   promptTokens: Int,
   completionTokens: Int,
   totalTokens: Int
-)
+) derives Codec.AsObject
 
 /**
  * Request to search without answer generation.
@@ -295,7 +297,7 @@ final case class SearchRequest(
   query: String,
   topK: Option[Int] = None,
   collection: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from search (no LLM).
@@ -303,7 +305,7 @@ final case class SearchRequest(
 final case class SearchResponse(
   results: Seq[ContextItem],
   count: Int
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Configuration Models
@@ -317,18 +319,18 @@ final case class ConfigResponse(
   llm: LLMConfigInfo,
   rag: RAGConfigInfo,
   database: DatabaseConfigInfo
-)
+) derives Codec.AsObject
 
 final case class EmbeddingConfigInfo(
   provider: String,
   model: String,
   dimensions: Option[Int]
-)
+) derives Codec.AsObject
 
 final case class LLMConfigInfo(
   model: String,
   temperature: Double
-)
+) derives Codec.AsObject
 
 /**
  * @param searchMode     `hybrid` (vector + keyword, fused) or `vector` (permission mode, where
@@ -350,7 +352,7 @@ final case class RAGConfigInfo(
   reranking: String = "none",
   queryTransform: String = "none",
   limitations: Seq[String] = Seq.empty
-)
+) derives Codec.AsObject
 
 final case class DatabaseConfigInfo(
   host: String,
@@ -358,7 +360,7 @@ final case class DatabaseConfigInfo(
   database: String,
   tableName: String,
   connected: Boolean
-)
+) derives Codec.AsObject
 
 /**
  * Available providers.
@@ -368,13 +370,13 @@ final case class ProvidersResponse(
   llmProviders: Seq[ProviderInfo],
   chunkingStrategies: Seq[String],
   fusionStrategies: Seq[String]
-)
+) derives Codec.AsObject
 
 final case class ProviderInfo(
   name: String,
   models: Seq[String],
   configured: Boolean
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Health Models
@@ -388,7 +390,7 @@ final case class HealthResponse(
   version: String,
   uptime: Long,
   system: Option[SystemInfo] = None
-)
+) derives Codec.AsObject
 
 /**
  * System information for health checks.
@@ -399,7 +401,7 @@ final case class SystemInfo(
   memoryFreePercent: Int,
   cpuCount: Int,
   javaVersion: String
-)
+) derives Codec.AsObject
 
 /**
  * Readiness check response.
@@ -407,12 +409,12 @@ final case class SystemInfo(
 final case class ReadinessResponse(
   ready: Boolean,
   checks: Map[String, CheckStatus]
-)
+) derives Codec.AsObject
 
 final case class CheckStatus(
   status: String,
   message: Option[String] = None
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Statistics Models
@@ -426,13 +428,13 @@ final case class StatsResponse(
   chunkCount: Int,
   vectorCount: Long,
   collections: Seq[CollectionStats]
-)
+) derives Codec.AsObject
 
 final case class CollectionStats(
   name: String,
   documentCount: Int,
   chunkCount: Int
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Ingestion Models
@@ -446,7 +448,7 @@ final case class DirectoryIngestRequest(
   patterns: Option[Seq[String]] = None, // Default: ["*.md", "*.txt", "*.pdf"]
   recursive: Option[Boolean] = None, // Default: true
   metadata: Option[Map[String, String]] = None
-)
+) derives Codec.AsObject
 
 /**
  * Request to ingest from URLs.
@@ -454,7 +456,7 @@ final case class DirectoryIngestRequest(
 final case class UrlIngestRequest(
   urls: Seq[String],
   metadata: Option[Map[String, String]] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from an ingestion operation.
@@ -469,7 +471,7 @@ final case class IngestResponse(
   documentsFailed: Int,
   durationMs: Long,
   error: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Source configuration info.
@@ -479,7 +481,7 @@ final case class SourceInfo(
   sourceType: String,
   enabled: Boolean,
   config: Map[String, String]
-)
+) derives Codec.AsObject
 
 /**
  * Ingestion status response.
@@ -490,7 +492,7 @@ final case class IngestionStatusResponse(
   lastResults: Seq[IngestResponse],
   nextScheduledRun: Option[Instant],
   sources: Seq[SourceInfo]
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Error Models
@@ -503,7 +505,7 @@ final case class ErrorResponse(
   error: String,
   message: String,
   details: Option[String] = None
-)
+) derives Codec.AsObject
 
 object ErrorResponse {
   def badRequest(message: String, details: Option[String] = None): ErrorResponse =
@@ -535,7 +537,7 @@ final case class QueryConfigSnapshot(
   fusionStrategy: String,
   systemPrompt: Option[String] = None,
   llmTemperature: Option[Double] = None
-)
+) derives Codec.AsObject
 
 /**
  * A logged query for analytics.
@@ -575,7 +577,7 @@ final case class QueryLogEntry(
   variant: Option[String] = None,
   failed: Boolean = false,
   errorMessage: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Request to submit feedback for a query.
@@ -585,7 +587,7 @@ final case class QueryFeedbackRequest(
   rating: Int,               // 1-5 scale
   relevantChunks: Option[Seq[String]] = None,
   comment: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from submitting feedback.
@@ -593,7 +595,7 @@ final case class QueryFeedbackRequest(
 final case class QueryFeedbackResponse(
   success: Boolean,
   message: String
-)
+) derives Codec.AsObject
 
 /**
  * Query analytics summary.
@@ -617,7 +619,7 @@ final case class QueryAnalyticsSummary(
   p95RetrievalLatencyMs: Option[Int] = None,
   // Total estimated cost of the period's queries, where llm4s knows the models' pricing
   totalCostUsd: Option[Double] = None
-)
+) derives Codec.AsObject
 
 /**
  * Query stats by collection.
@@ -627,7 +629,7 @@ final case class CollectionQueryStats(
   queryCount: Int,
   averageLatencyMs: Double,
   averageRating: Option[Double]
-)
+) derives Codec.AsObject
 
 /**
  * Query log list response.
@@ -637,7 +639,7 @@ final case class QueryLogListResponse(
   total: Int,
   page: Int,
   pageSize: Int
-)
+) derives Codec.AsObject
 
 // ============================================================
 // SSE Streaming Models
@@ -657,7 +659,7 @@ sealed trait QueryStreamEvent {
 final case class QueryStartEvent(
   queryId: String,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "start"
 }
 
@@ -668,7 +670,7 @@ final case class QueryContextEvent(
   context: ContextItem,
   index: Int,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "context"
 }
 
@@ -678,7 +680,7 @@ final case class QueryContextEvent(
 final case class QueryChunkEvent(
   chunk: String,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "chunk"
 }
 
@@ -688,7 +690,7 @@ final case class QueryChunkEvent(
 final case class QueryAnswerEvent(
   answer: String,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "answer"
 }
 
@@ -698,7 +700,7 @@ final case class QueryAnswerEvent(
 final case class QueryUsageEvent(
   usage: UsageInfo,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "usage"
 }
 
@@ -709,7 +711,7 @@ final case class QueryCompleteEvent(
   queryId: String,
   totalContexts: Int,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "complete"
 }
 
@@ -720,6 +722,6 @@ final case class QueryErrorEvent(
   error: String,
   message: String,
   timestamp: Instant = Instant.now()
-) extends QueryStreamEvent {
+) extends QueryStreamEvent derives Codec.AsObject {
   val eventType: String = "error"
 }

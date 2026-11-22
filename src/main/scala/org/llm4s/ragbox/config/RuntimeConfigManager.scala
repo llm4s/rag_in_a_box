@@ -155,8 +155,8 @@ class RuntimeConfigManager private (
   /**
    * Validate proposed configuration changes.
    */
-  def validate(request: RuntimeConfigValidateRequest): IO[RuntimeConfigValidateResponse] =
-    IO(validateAgainst(currentConfig.get(), toUpdate(request)))
+  def validate(request: RuntimeConfigUpdateRequest): IO[RuntimeConfigValidateResponse] =
+    IO(validateAgainst(currentConfig.get(), request))
 
   /**
    * Get configuration change history.
@@ -402,18 +402,6 @@ object RuntimeConfigManager {
       chunkingStrategy = request.chunkingStrategy.filterNot(_ => fields("chunkingStrategy")),
       chunkSize = request.chunkSize.filterNot(_ => fields("chunkSize")),
       chunkOverlap = request.chunkOverlap.filterNot(_ => fields("chunkOverlap"))
-    )
-
-  private def toUpdate(request: RuntimeConfigValidateRequest): RuntimeConfigUpdateRequest =
-    RuntimeConfigUpdateRequest(
-      topK = request.topK,
-      fusionStrategy = request.fusionStrategy,
-      rrfK = request.rrfK,
-      systemPrompt = request.systemPrompt,
-      llmTemperature = request.llmTemperature,
-      chunkingStrategy = request.chunkingStrategy,
-      chunkSize = request.chunkSize,
-      chunkOverlap = request.chunkOverlap
     )
 
   /**

@@ -8,7 +8,6 @@ import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry}
 import org.llm4s.ragbox.service.{ExperimentNotFoundError, ExperimentService, ExperimentStateError, InvalidExperimentError}
 

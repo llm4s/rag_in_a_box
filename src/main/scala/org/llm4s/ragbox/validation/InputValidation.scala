@@ -6,7 +6,6 @@ import org.http4s.dsl.io._
 import io.circe.syntax._
 import org.http4s.circe._
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * Input validation for API requests.
