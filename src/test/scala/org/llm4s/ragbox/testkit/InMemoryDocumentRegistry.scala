@@ -66,8 +66,6 @@ class InMemoryDocumentRegistry extends DocumentRegistry {
   override def markSyncComplete(): IO[Unit] =
     IO { lastSyncTime = Some(Instant.now()) }
 
-  override def initialize(): IO[Unit] = IO.unit
-
   override def close(): IO[Unit] = IO.unit
 
   // ============================================================

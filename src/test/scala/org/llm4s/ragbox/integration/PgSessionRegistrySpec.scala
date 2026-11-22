@@ -6,7 +6,7 @@ import com.dimafeng.testcontainers.GenericContainer
 import com.dimafeng.testcontainers.scalatest.TestContainerForAll
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import org.llm4s.ragbox.auth.*
-import org.llm4s.ragbox.db.ConnectionPool
+import org.llm4s.ragbox.db.{ConnectionPool, Migrations}
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AsyncWordSpec
 import org.testcontainers.containers.wait.strategy.Wait
@@ -55,6 +55,14 @@ class PgSessionRegistrySpec
       ()
     }
 
+  /** An empty schema: no ragbox tables, no migration history. */
+  private def emptySchema(pool: HikariDataSource): IO[Unit] =
+    exec(pool, "DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+
+  /** A freshly migrated schema, as `Main` leaves it at startup. */
+  private def migratedSchema(pool: HikariDataSource): IO[Unit] =
+    emptySchema(pool) *> Migrations.migrate(pool).void
+
   private def session(id: String, groups: List[String]): OAuthSessionData =
     val now = System.currentTimeMillis()
     OAuthSessionData(
@@ -73,8 +81,7 @@ class PgSessionRegistrySpec
     "store groups as TEXT[] so a group name containing a comma is not split" in {
       withPool { pool =>
         for
-          _ <- exec(pool, "DROP TABLE IF EXISTS oauth_sessions; DROP TABLE IF EXISTS oauth_auth_state")
-          _ <- PgSessionRegistry.initializeTables(pool)
+          _ <- migratedSchema(pool)
           registry <- PgSessionRegistry.create(pool)
           _ <- registry.createSession(session("s-comma", List("x,admins", "users")))
           _ <- registry.createSession(session("s-empty", Nil))
@@ -99,8 +106,8 @@ class PgSessionRegistrySpec
       withPool { pool =>
         val now = new Timestamp(System.currentTimeMillis() + 60000)
         for
-          _ <- exec(pool, "DROP TABLE IF EXISTS oauth_sessions; DROP TABLE IF EXISTS oauth_auth_state")
-          // Legacy schema as created by earlier releases
+          _ <- emptySchema(pool)
+          // Legacy schema as created by earlier releases (before Flyway)
           _ <- exec(
             pool,
             """CREATE TABLE oauth_sessions (
@@ -130,9 +137,10 @@ class PgSessionRegistrySpec
                |INSERT INTO oauth_auth_state (state, code_verifier, expires_at) VALUES ('old-state', 'v', '$now')
                |""".stripMargin
           )
-          _ <- PgSessionRegistry.initializeTables(pool)
-          // Running the migration twice must be harmless
-          _ <- PgSessionRegistry.initializeTables(pool)
+          // Flyway adopts the pre-Flyway database (baseline 0) and V1 converts it in place
+          _ <- Migrations.migrate(pool)
+          // Running the migrations again must be harmless
+          _ <- Migrations.migrate(pool)
           registry <- PgSessionRegistry.create(pool)
           l1 <- registry.getSession("legacy-1")
           l2 <- registry.getSession("legacy-2")
@@ -161,8 +169,7 @@ class PgSessionRegistrySpec
           browserBindingHash = "hash-1"
         )
         for
-          _ <- exec(pool, "DROP TABLE IF EXISTS oauth_sessions; DROP TABLE IF EXISTS oauth_auth_state")
-          _ <- PgSessionRegistry.initializeTables(pool)
+          _ <- migratedSchema(pool)
           registry <- PgSessionRegistry.create(pool)
           _ <- registry.storeAuthState(state)
           first <- registry.getAndRemoveAuthState("st-1")
@@ -176,10 +183,10 @@ class PgSessionRegistrySpec
 
   "SessionRegistry.create" should {
 
-    "build a PostgreSQL registry (and its tables) when storage is postgres" in {
+    "build a PostgreSQL registry when storage is postgres" in {
       withPool { pool =>
         for
-          _ <- exec(pool, "DROP TABLE IF EXISTS oauth_sessions; DROP TABLE IF EXISTS oauth_auth_state")
+          _ <- migratedSchema(pool)
           registry <- SessionRegistry.create(OAuthSessionStorage.Postgres, Some(pool))
           _ <- registry.createSession(session("factory", List("g")))
           loaded <- registry.getSession("factory")

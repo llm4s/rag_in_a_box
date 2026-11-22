@@ -12,11 +12,6 @@ import org.llm4s.ragbox.model.{ChunkInfo, ChunkListResponse, ChunkSizeDistributi
 trait ChunkStore {
 
   /**
-   * Initialize the store (create tables if needed).
-   */
-  def initialize(): IO[Unit]
-
-  /**
    * Store chunks for a document.
    * Replaces any existing chunks for the document.
    */

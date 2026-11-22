@@ -12,8 +12,6 @@ class InMemoryChunkStore extends ChunkStore {
 
   private val chunks: mutable.Map[String, Seq[ChunkInfo]] = mutable.Map.empty
 
-  override def initialize(): IO[Unit] = IO.unit
-
   override def store(documentId: String, newChunks: Seq[ChunkInfo]): IO[Unit] =
     IO(chunks.update(documentId, newChunks))
 

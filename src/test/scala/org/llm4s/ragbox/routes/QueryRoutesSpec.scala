@@ -1,5 +1,6 @@
 package org.llm4s.ragbox.routes
 
+import scala.compiletime.uninitialized
 import org.llm4s.ragbox.testkit.TestAuth.*
 
 import cats.effect.IO
@@ -19,9 +20,9 @@ import org.llm4s.ragbox.model.Codecs._
 
 class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
 
-  private var mockService: MockRAGService = _
-  private var queryLogRegistry: InMemoryQueryLogRegistry = _
-  private var routes: HttpRoutes[IO] = _
+  private var mockService: MockRAGService = uninitialized
+  private var queryLogRegistry: InMemoryQueryLogRegistry = uninitialized
+  private var routes: HttpRoutes[IO] = uninitialized
 
   override def beforeEach(): Unit = {
     mockService = MockRAGService()

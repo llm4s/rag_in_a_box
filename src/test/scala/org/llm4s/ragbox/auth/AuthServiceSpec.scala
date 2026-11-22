@@ -18,7 +18,6 @@ class AuthServiceSpec extends AnyFlatSpec with Matchers {
 
   // Create a mock user registry - we'll test password and JWT functionality only
   private class MockUserRegistry extends UserRegistry(null) {
-    override def initialize() = cats.effect.IO.unit
     override def exists(username: String) = cats.effect.IO.pure(false)
     override def create(username: String, passwordHash: String, role: UserRole) =
       cats.effect.IO.pure(User(1, username, passwordHash, role, java.time.Instant.now()))

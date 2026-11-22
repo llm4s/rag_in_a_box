@@ -50,6 +50,50 @@ curl http://localhost:8080/health
 | `PG_USER` | `rag` | Database username |
 | `PG_PASSWORD` | `rag` | Database password |
 | `PG_TABLE_NAME` | `rag_embeddings` | Vector table name |
+| `DB_POOL_SIZE` | `10` | Connection pool size (per instance) |
+| `DB_MIGRATE_ON_START` | `true` | Apply pending schema migrations at startup |
+
+### Schema migrations
+
+ragbox's tables are created and upgraded by [Flyway](https://documentation.red-gate.com/flyway)
+migrations shipped in the jar; applied migrations are recorded in `flyway_schema_history`. The
+server applies pending migrations at startup, before it serves anything. With several replicas
+this is safe: Flyway holds a PostgreSQL advisory lock while it migrates, so replicas starting
+together wait for each other and each migration runs exactly once.
+
+If you prefer to migrate as a separate step (for example a Kubernetes `Job` or Helm hook that
+runs before the rollout), run the image with `--migrate-only`, which migrates and exits, and
+start the servers with `DB_MIGRATE_ON_START=false`:
+
+```bash
+docker run --rm --env-file .env ragbox:latest --migrate-only
+```
+
+The database user needs permission to create tables and indexes in its schema.
+`scripts/init-db.sql` only creates the `vector` extension (which needs a superuser); everything
+else is created by the migrations and by llm4s.
+
+### Upgrading an existing database
+
+Releases before Flyway created their tables from code at every startup, so an existing database
+has ragbox's tables but no `flyway_schema_history`. Nothing needs to be done by hand: on the
+first start of a Flyway release (or `--migrate-only`), Flyway
+
+1. records a baseline at version 0 (`baselineOnMigrate`), then
+2. runs `V1__baseline`, which is written to be idempotent: it creates any table that is missing,
+   adds any column that older releases did not have (`ADD COLUMN IF NOT EXISTS`) and applies the
+   one-off data fixes the old startup code used to make (empty collection names to NULL,
+   `experiment:variant` ids split, duplicate chat message indexes renumbered, at most one running
+   experiment, comma-joined OAuth groups converted to arrays), and then
+3. runs the later migrations (`V2__index_tuning`, ...).
+
+The result is exactly the schema a fresh installation gets, with your data kept. This works
+from any earlier release, however old. Take a backup first as for any upgrade; if a migration
+fails, its transaction is rolled back and the server does not start, so you can restore or fix
+the cause and start again.
+
+Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release unless you run
+`--migrate-only` first: the new code no longer creates tables itself.
 
 ### Server
 
@@ -366,7 +410,9 @@ RAG in a Box supports horizontal scaling with shared PostgreSQL:
 
 1. Ensure `JWT_SECRET` is identical across all instances
 2. Use a load balancer with session affinity (optional)
-3. Scale API replicas:
+3. Schema migrations at startup are safe with several replicas (Flyway serialises them with
+   a database lock); or run them once with `--migrate-only` and set `DB_MIGRATE_ON_START=false`
+4. Scale API replicas:
 
 ```yaml
 # Kubernetes
@@ -378,12 +424,10 @@ spec:
 
 ### Connection Pooling
 
-The service uses HikariCP with these defaults:
-- Maximum pool size: 10 connections
+The service uses one HikariCP pool per instance with these defaults:
+- Maximum pool size: 10 connections (`DB_POOL_SIZE`)
 - Minimum idle: 2 connections
 - Connection timeout: 30 seconds
-
-Adjust via environment variables if needed (future release).
 
 ## Backup and Recovery
 

@@ -38,7 +38,33 @@ PostgreSQL with pgvector is required for vector storage.
 | `PG_PASSWORD` | `rag` | Database password |
 | `PG_TABLE_NAME` | `rag_embeddings` | Table for vector embeddings |
 | `DATABASE_URL` | - | Alternative: full connection URL (overrides the settings above) |
+| `DB_POOL_SIZE` | `10` | Size of the connection pool shared by every component |
+| `DB_MIGRATE_ON_START` | `true` | Apply pending schema migrations at startup (see below) |
 | `PERMISSIONS_REQUIRED` | `false` | Fail startup if permission-based RAG cannot be initialized (see below) |
+
+### Schema migrations
+
+ragbox manages its own tables (document and chunk registries, runtime settings, collection
+configs, query logs, users, access tokens, experiments, chat history, OAuth sessions) with
+[Flyway](https://documentation.red-gate.com/flyway). The migrations are SQL scripts shipped in
+the jar (`src/main/resources/db/migration`); Flyway records the ones applied in the
+`flyway_schema_history` table.
+
+- By default (`database.migrate-on-start = true`) the server applies pending migrations at
+  startup, right after connecting and before anything else uses the database. Replicas that
+  start together are serialised by Flyway's PostgreSQL lock, so each migration runs once.
+- To migrate separately, e.g. from a deploy job before rolling out new servers, run the same
+  image or jar with `--migrate-only` (`java -jar ragbox-assembly.jar --migrate-only`, or
+  `sbt "run --migrate-only"`): it applies the migrations and exits. Then start the servers with
+  `DB_MIGRATE_ON_START=false`; they expect the schema to be up to date.
+- The vector and keyword tables (`PG_TABLE_NAME`) and the permission tables
+  (`llm4s_collections`, `llm4s_principals`) belong to llm4s, which creates them itself after
+  the migrations have run.
+- The database user needs the rights to create tables and indexes in its schema. The
+  `vector` extension is created by `scripts/init-db.sql` (or by llm4s when the user may).
+
+Databases created by releases before Flyway are adopted automatically on the first start; see
+[Upgrading an existing database](../production-deployment.md#upgrading-an-existing-database).
 
 ### Using DATABASE_URL
 

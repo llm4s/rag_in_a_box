@@ -21,89 +21,6 @@ import javax.sql.DataSource
 class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
 
   /**
-   * Initialize the registry and ensure tables exist.
-   */
-  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { conn =>
-    val stmt = conn.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS query_logs (
-          |    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          |    query_text TEXT NOT NULL,
-          |    collection_pattern TEXT,
-          |    user_id TEXT,
-          |
-          |    embedding_latency_ms INTEGER,
-          |    search_latency_ms INTEGER,
-          |    llm_latency_ms INTEGER,
-          |    total_latency_ms INTEGER NOT NULL,
-          |
-          |    chunks_retrieved INTEGER NOT NULL DEFAULT 0,
-          |    chunks_used INTEGER NOT NULL DEFAULT 0,
-          |    answer_tokens INTEGER,
-          |
-          |    user_rating INTEGER,
-          |    relevant_chunks TEXT[],
-          |    feedback_comment TEXT,
-          |
-          |    experiment_id VARCHAR(64),
-          |    config_snapshot JSONB,
-          |
-          |    created_at TIMESTAMPTZ DEFAULT NOW()
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_query_logs_created_at
-          |    ON query_logs(created_at)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_query_logs_collection
-          |    ON query_logs(collection_pattern)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_query_logs_user
-          |    ON query_logs(user_id)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_query_logs_experiment
-          |    ON query_logs(experiment_id)""".stripMargin
-      )
-      // Add columns if table existed before (migration)
-      stmt.execute(
-        """DO $$
-          |BEGIN
-          |    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='query_logs' AND column_name='experiment_id') THEN
-          |        ALTER TABLE query_logs ADD COLUMN experiment_id VARCHAR(64);
-          |    END IF;
-          |    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='query_logs' AND column_name='config_snapshot') THEN
-          |        ALTER TABLE query_logs ADD COLUMN config_snapshot JSONB;
-          |    END IF;
-          |END $$;""".stripMargin
-      )
-      // Token and cost accounting from llm4s tracing
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER")
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS embedding_tokens INTEGER")
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION")
-      // Experiment group in its own column, and failed queries (so error rates can be compared)
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS variant VARCHAR(32)")
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS failed BOOLEAN NOT NULL DEFAULT FALSE")
-      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS error_message TEXT")
-      // Rows written before the split packed the group into the id (`<experiment>:<group>`)
-      stmt.execute(
-        """UPDATE query_logs
-          |SET variant = split_part(experiment_id, ':', 2), experiment_id = split_part(experiment_id, ':', 1)
-          |WHERE variant IS NULL AND experiment_id LIKE '%:%'""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_query_logs_experiment_variant
-          |    ON query_logs(experiment_id, variant)""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
-  /**
    * Log a query execution.
    */
   def logQuery(
@@ -465,12 +382,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
 object QueryLogRegistry {
 
   /**
-   * Create and initialize a query log registry with connection pool.
-   * This is the recommended way to create the registry for production use.
+   * A query log registry over the connection pool. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[QueryLogRegistry] = {
-    val registry = new QueryLogRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
-
+  def apply(dataSource: DataSource): IO[QueryLogRegistry] = IO.pure(new QueryLogRegistry(dataSource))
 }

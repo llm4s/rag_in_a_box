@@ -12,7 +12,7 @@ import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSearchIndex
 import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
 import org.llm4s.ragbox.registry.PgCollectionConfigRegistry
-import org.llm4s.ragbox.db.ConnectionPool
+import org.llm4s.ragbox.db.{ConnectionPool, Migrations}
 import org.llm4s.ragbox.ingestion.IngestionService
 import org.llm4s.ragbox.service.RAGService
 
@@ -23,13 +23,45 @@ import scala.concurrent.duration._
  * RAG in a Box - Main entry point.
  *
  * Starts the HTTP server with all RAG endpoints.
+ *
+ * With `--migrate-only`, applies the database migrations and exits instead (for a deploy job
+ * that migrates before the servers roll out with `database.migrate-on-start = false`).
  */
 object Main extends IOApp {
 
   implicit val loggerFactory: LoggerFactory[IO] = Slf4jFactory.create[IO]
   private val logger: Logger[IO] = loggerFactory.getLogger
 
-  override def run(args: List[String]): IO[ExitCode] = {
+  /** Command-line flag: apply the database migrations, then exit. */
+  val MigrateOnlyFlag: String = "--migrate-only"
+
+  override def run(args: List[String]): IO[ExitCode] =
+    args match {
+      case Nil => serve
+      case List(MigrateOnlyFlag) => migrateOnly
+      case other =>
+        logger.error(s"Unknown arguments: ${other.mkString(" ")} (supported: $MigrateOnlyFlag)").as(ExitCode(2))
+    }
+
+  /** Apply the database migrations and exit. */
+  private def migrateOnly: IO[ExitCode] =
+    for {
+      config <- AppConfig.load
+      _ <- config.database.urlError.traverse_(e => IO.raiseError(new IllegalStateException(s"Invalid DATABASE_URL: $e")))
+      _ <- logger.info(s"Migrating ${config.database.effectiveHost}:${config.database.effectivePort}/${config.database.effectiveDatabase}")
+      _ <- ConnectionPool.create(config.database, Some(ConnectionPool.PoolConfig(maximumPoolSize = 2, minimumIdle = 0)))
+        .use(migrate)
+    } yield ExitCode.Success
+
+  /** Apply pending migrations to `pool`, logging what was done. */
+  private def migrate(pool: DataSource): IO[Unit] =
+    Migrations.migrate(pool).flatMap { result =>
+      val version = result.schemaVersion.getOrElse("none")
+      if (result.applied.isEmpty) logger.info(s"Database schema is up to date (version $version)")
+      else logger.info(s"Applied ${result.applied.size} migration(s): ${result.applied.mkString(", ")}; schema version $version")
+    }
+
+  private def serve: IO[ExitCode] = {
     for {
       _ <- logger.info(banner)
       _ <- logger.info("Starting RAG in a Box...")
@@ -63,6 +95,14 @@ object Main extends IOApp {
       // One connection pool for the whole application, created first and passed to every
       // database component (registries, chunk store, permission search index). Released last.
       dbPool <- ConnectionPool.create(config.database)
+
+      // Bring ragbox's schema up to date before anything uses it. Replicas starting together
+      // are serialised by Flyway's lock. llm4s's own tables are created afterwards, by the
+      // search index and vector store.
+      _ <- Resource.eval(
+        if (config.database.migrateOnStart) migrate(dbPool)
+        else logger.info("Database migrations on start disabled (database.migrate-on-start = false)")
+      )
 
       // Try to create SearchIndex for permission-based RAG
       // Falls back to legacy mode if SearchIndex creation fails

@@ -147,11 +147,6 @@ trait DocumentRegistry {
   def markSyncComplete(): IO[Unit]
 
   /**
-   * Initialize the registry (create tables if needed).
-   */
-  def initialize(): IO[Unit]
-
-  /**
    * Close any resources.
    */
   def close(): IO[Unit]

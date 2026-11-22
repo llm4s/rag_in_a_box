@@ -12,11 +12,6 @@ import java.time.Instant
 trait QueryLogRegistryBase {
 
   /**
-   * Initialize the registry.
-   */
-  def initialize(): IO[Unit]
-
-  /**
    * Log a query execution.
    *
    * @param queryText The query text

@@ -18,67 +18,6 @@ import javax.sql.DataSource
 class PgDocumentRegistry(dataSource: DataSource) extends DocumentRegistry {
   import PgDocumentRegistry.EntryColumns
 
-  /**
-   * Initialize the registry and ensure tables exist.
-   */
-  override def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    // Ensure tables exist
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS document_registry (
-          |    document_id TEXT PRIMARY KEY,
-          |    content_hash TEXT NOT NULL,
-          |    chunk_count INTEGER NOT NULL DEFAULT 0,
-          |    metadata JSONB DEFAULT '{}',
-          |    collection TEXT,
-          |    indexed_at TIMESTAMPTZ DEFAULT NOW(),
-          |    updated_at TIMESTAMPTZ DEFAULT NOW()
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_document_registry_indexed_at
-          |    ON document_registry(indexed_at)""".stripMargin
-      )
-      // Add collection column if not exists (for existing installations)
-      stmt.execute(
-        """DO $$ BEGIN
-          |    ALTER TABLE document_registry ADD COLUMN collection TEXT;
-          |EXCEPTION
-          |    WHEN duplicate_column THEN NULL;
-          |END $$""".stripMargin
-      )
-      // Access list the document was ingested with (permission mode), for upsert change detection
-      stmt.execute(
-        "ALTER TABLE document_registry ADD COLUMN IF NOT EXISTS readable_by INTEGER[] NOT NULL DEFAULT '{}'"
-      )
-      // Ingestion source that owns the document, so each source's sync removes only its own
-      stmt.execute("ALTER TABLE document_registry ADD COLUMN IF NOT EXISTS source_id TEXT")
-      stmt.execute(
-        "CREATE INDEX IF NOT EXISTS idx_document_registry_source_id ON document_registry(source_id)"
-      )
-      // Create collection index after ensuring column exists
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_document_registry_collection
-          |    ON document_registry(collection)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS sync_status (
-          |    id INTEGER PRIMARY KEY DEFAULT 1,
-          |    last_sync_time TIMESTAMPTZ,
-          |    CONSTRAINT single_row CHECK (id = 1)
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """INSERT INTO sync_status (id, last_sync_time)
-          |VALUES (1, NULL)
-          |ON CONFLICT (id) DO NOTHING""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
   override def get(documentId: String): IO[Option[DocumentEntry]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       s"""SELECT $EntryColumns
@@ -414,10 +353,7 @@ object PgDocumentRegistry {
     "document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by, source_id"
 
   /**
-   * Create and initialize a PostgreSQL document registry.
+   * A PostgreSQL document registry. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[PgDocumentRegistry] = {
-    val registry = new PgDocumentRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[PgDocumentRegistry] = IO.pure(new PgDocumentRegistry(dataSource))
 }

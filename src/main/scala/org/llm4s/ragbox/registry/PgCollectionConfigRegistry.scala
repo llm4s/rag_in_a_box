@@ -18,33 +18,6 @@ import javax.sql.DataSource
  */
 class PgCollectionConfigRegistry(dataSource: DataSource) extends CollectionConfigRegistry {
 
-  /**
-   * Initialize the registry and ensure tables exist.
-   */
-  override def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    // Ensure table exists
-    val stmt = connection.createStatement()
-    try {
-      stmt.execute(
-        """CREATE TABLE IF NOT EXISTS collection_configs (
-          |    collection TEXT PRIMARY KEY,
-          |    strategy TEXT,
-          |    target_size INTEGER,
-          |    max_size INTEGER,
-          |    overlap INTEGER,
-          |    file_type_strategies JSONB DEFAULT '{}',
-          |    updated_at TIMESTAMPTZ DEFAULT NOW()
-          |)""".stripMargin
-      )
-      stmt.execute(
-        """CREATE INDEX IF NOT EXISTS idx_collection_configs_updated
-          |    ON collection_configs(updated_at DESC)""".stripMargin
-      )
-    } finally {
-      stmt.close()
-    }
-  }
-
   override def get(collection: String): IO[Option[CollectionChunkingConfig]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT collection, strategy, target_size, max_size, overlap, file_type_strategies, updated_at
@@ -168,10 +141,7 @@ class PgCollectionConfigRegistry(dataSource: DataSource) extends CollectionConfi
 object PgCollectionConfigRegistry {
 
   /**
-   * Create and initialize a PostgreSQL collection config registry.
+   * A PostgreSQL collection config registry. The schema is managed by Flyway ([[org.llm4s.ragbox.db.Migrations]]); this does no I/O.
    */
-  def apply(dataSource: DataSource): IO[PgCollectionConfigRegistry] = {
-    val registry = new PgCollectionConfigRegistry(dataSource)
-    registry.initialize().as(registry)
-  }
+  def apply(dataSource: DataSource): IO[PgCollectionConfigRegistry] = IO.pure(new PgCollectionConfigRegistry(dataSource))
 }
