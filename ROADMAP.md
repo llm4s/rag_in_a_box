@@ -72,6 +72,8 @@ behaviour was last reworked.
 - `RAGService` split into focused services; one error-handling layer (no exception text in
   responses, 400 for malformed bodies and query parameters, typed service errors); derived
   codecs; paged `GET /api/v1/sync/documents` (#50)
+- `/ws` handshakes checked against the server's origin and `ALLOWED_ORIGINS` (cross-site
+  WebSocket hijacking) (#47)
 - `DATABASE_URL` parsing (#29); health, readiness and liveness probes; Prometheus metrics;
   structured JSON logs
 - Docker image (admin UI and server), Docker Compose, Helm chart with a pgvector StatefulSet,
@@ -105,8 +107,6 @@ Most are fixed or proposed upstream; see #40.
 | No chat history in `queryWithAnswer` | ragbox builds the conversation for chat itself | llm4s/llm4s#2733 |
 | Tracing covers embeddings only | ragbox wraps the LLM client to trace the answer, rerank and rewrite calls | llm4s/llm4s#2734 |
 
-Other known gaps (tracked in issues): `/ws` does not check the `Origin` header (#45).
-
 ---
 
 ## Planned
@@ -117,7 +117,6 @@ Other known gaps (tracked in issues): `/ws` does not check the `Origin` header (
   (llm4s/llm4s#2714, #2724, #2732, #2733, #2734).
 - **Test gaps** (#48): route and service specs for chat, experiments, suggestions, the
   WebSocket and `RAGService`; a V3 migration dropping a duplicate index; a Helm migration job.
-- **WebSocket origin check** (#45).
 
 ### Later
 - Real-time directory watching (NIO `WatchService`) with debouncing

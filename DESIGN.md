@@ -79,6 +79,8 @@ is planned, the [ROADMAP](ROADMAP.md); for how to extend it, [docs/EXTENDING.md]
 2. **Request logger**: method, path, status and latency; credentials are redacted;
    `LOG_FORMAT=json` for structured logs.
 3. **CORS**: same-origin only unless `ALLOWED_ORIGINS` (or `CORS_ALLOW_ALL_ORIGINS`) is set.
+   The same list guards `/ws`: `WebSocketRoutes` refuses (403) a handshake whose `Origin` is
+   neither the server's own origin nor allowed, since WebSockets bypass CORS.
 4. **Request size**: bodies over `MAX_BODY_SIZE_MB` are rejected with 413 while streaming.
 5. **Rate limiting**: an optional per-client limit, plus login throttling per IP and per
    username; client IPs come from `X-Forwarded-For` only for `RATE_LIMIT_TRUSTED_PROXIES`.

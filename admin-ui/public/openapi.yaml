@@ -2574,6 +2574,8 @@ paths:
         passed as `?access_token=` because browsers cannot set headers on a WebSocket handshake.
         Server messages are JSON `{"type", "payload", "timestamp"}` (types include
         `ingestion_progress`, `stats_update` and heartbeats); client messages are ignored.
+        A handshake with an `Origin` header must come from the server's own origin or an origin in
+        `ALLOWED_ORIGINS` (403 otherwise); clients without `Origin` are unaffected.
       security:
         - bearerAuth: []
         - wsAccessToken: []
@@ -2583,6 +2585,12 @@ paths:
           description: Switching protocols
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Origin not allowed, or an access token without access to `/ws`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   securitySchemes:

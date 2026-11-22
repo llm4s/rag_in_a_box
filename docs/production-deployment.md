@@ -172,7 +172,7 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 | `API_KEY` | - | Static administrator key (`X-API-Key` or `Authorization: Bearer`); in open mode, setting it makes every API request require authentication |
 | `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let an administrator credential (e.g. a gateway holding `API_KEY`) act for an end user via `X-User-Id` / `X-Group-Ids`. Otherwise these headers are stripped |
 | `ALLOW_ADMIN_HEADER` | `false` | With trusted proxy headers, let `X-Admin: true` keep administrator rights |
-| `ALLOWED_ORIGINS` | - (same-origin only) | CORS allowed origins (comma-separated), or `*` |
+| `ALLOWED_ORIGINS` | - (same-origin only) | CORS allowed origins (comma-separated), or `*`; also the origins allowed to open `/ws` |
 | `CORS_ALLOW_ALL_ORIGINS` | `false` | Allow every origin when `ALLOWED_ORIGINS` is unset |
 
 ### Production Hardening

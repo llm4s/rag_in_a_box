@@ -26,6 +26,12 @@ ws://localhost:8080/ws?access_token=<API_KEY | rat_ token | JWT>
 
 In `open` mode without an `API_KEY` no credential is needed.
 
+**Origin check:** browsers send cookies on cross-site WebSocket handshakes and WebSockets are not
+subject to CORS, so a handshake that carries an `Origin` header is only accepted from the
+server's own origin (its `Host`, or `X-Forwarded-Host` behind a reverse proxy) or an origin in
+`ALLOWED_ORIGINS`; anything else gets `403`. Clients that send no `Origin` (scripts, CLI tools)
+are unaffected.
+
 ## Messages
 
 Every message is a JSON text frame:

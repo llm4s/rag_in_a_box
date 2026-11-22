@@ -183,7 +183,7 @@ named scope).
 | Analytics | `GET /analytics/queries`, `/analytics/queries/summary`, `/analytics/queries/{id}`; `GET /analytics/suggestions`, `.../summary`, `.../collection/{name}` | Admin |
 | Feedback | `POST /feedback` | Auth |
 | Experiments | `GET`, `POST /experiments`; `GET /experiments/running`, `/experiments/{id}`, `/experiments/{id}/results`; `PUT /experiments/{id}/start`, `/stop`, `/archive`; `DELETE /experiments/{id}` | Admin |
-| WebSocket | `GET /ws` (ingestion progress, stats updates; `?access_token=` accepted) | Auth |
+| WebSocket | `GET /ws` (ingestion progress, stats updates; `?access_token=` accepted; browser `Origin` must be same-origin or in `ALLOWED_ORIGINS`) | Auth |
 
 Errors are JSON: `{"error": "<code>", "message": "...", "details": "..."}` (`details` is
 optional). Invalid bodies and query parameters are 400s that name the problem; a 500 never
@@ -208,7 +208,7 @@ lists every variable with its default; the
 | `RAG_TOP_K`, `RAG_FUSION_STRATEGY` | `5`, `rrf` | Retrieval |
 | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM` | `none`, `none` | Reranking (`cohere`, `llm`) and query rewriting (`llm-rewrite`) |
 | `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source and its interval (`30m`, `6h`, `daily`) |
-| `ALLOWED_ORIGINS` | - | CORS origins (same-origin only when unset) |
+| `ALLOWED_ORIGINS` | - | CORS origins, also allowed to open `/ws` (same-origin only when unset) |
 
 Runtime settings changed through the API or the admin UI are stored in the database and survive
 restarts.
