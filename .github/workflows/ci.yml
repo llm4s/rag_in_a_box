@@ -133,6 +133,96 @@ jobs:
       - name: Build assembly JAR
         run: sbt assembly
 
+  # Playwright end-to-end tests: the built admin UI against the real backend and
+  # PostgreSQL, with a stub OpenAI-compatible API (admin-ui/e2e/support/stub-llm.mjs)
+  # so no provider is called. Playwright starts the stub, the backend and the UI
+  # (see admin-ui/playwright.config.ts).
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: ragdb
+        ports:
+          - 15433:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d ragdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # sbt-dynver derives the version from git tags
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'sbt'
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: admin-ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: admin-ui
+        run: npm ci
+
+      - name: Get Playwright version
+        id: playwright
+        working-directory: admin-ui
+        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: admin-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: admin-ui
+        run: npx playwright install-deps chromium
+
+      # Compiled up front so the backend starts quickly under Playwright's webServer timeout
+      - name: Compile backend
+        run: sbt -batch compile
+
+      - name: Run e2e tests
+        working-directory: admin-ui
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            admin-ui/playwright-report
+            admin-ui/test-results
+          retention-days: 7
+
   # Lint and render the Helm chart
   helm:
     name: Helm

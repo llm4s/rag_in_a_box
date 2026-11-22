@@ -361,7 +361,8 @@ object ChatRoutes {
                 Stream.emit(startEvent) ++ queryStream
               }
 
-              resp <- Ok(sseStream).map(_.withContentType(`Content-Type`(MediaType.`text/event-stream`)))
+              // Raw UTF-8: Ok(sseStream) would pick the circe encoder and JSON-quote every event
+              resp <- IO.pure(Response[IO](Status.Ok).withBodyStream(sseStream.through(fs2.text.utf8.encode)).withContentType(`Content-Type`(MediaType.`text/event-stream`)))
             } yield resp)
             }
         }
