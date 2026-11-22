@@ -39,6 +39,10 @@ data:
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_MAX_REQUESTS: "100"
   RATE_LIMIT_WINDOW_SECONDS: "60"
+  # Proxies whose X-Forwarded-For identifies the client (narrow to your ingress controller)
+  RATE_LIMIT_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  RATE_LIMIT_LOGIN_MAX_ATTEMPTS: "10"
+  # CORS: unset = same-origin only. ALLOWED_ORIGINS: "https://app.example.com"
   REQUEST_SIZE_ENABLED: "true"
   MAX_BODY_SIZE_MB: "10"
   SHUTDOWN_TIMEOUT_SECONDS: "30"
@@ -46,5 +50,7 @@ data:
 
   # Observability
   METRICS_ENABLED: "true"
+  # /metrics for administrators only (scrape with Authorization: Bearer <API_KEY>)
+  METRICS_REQUIRE_AUTH: "true"
   LOG_LEVEL: "INFO"
   LOG_FORMAT: "json"

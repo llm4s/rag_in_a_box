@@ -87,6 +87,19 @@ spec:
                 secretKeyRef:
                   name: {{ include "ragbox.secretName" . }}
                   key: admin-password
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ragbox.secretName" . }}
+                  key: api-key
+                  optional: true
+            {{- if eq .Values.config.auth.mode "oauth" }}
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ragbox.secretName" . }}
+                  key: oauth-client-secret
+            {{- end }}
 
             # API keys
             - name: OPENAI_API_KEY
