@@ -37,8 +37,11 @@ info:
 
     ## Errors
 
-    Errors have a JSON body `{"error": "<code>", "message": "<text>", "details": "<optional>"}`.
-    (The error-handling work in #22 may tighten what `details` contains.)
+    Errors have a JSON body `{"error": "<code>", "message": "<text>", "details": "<optional>"}`:
+    400 for an invalid body or query parameter (`details` names it), 401, 403, 404, 409 for a
+    conflict, 415 for a body that is not JSON, and 500 with the message
+    `Internal server error` (the cause is logged, never returned). 413 and 429 have their own
+    bodies. Paging parameters are clamped rather than rejected.
   version: 0.2.0
   contact:
     name: RAG in a Box
@@ -1228,6 +1231,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /api/v1/collections/accessible:
     get:
@@ -1978,6 +1983,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /api/v1/ingest/run/{source}:
     post:
@@ -2003,6 +2010,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '500':
           description: Ingestion failed (`error` is set)
           content:
@@ -2717,6 +2726,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Conflicts with the current state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     NotFound:
       description: Not found
       content:
@@ -2759,7 +2774,7 @@ components:
       properties:
         error:
           type: string
-          description: Machine-readable code, e.g. `bad_request`, `unauthorized`, `forbidden`, `not_found`, `internal_error`
+          description: Machine-readable code, e.g. `bad_request`, `validation_failed`, `configuration_error`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `unsupported_media_type`, `internal_error`
         message:
           type: string
         details:

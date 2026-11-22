@@ -82,12 +82,18 @@ is planned, the [ROADMAP](ROADMAP.md); for how to extend it, [docs/EXTENDING.md]
 4. **Request size**: bodies over `MAX_BODY_SIZE_MB` are rejected with 413 while streaming.
 5. **Rate limiting**: an optional per-client limit, plus login throttling per IP and per
    username; client IPs come from `X-Forwarded-For` only for `RATE_LIMIT_TRUSTED_PROXIES`.
-6. **Public routes**: health, `/api/v1/auth/login` and `/auth/mode`, OAuth endpoints (oauth
+6. **Error handling** (`routes/ErrorHandling`), around all routes: body decode failures → 400
+   (`details` names the field), wrong media type → 415, typed `ServiceError`s
+   (`InvalidRequestError` 400, `NotFoundError` 404, `ConflictError` 409, `LlmUnavailableError`
+   400 `configuration_error`), anything else → a generic 500 whose cause is logged, never
+   returned. Query parameters are validated by `routes/Params` (400 naming the parameter;
+   paging clamped).
+7. **Public routes**: health, `/api/v1/auth/login` and `/auth/mode`, OAuth endpoints (oauth
    mode), admin UI assets, and `/metrics` when `METRICS_REQUIRE_AUTH=false`.
-7. **Authenticator** (`middleware/Authenticator`), in front of everything else.
-8. **`Authz.tokenAllowlist`**: access tokens without the `admin` scope only reach documents,
+8. **Authenticator** (`middleware/Authenticator`), in front of everything else.
+9. **`Authz.tokenAllowlist`**: access tokens without the `admin` scope only reach documents,
    stats, sync, query/search, chat, `GET /api/v1/collections`, `/auth/me` and `/ws`.
-9. **Routes**: `AuthedRoutes[Principal, IO]`, one object per area in `routes/`.
+10. **Routes**: `AuthedRoutes[Principal, IO]`, one object per area in `routes/`.
 
 ### Authentication
 
@@ -158,7 +164,13 @@ Experiments use the same pool: a variant with different settings gets its own pi
 
 ### `RAGService`
 
-The facade the routes use:
+The facade the routes use. It delegates to `RagPipelines` (runtime settings, LLM, embedder,
+chunkers and the `PipelinePool`, shared by the others), `DocumentIngestion` (ingest, upsert,
+delete, prune; chunk store and registry; permission-mode collections), `QueryService` (search,
+answers and chat replies with their metrics), `StatsService` (statistics, chunks, sync status)
+and `SystemInfoService` (health, readiness, config views, providers). Methods such as `answer`,
+`searchAs`, `chatAs` and `upsertAs` take the caller's principal and pick the permission-filtered
+or plain path, so routes never branch on the mode.
 
 - **Ingest**: chunk the document once, with the chunking its collection resolves to
   (`CollectionConfigRegistry.getEffective`: file-type override → collection config → runtime
@@ -262,8 +274,10 @@ server.
 - `admin-ui/public/openapi.yaml` documents every route; `OpenApiCoverageSpec` scans the route
   patterns in `routes/` and fails when a route is missing from the spec or the spec lists one
   that does not exist.
-- Errors are JSON `ErrorResponse {error, message, details?}`; #22 is unifying how errors are
-  produced.
+- Errors are JSON `ErrorResponse {error, message, details?}`, produced in one place
+  (`ErrorHandling`); 413 and 429 from the size and rate-limit middleware have their own bodies.
+- Models derive their circe codecs (`derives Codec.AsObject`); `ApiContractSpec` pins the JSON
+  shapes the admin UI relies on.
 
 ## Project layout
 
@@ -275,11 +289,13 @@ src/main/scala/org/llm4s/ragbox/
   db/                           connection pool, Flyway migrations
   ingestion/                    sources, scheduler, ingestion policy
   middleware/                   authenticator, rate limit, request size, request logger
-  model/                        API models and codecs
+  model/                        API models (with derived codecs)
   registry/                     PostgreSQL registries (documents, query log, chat, experiments, ...)
-  routes/                       HTTP routes and Authz
-  service/                      RAGService, Llm4sPipeline, PipelinePool, tracing, chunking,
-                                experiments, suggestions, statistics
+  routes/                       HTTP routes, Authz, ErrorHandling, Params
+  service/                      RAGService facade and its services (RagPipelines,
+                                DocumentIngestion, QueryService, StatsService,
+                                SystemInfoService), ServiceError, Llm4sPipeline, PipelinePool,
+                                tracing, chunking, experiments, suggestions, statistics
   store/                        chunk store
   validation/                   input validation
 src/main/resources/             application.conf, logback.xml, db/migration

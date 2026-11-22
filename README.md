@@ -186,7 +186,8 @@ named scope).
 | WebSocket | `GET /ws` (ingestion progress, stats updates; `?access_token=` accepted) | Auth |
 
 Errors are JSON: `{"error": "<code>", "message": "...", "details": "..."}` (`details` is
-optional).
+optional). Invalid bodies and query parameters are 400s that name the problem; a 500 never
+carries exception text (the cause is in the server log).
 
 ## Configuration
 

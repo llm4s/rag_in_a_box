@@ -69,6 +69,9 @@ behaviour was last reworked.
 - One HikariCP pool for every component; blocking JDBC on the blocking pool; transactional
   writes (#36)
 - Flyway migrations, safe for several replicas starting together (#46)
+- `RAGService` split into focused services; one error-handling layer (no exception text in
+  responses, 400 for malformed bodies and query parameters, typed service errors); derived
+  codecs; paged `GET /api/v1/sync/documents` (#50)
 - `DATABASE_URL` parsing (#29); health, readiness and liveness probes; Prometheus metrics;
   structured JSON logs
 - Docker image (admin UI and server), Docker Compose, Helm chart with a pgvector StatefulSet,
@@ -112,9 +115,6 @@ Other known gaps (tracked in issues): `/ws` does not check the `Origin` header (
 - **Adopt the next llm4s release** (#40): completion options, real streaming answers,
   permission-mode hybrid search; drop the workarounds above as upstream issues land
   (llm4s/llm4s#2714, #2724, #2732, #2733, #2734).
-- **Refactor and error handling** (#22): split `RAGService`, one error-handling middleware with
-  consistent error bodies (no exception text), 400 for malformed query parameters, derived
-  codecs, dead-code removal, possibly one unified `/api/v1/collections` API.
 - **Test gaps** (#48): route and service specs for chat, experiments, suggestions, the
   WebSocket and `RAGService`; a V3 migration dropping a duplicate index; a Helm migration job.
 - **WebSocket origin check** (#45).
