@@ -1,12 +1,11 @@
 package org.llm4s.ragbox.auth
 
 import cats.effect.IO
-import org.llm4s.ragbox.config.DatabaseConfig
+import org.llm4s.ragbox.db.ConnectionPool
 
-import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
+import java.sql.{ResultSet, Timestamp}
 import java.time.Instant
-import java.util.Properties
-import scala.compiletime.uninitialized
+import javax.sql.DataSource
 
 /**
  * User role.
@@ -40,22 +39,12 @@ final case class User(
 /**
  * PostgreSQL-backed user registry.
  */
-class UserRegistry(dbConfig: DatabaseConfig) {
-
-  private var connection: Connection = uninitialized
+class UserRegistry(dataSource: DataSource) {
 
   /**
    * Initialize the registry and ensure tables exist.
    */
-  def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword.reveal)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
+  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       stmt.execute(
@@ -79,7 +68,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Create a new user.
    */
-  def create(username: String, passwordHash: String, role: UserRole): IO[User] = IO {
+  def create(username: String, passwordHash: String, role: UserRole): IO[User] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """INSERT INTO users (username, password_hash, role)
         |VALUES (?, ?, ?)
@@ -100,7 +89,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Get user by username.
    */
-  def getByUsername(username: String): IO[Option[User]] = IO {
+  def getByUsername(username: String): IO[Option[User]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -115,7 +104,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Get user by ID.
    */
-  def getById(id: Int): IO[Option[User]] = IO {
+  def getById(id: Int): IO[Option[User]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -130,7 +119,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * List all users.
    */
-  def list(): IO[Seq[User]] = IO {
+  def list(): IO[Seq[User]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT id, username, password_hash, role, created_at FROM users ORDER BY created_at"
     val stmt = connection.createStatement()
     try {
@@ -148,7 +137,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Update user password.
    */
-  def updatePassword(id: Int, passwordHash: String): IO[Boolean] = IO {
+  def updatePassword(id: Int, passwordHash: String): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "UPDATE users SET password_hash = ? WHERE id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -163,7 +152,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Update user role.
    */
-  def updateRole(id: Int, role: UserRole): IO[Boolean] = IO {
+  def updateRole(id: Int, role: UserRole): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "UPDATE users SET role = ? WHERE id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -178,7 +167,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Delete user.
    */
-  def delete(id: Int): IO[Boolean] = IO {
+  def delete(id: Int): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "DELETE FROM users WHERE id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -192,7 +181,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Check if username exists.
    */
-  def exists(username: String): IO[Boolean] = IO {
+  def exists(username: String): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT 1 FROM users WHERE username = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -207,7 +196,7 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   /**
    * Count users.
    */
-  def count(): IO[Int] = IO {
+  def count(): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT COUNT(*) FROM users"
     val stmt = connection.createStatement()
     try {
@@ -219,13 +208,9 @@ class UserRegistry(dbConfig: DatabaseConfig) {
   }
 
   /**
-   * Close the connection.
+   * Nothing to close: the connection pool is owned by the caller.
    */
-  def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
+  def close(): IO[Unit] = IO.unit
 
   private def rowToUser(rs: ResultSet): User = {
     User(
@@ -243,8 +228,8 @@ object UserRegistry {
   /**
    * Create and initialize a user registry.
    */
-  def apply(dbConfig: DatabaseConfig): IO[UserRegistry] = {
-    val registry = new UserRegistry(dbConfig)
+  def apply(dataSource: DataSource): IO[UserRegistry] = {
+    val registry = new UserRegistry(dataSource)
     registry.initialize().as(registry)
   }
 }

@@ -3,13 +3,12 @@ package org.llm4s.ragbox.registry
 import cats.effect.IO
 import io.circe.parser._
 import io.circe.syntax._
-import org.llm4s.ragbox.config.DatabaseConfig
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
 
-import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
+import java.sql.{ResultSet, Timestamp}
 import java.time.Instant
-import java.util.Properties
-import scala.compiletime.uninitialized
+import javax.sql.DataSource
 
 /**
  * PostgreSQL-backed collection configuration registry.
@@ -17,22 +16,12 @@ import scala.compiletime.uninitialized
  * Persists per-collection chunking configurations to PostgreSQL for
  * durability across application restarts.
  */
-class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionConfigRegistry {
-
-  private var connection: Connection = uninitialized
+class PgCollectionConfigRegistry(dataSource: DataSource) extends CollectionConfigRegistry {
 
   /**
    * Initialize the registry and ensure tables exist.
    */
-  override def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword.reveal)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
+  override def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     // Ensure table exists
     val stmt = connection.createStatement()
     try {
@@ -56,7 +45,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     }
   }
 
-  override def get(collection: String): IO[Option[CollectionChunkingConfig]] = IO {
+  override def get(collection: String): IO[Option[CollectionChunkingConfig]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT collection, strategy, target_size, max_size, overlap, file_type_strategies, updated_at
         |FROM collection_configs WHERE collection = ?""".stripMargin
@@ -70,7 +59,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     }
   }
 
-  override def put(config: CollectionChunkingConfig): IO[Unit] = IO {
+  override def put(config: CollectionChunkingConfig): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """INSERT INTO collection_configs (collection, strategy, target_size, max_size, overlap, file_type_strategies, updated_at)
         |VALUES (?, ?, ?, ?, ?, ?::jsonb, NOW())
@@ -98,7 +87,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     }
   }
 
-  override def delete(collection: String): IO[Boolean] = IO {
+  override def delete(collection: String): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "DELETE FROM collection_configs WHERE collection = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -109,7 +98,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     }
   }
 
-  override def listConfigured(): IO[Seq[String]] = IO {
+  override def listConfigured(): IO[Seq[String]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT collection FROM collection_configs ORDER BY collection"
     val stmt = connection.createStatement()
     try {
@@ -124,7 +113,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     }
   }
 
-  override def getAll(): IO[Seq[CollectionChunkingConfig]] = IO {
+  override def getAll(): IO[Seq[CollectionChunkingConfig]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT collection, strategy, target_size, max_size, overlap, file_type_strategies, updated_at
         |FROM collection_configs ORDER BY collection""".stripMargin
@@ -150,65 +139,13 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
     defaultOverlap: Int
   ): IO[EffectiveCollectionConfig] = {
     get(collection).map { maybeConfig =>
-      maybeConfig match {
-        case None =>
-          // No custom config, use defaults
-          EffectiveCollectionConfig(
-            strategy = defaultStrategy,
-            targetSize = defaultTargetSize,
-            maxSize = defaultMaxSize,
-            overlap = defaultOverlap,
-            source = "default"
-          )
-
-        case Some(config) =>
-          // Check for file-type override
-          val fileExtension = filename.flatMap(extractExtension)
-          val fileTypeStrategy = fileExtension.flatMap(ext => config.fileTypeStrategies.get(ext))
-
-          fileTypeStrategy match {
-            case Some(strategy) =>
-              // File-type override found
-              EffectiveCollectionConfig(
-                strategy = strategy,
-                targetSize = config.targetSize.getOrElse(defaultTargetSize),
-                maxSize = config.maxSize.getOrElse(defaultMaxSize),
-                overlap = config.overlap.getOrElse(defaultOverlap),
-                source = "file-type",
-                appliedFileTypeOverride = fileExtension
-              )
-
-            case None =>
-              // Use collection config
-              EffectiveCollectionConfig(
-                strategy = config.strategy.getOrElse(defaultStrategy),
-                targetSize = config.targetSize.getOrElse(defaultTargetSize),
-                maxSize = config.maxSize.getOrElse(defaultMaxSize),
-                overlap = config.overlap.getOrElse(defaultOverlap),
-                source = "collection"
-              )
-          }
-      }
+      CollectionConfigRegistry.resolveEffective(
+        maybeConfig, filename, defaultStrategy, defaultTargetSize, defaultMaxSize, defaultOverlap
+      )
     }
   }
 
-  override def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
-
-  /**
-   * Extract file extension from filename (with leading dot).
-   */
-  private def extractExtension(filename: String): Option[String] = {
-    val lastDot = filename.lastIndexOf('.')
-    if (lastDot > 0 && lastDot < filename.length - 1) {
-      Some(filename.substring(lastDot).toLowerCase)
-    } else {
-      None
-    }
-  }
+  override def close(): IO[Unit] = IO.unit
 
   private def rowToConfig(rs: ResultSet): CollectionChunkingConfig = {
     val fileTypeJson = Option(rs.getString("file_type_strategies")).getOrElse("{}")
@@ -233,8 +170,8 @@ object PgCollectionConfigRegistry {
   /**
    * Create and initialize a PostgreSQL collection config registry.
    */
-  def apply(dbConfig: DatabaseConfig): IO[PgCollectionConfigRegistry] = {
-    val registry = new PgCollectionConfigRegistry(dbConfig)
+  def apply(dataSource: DataSource): IO[PgCollectionConfigRegistry] = {
+    val registry = new PgCollectionConfigRegistry(dataSource)
     registry.initialize().as(registry)
   }
 }

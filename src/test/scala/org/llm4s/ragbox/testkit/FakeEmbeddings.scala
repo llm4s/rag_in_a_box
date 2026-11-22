@@ -1,5 +1,6 @@
 package org.llm4s.ragbox.testkit
 
+import org.llm4s.error.ConfigurationError
 import org.llm4s.llmconnect.config.EmbeddingProviderConfig
 import org.llm4s.llmconnect.model.{EmbeddingRequest, EmbeddingResponse}
 import org.llm4s.llmconnect.provider.EmbeddingProvider
@@ -21,11 +22,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * Use [[registry]] as the `ProviderRegistry` of a `RAGService`. It registers the provider as
  * `openai`, the id ragbox's configuration accepts, so no other code changes. Each instance
  * counts the texts it embedded, so a test can check that nothing was re-embedded.
+ *
+ * @param failFirstBuilds how many times building the provider fails before it succeeds, to
+ *                        simulate an embedding provider that is unavailable at startup
  */
-final class FakeEmbeddings {
+final class FakeEmbeddings(failFirstBuilds: Int = 0) {
   import FakeEmbeddings._
 
   private val embedded = new AtomicInteger(0)
+  private val remainingBuildFailures = new AtomicInteger(failFirstBuilds)
 
   /** Number of texts this instance has embedded. */
   def embeddedCount: Int = embedded.get()
@@ -47,7 +52,9 @@ final class FakeEmbeddings {
     ): Result[EmbeddingProviderConfig] =
       Right(EmbeddingProviderConfig("", modelOverride.orElse(section.model).getOrElse(Model), Secret("")))
 
-    override def build(config: EmbeddingProviderConfig): Result[EmbeddingProvider] = Right(new Provider)
+    override def build(config: EmbeddingProviderConfig): Result[EmbeddingProvider] =
+      if (remainingBuildFailures.getAndDecrement() > 0) Left(ConfigurationError("fake embedding provider unavailable"))
+      else Right(new Provider)
   }
 
   /** A provider registry whose only embedding provider is this one, registered as `openai`. */
@@ -59,7 +66,7 @@ object FakeEmbeddings {
   val Model: String = "fake-embedding"
   val Dimensions: Int = 64
 
-  def apply(): FakeEmbeddings = new FakeEmbeddings
+  def apply(failFirstBuilds: Int = 0): FakeEmbeddings = new FakeEmbeddings(failFirstBuilds)
 
   def vectorFor(text: String): Seq[Double] = {
     val counts = Array.fill(Dimensions)(0.0)

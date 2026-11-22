@@ -27,6 +27,11 @@ object ChatRoutes {
 
   // Query parameter extractor for includeArchived
   object IncludeArchivedParam extends OptionalQueryParamDecoderMatcher[Boolean]("includeArchived")
+  object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
+  object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
+
+  private def clamp(value: Option[Int], default: Int, max: Int): Int =
+    math.min(math.max(value.getOrElse(default), 0), max)
 
   def routes(
     chatRegistry: ChatSessionRegistry,
@@ -48,21 +53,32 @@ object ChatRoutes {
         response <- Created(CreateChatSessionResponse(session, "Session created").asJson)
       } yield response
 
-    // GET /api/v1/chat/sessions - List sessions
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) =>
+    // GET /api/v1/chat/sessions?limit=&offset= - List sessions, most recently updated first.
+    // `total` is the number of sessions, across all pages.
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) +& LimitParam(limit) +& OffsetParam(offset) =>
+      val archived = includeArchived.getOrElse(false)
       for {
-        sessions <- chatRegistry.listSessions(includeArchived.getOrElse(false))
-        response <- Ok(ChatSessionListResponse(sessions, sessions.size).asJson)
+        sessions <- chatRegistry.listSessions(
+          archived,
+          clamp(limit, ChatSessionRegistry.DefaultSessionLimit, ChatSessionRegistry.MaxSessionLimit),
+          math.max(offset.getOrElse(0), 0)
+        )
+        total <- chatRegistry.countSessions(archived)
+        response <- Ok(ChatSessionListResponse(sessions, total).asJson)
       } yield response
 
-    // GET /api/v1/chat/sessions/:id - Get session with messages
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id =>
+    // GET /api/v1/chat/sessions/:id?limit=&offset= - Get session with its latest messages
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? LimitParam(limit) +& OffsetParam(offset) =>
       for {
         sessionOpt <- chatRegistry.getSession(id)
         response <- sessionOpt match {
           case Some(session) =>
             for {
-              messages <- chatRegistry.getMessages(id)
+              messages <- chatRegistry.getMessages(
+                id,
+                clamp(limit, ChatSessionRegistry.DefaultMessageLimit, ChatSessionRegistry.MaxMessageLimit),
+                math.max(offset.getOrElse(0), 0)
+              )
               resp <- Ok(ChatSessionDetailResponse(session, messages).asJson)
             } yield resp
           case None =>
@@ -233,7 +249,6 @@ object ChatRoutes {
 
               // Generate a unique ID for this stream
               queryId = UUID.randomUUID().toString
-              assistantMessageId = s"msg-${UUID.randomUUID().toString.take(8)}"
 
               userId = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
                 .map(_.head.value)

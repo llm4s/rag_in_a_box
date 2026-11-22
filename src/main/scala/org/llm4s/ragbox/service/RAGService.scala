@@ -13,15 +13,15 @@ import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSchemaManager
 import org.llm4s.types.Result
 import org.llm4s.ragbox.config.AppConfig
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentRegistry}
 import org.llm4s.ragbox.store.{ChunkStore, PgChunkStore}
 
 import java.security.MessageDigest
-import java.sql.DriverManager
 import java.time.Instant
-import java.util.Properties
-import scala.util.Using
+import java.util.concurrent.atomic.AtomicReference
+import javax.sql.DataSource
 
 /**
  * A request the service rejects because its input is invalid, such as a malformed collection
@@ -39,15 +39,26 @@ final case class InvalidRequestError(message: String) extends RuntimeException(m
  * retrieved. Ingests that name no collection go to [[RAGService.DefaultCollection]], and deletes
  * go through the collection the document was registered in.
  *
+ * All llm4s RAG calls are synchronous (embedding and LLM HTTP calls, JDBC), so they run on the
+ * blocking pool through [[blockingResult]], never on the compute pool.
+ *
+ * The llm4s [[RAG]] instance is built on first use and memoised only once it has been built: a
+ * failure (database or embedding provider unreachable at startup, say) is not cached, so a later
+ * call retries - at most once per [[RAGService.RetryCooldownMillis]] - instead of the service
+ * staying broken until restart. The factories try to build it eagerly and log a failure.
+ *
  * @param providerRegistry where the embedding provider is resolved; tests pass one holding a
  *                         deterministic in-process embedder
+ * @param dataSource the application's shared connection pool, for the permission-mode schema
+ *                   setup in [[ensureDefaultCollection]]
  */
 class RAGService(
   config: AppConfig,
   documentRegistry: DocumentRegistry,
   chunkStore: ChunkStore,
   val searchIndex: Option[SearchIndex] = None,
-  providerRegistry: ProviderRegistry = ProviderRegistry.default
+  providerRegistry: ProviderRegistry = ProviderRegistry.default,
+  dataSource: Option[DataSource] = None
 ) {
   import RAGService.DefaultCollection
 
@@ -133,8 +144,18 @@ class RAGService(
     // Configure storage: use SearchIndex if available, otherwise pgvector directly
     val withStorage = searchIndex match {
       case Some(si) =>
-        // Permission-based RAG with SearchIndex
-        baseConfig.withSearchIndex(si)
+        // Permission-based RAG with SearchIndex. A SearchIndex over the shared pool
+        // (PgSearchIndex.fromDataSource) carries no connection settings, so the pipeline's own
+        // pgvector + keyword store is pointed at the same database explicitly.
+        baseConfig
+          .withSearchIndex(si)
+          .withPgHybrid(
+            connectionString = config.database.connectionString,
+            user = config.database.effectiveUser,
+            password = config.database.effectivePassword,
+            vectorTableName = config.database.tableName,
+            keywordTableName = si.pgConfig.map(_.keywordTableName).getOrElse(RAGService.KeywordTableName)
+          )
       case None =>
         // Basic pgvector without permissions
         baseConfig.withPgVector(
@@ -149,17 +170,62 @@ class RAGService(
     llmClient.fold(withStorage)(withStorage.withLLM)
   }
 
-  // Build the RAG instance
-  private lazy val ragInstance: Result[RAG] =
+  // The RAG instance once built, and the last build failure (time, message) while it is not.
+  private val ragRef = new AtomicReference[Option[RAG]](None)
+  private val lastRagFailure = new AtomicReference[Option[(Long, String)]](None)
+  private val ragLock = new Object
+  @volatile private var closed = false
+
+  private def buildRag(): Result[RAG] =
     modelRegistry.flatMap { registry =>
       given ModelRegistryService = registry
       ragConfig.build(resolveEmbeddingProvider)
     }
 
   /**
-   * Get the underlying RAG instance.
+   * Get the underlying RAG instance, building it if it has not been built yet.
+   *
+   * A build failure is not memoised: the next call after [[RAGService.RetryCooldownMillis]]
+   * tries again (calls within the cooldown fail fast with the last error). Builds are
+   * serialised, so concurrent callers never create two instances.
    */
-  def rag: IO[RAG] = IO.fromEither(ragInstance.left.map(e => new RuntimeException(e.message)))
+  def rag: IO[RAG] =
+    ragRef.get() match {
+      case Some(r) => IO.pure(r)
+      case None =>
+        IO.blocking {
+          ragLock.synchronized {
+            if (closed) Left("RAG service is closed")
+            else
+              ragRef.get() match {
+                case Some(r) => Right(r)
+                case None =>
+                  val now = System.currentTimeMillis()
+                  lastRagFailure.get() match {
+                    case Some((at, message)) if now - at < RAGService.RetryCooldownMillis => Left(message)
+                    case _ =>
+                      scala.util.Try(buildRag()).toEither.left.map(e => Option(e.getMessage).getOrElse(e.toString))
+                        .flatMap(_.left.map(_.message)) match {
+                        case Right(r) =>
+                          ragRef.set(Some(r))
+                          lastRagFailure.set(None)
+                          Right(r)
+                        case Left(message) =>
+                          lastRagFailure.set(Some(now -> message))
+                          Left(message)
+                      }
+                  }
+              }
+          }
+        }.flatMap(result => IO.fromEither(result.left.map(new RuntimeException(_))))
+    }
+
+  /** Whether the RAG instance has been built (without trying to build it). */
+  private def ragReady: Boolean = ragRef.get().isDefined
+
+  /** Run a synchronous llm4s call on the blocking pool and lift its `Result`. */
+  private def blockingResult[A](call: => Result[A]): IO[A] =
+    IO.blocking(call).flatMap(result => IO.fromEither(result.left.map(e => new RuntimeException(e.message))))
 
   // ============================================================
   // Document Operations
@@ -199,12 +265,7 @@ class RAGService(
           deleteVectorsFromCollection(entry.flatMap(_.collection).getOrElse(DefaultCollection), documentId).void
         }
       } else {
-        rag.flatMap { r =>
-          IO.fromEither(
-            r.deleteDocument(documentId)
-              .left.map(e => new RuntimeException(e.message))
-          )
-        }
+        rag.flatMap(r => blockingResult(r.deleteDocument(documentId)))
       }
     deleteVectors *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
   }
@@ -224,15 +285,13 @@ class RAGService(
         case None => IO.pure(None)
       }
       path = existingPath.getOrElse(CollectionPath.unsafe(DefaultCollection))
-      deleted <- IO.fromEither(
-        r.deleteFromCollection(path, documentId).left.map(e => new RuntimeException(e.message))
-      )
+      deleted <- blockingResult(r.deleteFromCollection(path, documentId))
     } yield deleted
 
   private def collectionExists(path: CollectionPath): IO[Boolean] =
     collections match {
       case Some(store) =>
-        IO.fromEither(store.get(path).map(_.isDefined).left.map(e => new RuntimeException(e.message)))
+        blockingResult(store.get(path).map(_.isDefined))
       case None => IO.pure(false)
     }
 
@@ -243,7 +302,7 @@ class RAGService(
   def getStats: IO[StatsResponse] =
     for {
       r <- rag
-      stats <- IO.fromEither(r.stats.left.map(e => new RuntimeException(e.message)))
+      stats <- blockingResult(r.stats)
       // Use registries for accurate persistent counts
       docCount <- documentRegistry.count()
       chunkCount <- chunkStore.count()
@@ -259,11 +318,7 @@ class RAGService(
    * Clear all documents.
    */
   def clearAll: IO[Unit] =
-    rag.flatMap { r =>
-      IO.fromEither(
-        r.clear().left.map(e => new RuntimeException(e.message))
-      )
-    } *> chunkStore.clear() *> documentRegistry.clear()
+    rag.flatMap(r => blockingResult(r.clear())) *> chunkStore.clear() *> documentRegistry.clear()
 
   // ============================================================
   // Upsert Operations (SDK/Sidecar Pattern)
@@ -391,10 +446,7 @@ class RAGService(
     sourceId: Option[String]
   ): IO[DocumentUpsertResponse] =
     rag.flatMap { r =>
-      IO.fromEither(
-        r.ingestText(content, documentId, metadata)
-          .left.map(e => new RuntimeException(e.message))
-      ).flatMap { chunkCount =>
+      blockingResult(r.ingestText(content, documentId, metadata)).flatMap { chunkCount =>
         recordIngest(documentId, content, contentHash, chunkCount, metadata, metadata.get("collection"), Set.empty, sourceId)
           .as(DocumentUpsertResponse(
             documentId = documentId,
@@ -567,12 +619,11 @@ class RAGService(
   def getCollectionStats: IO[Seq[org.llm4s.ragbox.model.CollectionStats]] =
     for {
       collections <- documentRegistry.listCollections()
-      stats <- collections.traverse { coll =>
-        documentRegistry.countByCollection(coll).map { count =>
-          org.llm4s.ragbox.model.CollectionStats(name = coll, documentCount = count, chunkCount = 0) // Chunk count per collection requires llm4s changes
-        }
-      }
-    } yield stats
+      counts <- documentRegistry.countsByCollection()
+    } yield collections.map { coll =>
+      // Chunk count per collection requires llm4s changes
+      org.llm4s.ragbox.model.CollectionStats(name = coll, documentCount = counts.getOrElse(coll, 0), chunkCount = 0)
+    }
 
   // ============================================================
   // Query Operations
@@ -583,39 +634,19 @@ class RAGService(
    */
   def search(query: String, topK: Option[Int]): IO[SearchResponse] =
     rag.flatMap { r =>
-      IO.fromEither(
-        r.query(query, topK)
-          .map { results =>
-            SearchResponse(
-              results = results.map(toContextItem),
-              count = results.size
-            )
-          }
-          .left.map(e => new RuntimeException(e.message))
-      )
+      blockingResult(r.query(query, topK)).map { results =>
+        SearchResponse(
+          results = results.map(toContextItem),
+          count = results.size
+        )
+      }
     }
 
   /**
    * Query with answer generation.
    */
   def queryWithAnswer(question: String, topK: Option[Int]): IO[QueryResponse] =
-    rag.flatMap { r =>
-      IO.fromEither(
-        r.queryWithAnswer(question, topK)
-          .map { result =>
-            QueryResponse(
-              answer = result.answer,
-              contexts = result.contexts.map(toContextItem),
-              usage = result.usage.map(u => UsageInfo(
-                promptTokens = u.promptTokens,
-                completionTokens = u.completionTokens,
-                totalTokens = u.totalTokens
-              ))
-            )
-          }
-          .left.map(e => new RuntimeException(e.message))
-      )
-    }
+    rag.flatMap(r => blockingResult(r.queryWithAnswer(question, topK)).map(toQueryResponse))
 
   // ============================================================
   // Permission-Aware Query Operations
@@ -637,16 +668,12 @@ class RAGService(
     topK: Option[Int]
   ): IO[SearchResponse] =
     (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
-      IO.fromEither(
-        r.queryWithPermissions(auth, pattern, query, topK)
-          .map { results =>
-            SearchResponse(
-              results = results.map(toContextItem),
-              count = results.size
-            )
-          }
-          .left.map(e => new RuntimeException(e.message))
-      )
+      blockingResult(r.queryWithPermissions(auth, pattern, query, topK)).map { results =>
+        SearchResponse(
+          results = results.map(toContextItem),
+          count = results.size
+        )
+      }
     }
 
   /**
@@ -659,22 +686,19 @@ class RAGService(
     topK: Option[Int]
   ): IO[QueryResponse] =
     (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
-      IO.fromEither(
-        r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)
-          .map { result =>
-            QueryResponse(
-              answer = result.answer,
-              contexts = result.contexts.map(toContextItem),
-              usage = result.usage.map(u => UsageInfo(
-                promptTokens = u.promptTokens,
-                completionTokens = u.completionTokens,
-                totalTokens = u.totalTokens
-              ))
-            )
-          }
-          .left.map(e => new RuntimeException(e.message))
-      )
+      blockingResult(r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)).map(toQueryResponse)
     }
+
+  private def toQueryResponse(result: RAGAnswerResult): QueryResponse =
+    QueryResponse(
+      answer = result.answer,
+      contexts = result.contexts.map(toContextItem),
+      usage = result.usage.map(u => UsageInfo(
+        promptTokens = u.promptTokens,
+        completionTokens = u.completionTokens,
+        totalTokens = u.totalTokens
+      ))
+    )
 
   /**
    * Ingest a document with permission controls.
@@ -708,10 +732,7 @@ class RAGService(
     for {
       path <- parseCollectionPath(collectionPath)
       r <- rag
-      chunkCount <- IO.fromEither(
-        r.ingestWithPermissions(path, documentId, content, metadata, readableBy)
-          .left.map(e => new RuntimeException(e.message))
-      )
+      chunkCount <- blockingResult(r.ingestWithPermissions(path, documentId, content, metadata, readableBy))
       // The registry records documents in the default collection with no collection, which is
       // how it has always represented "default" (see PgDocumentRegistry.listIdsByCollection).
       registeredCollection = Option.when(path.value != DefaultCollection)(path.value)
@@ -804,10 +825,7 @@ class RAGService(
     for {
       path <- parseCollectionPath(collectionPath)
       r <- rag
-      deleted <- IO.fromEither(
-        r.deleteFromCollection(path, documentId)
-          .left.map(e => new RuntimeException(e.message))
-      )
+      deleted <- blockingResult(r.deleteFromCollection(path, documentId))
       _ <- chunkStore.deleteByDocument(documentId)
       _ <- documentRegistry.remove(documentId)
     } yield deleted
@@ -824,20 +842,18 @@ class RAGService(
    * @return the number of vectors migrated
    */
   def ensureDefaultCollection: IO[Long] =
-    if (!hasPermissions) IO.pure(0L)
-    else
-      IO.blocking {
-        Class.forName("org.postgresql.Driver")
-        val props = new Properties()
-        props.setProperty("user", config.database.effectiveUser)
-        props.setProperty("password", config.database.effectivePassword.reveal)
-        Using.resource(DriverManager.getConnection(config.database.connectionString, props)) { conn =>
+    (hasPermissions, dataSource) match {
+      case (false, _) => IO.pure(0L)
+      case (true, None) =>
+        IO.raiseError(new IllegalStateException("Permission mode needs the application's connection pool"))
+      case (true, Some(ds)) =>
+        ConnectionPool.withTransaction(ds) { conn =>
           for {
             defaultId <- PgSchemaManager.createDefaultCollection(conn)
             migrated <- PgSchemaManager.migrateExistingVectors(conn, config.database.tableName, defaultId)
           } yield migrated
-        }
-      }.flatMap(result => IO.fromEither(result.left.map(e => new RuntimeException(e.message))))
+        }.flatMap(result => IO.fromEither(result.left.map(e => new RuntimeException(e.message))))
+    }
 
   private def parseCollectionPath(path: String): IO[CollectionPath] =
     IO.fromEither(
@@ -879,7 +895,7 @@ class RAGService(
         port = config.database.effectivePort,
         database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
-        connected = ragInstance.isRight
+        connected = ragReady
       )
     )
   }
@@ -937,7 +953,7 @@ class RAGService(
         port = config.database.effectivePort,
         database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
-        connected = ragInstance.isRight
+        connected = ragReady
       ),
       runtimeConfigurable = RuntimeConfigurableInfo(
         hotSettings = Seq("topK", "fusionStrategy", "rrfK", "systemPrompt", "llmModel", "llmTemperature"),
@@ -1109,9 +1125,10 @@ class RAGService(
       case Left(e) => CheckStatus("error", Some(s"Database unreachable: ${e.getMessage}"))
     }
 
-    val ragCheck = ragInstance match {
+    // Builds the RAG instance if an earlier attempt failed, so readiness recovers on its own
+    val ragCheckIO: IO[CheckStatus] = rag.attempt.map {
       case Right(_) => CheckStatus("ok")
-      case Left(e) => CheckStatus("error", Some(e.message))
+      case Left(e) => CheckStatus("error", Some(e.getMessage))
     }
 
     val apiKeyCheck = if (config.apiKeys.hasAnyKey) {
@@ -1122,8 +1139,9 @@ class RAGService(
 
     for {
       dbCheck <- dbCheckIO
+      ragCheck <- ragCheckIO
       // Service is ready if both RAG initialized and DB is reachable
-      isReady = ragInstance.isRight && dbCheck.status == "ok"
+      isReady = ragCheck.status == "ok" && dbCheck.status == "ok"
     } yield ReadinessResponse(
       ready = isReady,
       checks = Map(
@@ -1157,10 +1175,26 @@ class RAGService(
   def getDocumentRegistry: DocumentRegistry = documentRegistry
 
   /**
-   * Close resources.
+   * Close resources: the RAG instance (if it was built), the document registry and the chunk
+   * store. Every one is closed even if closing another fails; the first failure is re-raised
+   * with the others attached as suppressed exceptions.
    */
-  def close(): IO[Unit] =
-    rag.flatMap(r => IO(r.close())) *> documentRegistry.close() *> chunkStore.close()
+  def close(): IO[Unit] = {
+    val closeRag = IO.blocking {
+      ragLock.synchronized {
+        closed = true
+        ragRef.getAndSet(None).foreach(_.close())
+      }
+    }
+    List(closeRag, documentRegistry.close(), chunkStore.close())
+      .traverse(_.attempt)
+      .flatMap { results =>
+        results.collect { case Left(e) => e } match {
+          case Nil => IO.unit
+          case first :: rest => IO(rest.foreach(first.addSuppressed)) *> IO.raiseError(first)
+        }
+      }
+  }
 }
 
 object RAGService {
@@ -1171,39 +1205,66 @@ object RAGService {
    */
   val DefaultCollection: String = "default"
 
+  /** Keyword table the permission-mode pipeline uses (llm4s `PgConfig`'s default). */
+  val KeywordTableName: String = "documents"
+
+  /** Minimum time between attempts to build the RAG instance after a failure. */
+  val RetryCooldownMillis: Long = 5000L
+
   /**
-   * Create a new RAGService with PostgreSQL-backed document registry and chunk store.
-   * Does not enable permission-based RAG.
+   * Create a new RAGService with PostgreSQL-backed document registry and chunk store over the
+   * shared connection pool. Does not enable permission-based RAG.
    */
-  def create(config: AppConfig, providerRegistry: ProviderRegistry = ProviderRegistry.default): IO[RAGService] =
+  def create(
+    config: AppConfig,
+    dataSource: DataSource,
+    providerRegistry: ProviderRegistry = ProviderRegistry.default
+  ): IO[RAGService] =
     for {
-      registry <- PgDocumentRegistry(config.database)
-      chunks <- PgChunkStore(config.database)
-    } yield new RAGService(config, registry, chunks, None, providerRegistry)
+      registry <- PgDocumentRegistry(dataSource)
+      chunks <- PgChunkStore(dataSource)
+      service = new RAGService(config, registry, chunks, None, providerRegistry, Some(dataSource))
+      _ <- warmUp(service)
+    } yield service
 
   /**
    * Create a new RAGService with permission-based RAG enabled.
    * Requires a SearchIndex to be created and initialized first.
    *
    * @param config Application configuration
+   * @param dataSource The shared connection pool
    * @param searchIndex Pre-configured SearchIndex for permission-aware operations
    */
   def createWithPermissions(
     config: AppConfig,
+    dataSource: DataSource,
     searchIndex: SearchIndex,
     providerRegistry: ProviderRegistry = ProviderRegistry.default
   ): IO[RAGService] =
     for {
-      registry <- PgDocumentRegistry(config.database)
-      chunks <- PgChunkStore(config.database)
-      service = new RAGService(config, registry, chunks, Some(searchIndex), providerRegistry)
+      registry <- PgDocumentRegistry(dataSource)
+      chunks <- PgChunkStore(dataSource)
+      service = new RAGService(config, registry, chunks, Some(searchIndex), providerRegistry, Some(dataSource))
       // Every ingest in permission mode needs the default collection, and vectors left without
       // a collection by earlier versions are unsearchable until migrated into it.
       migrated <- service.ensureDefaultCollection
       _ <- IO.whenA(migrated > 0)(
         IO(logger.info(s"Migrated $migrated vectors without a collection into '$DefaultCollection'"))
       )
+      _ <- warmUp(service)
     } yield service
+
+  /**
+   * Build the RAG instance eagerly, so a misconfiguration shows at startup. A failure is logged
+   * rather than raised: the instance is retried on use (see [[RAGService.rag]]) and reported by
+   * the readiness check meanwhile.
+   */
+  private def warmUp(service: RAGService): IO[Unit] =
+    service.rag.attempt.flatMap {
+      case Right(_) => IO.unit
+      case Left(e) =>
+        IO(logger.warn(s"RAG pipeline not available yet (will retry on use): ${e.getMessage}"))
+    }
 
   private val logger = org.slf4j.LoggerFactory.getLogger(classOf[RAGService])
 }

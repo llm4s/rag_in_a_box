@@ -2,7 +2,8 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.registry.{ExperimentRegistry, QueryLogRegistryBase}
+import org.llm4s.ragbox.db.ConnectionPool
+import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry, QueryLogRegistryBase}
 
 import java.sql.Connection
 import java.time.{Duration, Instant}
@@ -39,46 +40,48 @@ class ExperimentService(
     experimentRegistry.get(id)
 
   /**
-   * List all experiments, optionally filtered by status.
+   * List experiments, newest first, optionally filtered by status. `total` counts every
+   * matching experiment, across pages.
    */
-  def listExperiments(status: Option[String] = None): IO[ExperimentListResponse] =
-    experimentRegistry.list(status).map { experiments =>
-      ExperimentListResponse(experiments, experiments.size)
-    }
+  def listExperiments(
+    status: Option[String] = None,
+    limit: Int = ExperimentRegistry.DefaultListLimit,
+    offset: Int = 0
+  ): IO[ExperimentListResponse] =
+    for {
+      experiments <- experimentRegistry.list(status, limit, offset)
+      total <- experimentRegistry.count(status)
+    } yield ExperimentListResponse(experiments, total)
 
   /**
    * Start an experiment (transitions from draft to running).
-   * Only one experiment should be running at a time.
+   *
+   * Only one experiment runs at a time. Fails with [[ExperimentAlreadyRunningError]] (409) if
+   * another one is running - checked up front for a clear message, and enforced by the
+   * database for two starts that race past the check.
    */
-  def startExperiment(id: String): IO[ExperimentOperationResponse] = {
+  def startExperiment(id: String): IO[ExperimentOperationResponse] =
     for {
-      // Check if another experiment is already running
       running <- experimentRegistry.getRunning()
-      result <- running match {
-        case Some(other) if other.id != id =>
-          IO.pure(ExperimentOperationResponse(
-            success = false,
-            message = s"Another experiment '${other.name}' (${other.id}) is already running. Stop it first.",
-            experiment = None
-          ))
-        case _ =>
-          experimentRegistry.start(id).map {
-            case Some(exp) =>
-              ExperimentOperationResponse(
-                success = true,
-                message = s"Experiment '${exp.name}' started successfully",
-                experiment = Some(exp)
-              )
-            case None =>
-              ExperimentOperationResponse(
-                success = false,
-                message = "Experiment not found or not in draft status",
-                experiment = None
-              )
-          }
+      _ <- running match {
+        case Some(other) if other.id != id => IO.raiseError(ExperimentAlreadyRunningError(Some(other)))
+        case _ => IO.unit
       }
-    } yield result
-  }
+      started <- experimentRegistry.start(id)
+    } yield started match {
+      case Some(exp) =>
+        ExperimentOperationResponse(
+          success = true,
+          message = s"Experiment '${exp.name}' started successfully",
+          experiment = Some(exp)
+        )
+      case None =>
+        ExperimentOperationResponse(
+          success = false,
+          message = "Experiment not found or not in draft status",
+          experiment = None
+        )
+    }
 
   /**
    * Stop a running experiment.
@@ -175,9 +178,8 @@ class ExperimentService(
   /**
    * Calculate results for an experiment by aggregating query logs.
    */
-  private def calculateResults(experiment: Experiment): IO[ExperimentResults] = IO {
-    val conn = dataSource.getConnection()
-    try {
+  private def calculateResults(experiment: Experiment): IO[ExperimentResults] =
+    ConnectionPool.withConnection(dataSource) { conn =>
       // Get metrics for baseline variant
       val baselineMetrics = getVariantMetrics(conn, experiment.id, isVariant = false)
       // Get metrics for test variant
@@ -201,10 +203,7 @@ class ExperimentService(
         variant = variantMetrics,
         analysis = analysis
       )
-    } finally {
-      conn.close()
     }
-  }
 
   /**
    * Get metrics for a specific variant of an experiment.

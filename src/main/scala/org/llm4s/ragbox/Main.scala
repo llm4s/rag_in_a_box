@@ -23,6 +23,7 @@ import org.llm4s.ragbox.routes._
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.ragbox.auth.{AuthService, UserRegistry, AccessTokenRegistry}
 
+import javax.sql.DataSource
 import scala.concurrent.duration._
 
 /**
@@ -66,9 +67,13 @@ object Main extends IOApp {
       // Create supervisor for background tasks
       supervisor <- Supervisor[IO]
 
+      // One connection pool for the whole application, created first and passed to every
+      // database component (registries, chunk store, permission search index). Released last.
+      dbPool <- ConnectionPool.create(config.database)
+
       // Try to create SearchIndex for permission-based RAG
       // Falls back to legacy mode if SearchIndex creation fails
-      searchIndexOpt <- Resource.eval(createSearchIndex(config))
+      searchIndexOpt <- createSearchIndex(config, dbPool)
       _ <- Resource.eval(searchIndexOpt match {
         case Some(_) => logger.info("Permission-based RAG: enabled")
         case None => logger.warn("Permission-based RAG: DISABLED (legacy mode, queries ignore permissions)")
@@ -78,23 +83,23 @@ object Main extends IOApp {
       // Use permission-aware mode if SearchIndex is available
       ragService <- searchIndexOpt match {
         case Some(si) =>
-          Resource.make(RAGService.createWithPermissions(config, si))(_.close())
+          Resource.make(RAGService.createWithPermissions(config, dbPool, si))(_.close())
         case None =>
-          Resource.make(RAGService.create(config))(_.close())
+          Resource.make(RAGService.create(config, dbPool))(_.close())
       }
 
       // Create Runtime Config Manager
-      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config))(_.close())
+      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, dbPool))(_.close())
 
       // Create Collection Config Registry
-      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(config.database))(_.close())
+      collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(dbPool))(_.close())
 
       // Create Query Log Registry for analytics
-      queryLogRegistry <- Resource.make(QueryLogRegistry(config.database))(_.close())
+      queryLogRegistry <- Resource.make(QueryLogRegistry(dbPool))(_.close())
 
       // Create Auth services
-      userRegistry <- Resource.make(UserRegistry(config.database))(_.close())
-      tokenRegistry <- Resource.make(AccessTokenRegistry(config.database))(_.close())
+      userRegistry <- Resource.make(UserRegistry(dbPool))(_.close())
+      tokenRegistry <- Resource.make(AccessTokenRegistry(dbPool))(_.close())
       authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
 
       // Create Ingestion service and scheduler
@@ -106,9 +111,6 @@ object Main extends IOApp {
 
       // Create Suggestion service for optimization recommendations
       suggestionService = SuggestionService(queryLogRegistry, config)
-
-      // Shared connection pool for experiment and chat registries
-      dbPool <- ConnectionPool.create(config.database)
 
       // Create Experiment service for A/B testing
       experimentRegistry <- Resource.eval(ExperimentRegistry(dbPool))
@@ -263,22 +265,17 @@ object Main extends IOApp {
   }
 
   /**
-   * Create SearchIndex for permission-based RAG.
+   * Create SearchIndex for permission-based RAG over the application's connection pool.
    *
-   * Uses the same effective connection settings (DATABASE_URL or host/port/database) as the
-   * rest of the application. On failure the error is logged and, unless
-   * `permissions.required` is set, None is returned (legacy mode, no permissions).
-   * With `permissions.required = true` a failure aborts startup.
+   * The index shares `pool` (`PgSearchIndex.fromDataSource`), so it opens no pool of its own; it
+   * is still closed through the Resource, which leaves the shared pool to its owner. On failure
+   * the error is logged and, unless `permissions.required` is set, None is returned (legacy
+   * mode, no permissions). With `permissions.required = true` a failure aborts startup.
    */
-  private def createSearchIndex(config: AppConfig): IO[Option[SearchIndex]] = {
-    val db = config.database
-    val attempt: IO[Either[String, SearchIndex]] = IO {
-      PgSearchIndex.fromJdbcUrl(
-        jdbcUrl = db.connectionString,
-        user = db.effectiveUser,
-        password = db.effectivePassword,
-        vectorTableName = db.tableName
-      ).left.map(err => s"Failed to create SearchIndex: ${err.message}")
+  private def createSearchIndex(config: AppConfig, pool: DataSource): Resource[IO, Option[SearchIndex]] = {
+    val attempt: IO[Either[String, SearchIndex]] = IO.blocking {
+      PgSearchIndex.fromDataSource(pool, config.database.tableName)
+        .left.map(err => s"Failed to create SearchIndex: ${err.message}")
         .flatMap { si =>
           // Initialize schema (adds permission columns if missing)
           si.initializeSchema() match {
@@ -290,7 +287,7 @@ object Main extends IOApp {
         }
     }.handleError(e => Left(s"Failed to create SearchIndex: ${e.getMessage}"))
 
-    attempt.flatMap {
+    val acquire: IO[Option[SearchIndex]] = attempt.flatMap {
       case Right(si) =>
         logger.info("SearchIndex initialized with permission schema").as(Some(si))
       case Left(error) if config.permissions.required =>
@@ -305,6 +302,8 @@ object Main extends IOApp {
               "Set PERMISSIONS_REQUIRED=true to fail startup instead."
           ).as(None)
     }
+
+    Resource.make(acquire)(_.traverse_(si => IO.blocking(si.close())))
   }
 
   /**

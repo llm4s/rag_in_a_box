@@ -1,13 +1,13 @@
 package org.llm4s.ragbox.auth
 
 import cats.effect.IO
-import org.llm4s.ragbox.config.DatabaseConfig
+import org.llm4s.ragbox.db.ConnectionPool
 
 import java.security.SecureRandom
-import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
+import java.sql.{Connection, ResultSet, Timestamp}
 import java.time.Instant
-import java.util.{Base64, Properties, UUID}
-import scala.compiletime.uninitialized
+import javax.sql.DataSource
+import java.util.{Base64, UUID}
 
 /**
  * Available token scopes.
@@ -43,24 +43,15 @@ final case class AccessToken(
 /**
  * PostgreSQL-backed access token registry.
  */
-class AccessTokenRegistry(dbConfig: DatabaseConfig) {
+class AccessTokenRegistry(dataSource: DataSource) {
 
-  private var connection: Connection = uninitialized
   private val TOKEN_PREFIX = "rat_"  // RAG Access Token
   private val secureRandom = new SecureRandom()
 
   /**
    * Initialize the registry and ensure tables exist.
    */
-  def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword.reveal)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
+  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       stmt.execute(
@@ -96,7 +87,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
     collections: Option[Set[String]],
     createdBy: Option[Int],
     expiresAt: Option[Instant]
-  ): IO[(AccessToken, String)] = IO {
+  ): IO[(AccessToken, String)] = ConnectionPool.withConnection(dataSource) { connection =>
     // Validate scopes
     val invalidScopes = scopes.filterNot(TokenScope.validate)
     if (invalidScopes.nonEmpty) {
@@ -153,7 +144,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
   /**
    * Validate a token and return its metadata if valid.
    */
-  def validate(token: String): IO[Option[AccessToken]] = IO {
+  def validate(token: String): IO[Option[AccessToken]] = ConnectionPool.withConnection(dataSource) { connection =>
     if (!token.startsWith(TOKEN_PREFIX)) {
       None
     } else {
@@ -172,7 +163,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
             case Some(exp) if exp.isBefore(Instant.now()) => None
             case _ =>
               // Update last used time
-              updateLastUsed(accessToken.id)
+              updateLastUsed(connection, accessToken.id)
               Some(accessToken)
           }
         } else {
@@ -187,7 +178,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
   /**
    * List all tokens (without sensitive data).
    */
-  def list(): IO[Seq[AccessToken]] = IO {
+  def list(): IO[Seq[AccessToken]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT id, name, token_prefix, scopes, collections, created_by, expires_at, last_used_at, created_at
         |FROM access_tokens ORDER BY created_at DESC""".stripMargin
@@ -207,7 +198,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
   /**
    * Get a token by ID.
    */
-  def getById(id: String): IO[Option[AccessToken]] = IO {
+  def getById(id: String): IO[Option[AccessToken]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT id, name, token_prefix, scopes, collections, created_by, expires_at, last_used_at, created_at
         |FROM access_tokens WHERE id = ?::uuid""".stripMargin
@@ -224,7 +215,7 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
   /**
    * Delete a token.
    */
-  def delete(id: String): IO[Boolean] = IO {
+  def delete(id: String): IO[Boolean] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "DELETE FROM access_tokens WHERE id = ?::uuid"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -236,15 +227,11 @@ class AccessTokenRegistry(dbConfig: DatabaseConfig) {
   }
 
   /**
-   * Close the connection.
+   * Nothing to close: the connection pool is owned by the caller.
    */
-  def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
+  def close(): IO[Unit] = IO.unit
 
-  private def updateLastUsed(id: String): Unit = {
+  private def updateLastUsed(connection: Connection, id: String): Unit = {
     val sql = "UPDATE access_tokens SET last_used_at = NOW() WHERE id = ?::uuid"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -296,8 +283,8 @@ object AccessTokenRegistry {
   /**
    * Create and initialize an access token registry.
    */
-  def apply(dbConfig: DatabaseConfig): IO[AccessTokenRegistry] = {
-    val registry = new AccessTokenRegistry(dbConfig)
+  def apply(dataSource: DataSource): IO[AccessTokenRegistry] = {
+    val registry = new AccessTokenRegistry(dataSource)
     registry.initialize().as(registry)
   }
 }

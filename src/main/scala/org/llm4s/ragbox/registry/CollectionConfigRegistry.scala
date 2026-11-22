@@ -83,3 +83,61 @@ trait CollectionConfigRegistry {
    */
   def close(): IO[Unit]
 }
+
+object CollectionConfigRegistry {
+
+  /**
+   * Resolve the effective configuration for a file in a collection from the collection's stored
+   * config (if any). Pure, so callers that already hold every config (such as the list endpoint)
+   * resolve without a query per collection.
+   *
+   * Resolution order: file extension override, then collection-level config, then defaults.
+   */
+  def resolveEffective(
+    maybeConfig: Option[CollectionChunkingConfig],
+    filename: Option[String],
+    defaultStrategy: String,
+    defaultTargetSize: Int,
+    defaultMaxSize: Int,
+    defaultOverlap: Int
+  ): EffectiveCollectionConfig =
+    maybeConfig match {
+      case None =>
+        EffectiveCollectionConfig(
+          strategy = defaultStrategy,
+          targetSize = defaultTargetSize,
+          maxSize = defaultMaxSize,
+          overlap = defaultOverlap,
+          source = "default"
+        )
+
+      case Some(config) =>
+        val fileExtension = filename.flatMap(extractExtension)
+        fileExtension.flatMap(ext => config.fileTypeStrategies.get(ext)) match {
+          case Some(strategy) =>
+            EffectiveCollectionConfig(
+              strategy = strategy,
+              targetSize = config.targetSize.getOrElse(defaultTargetSize),
+              maxSize = config.maxSize.getOrElse(defaultMaxSize),
+              overlap = config.overlap.getOrElse(defaultOverlap),
+              source = "file-type",
+              appliedFileTypeOverride = fileExtension
+            )
+          case None =>
+            EffectiveCollectionConfig(
+              strategy = config.strategy.getOrElse(defaultStrategy),
+              targetSize = config.targetSize.getOrElse(defaultTargetSize),
+              maxSize = config.maxSize.getOrElse(defaultMaxSize),
+              overlap = config.overlap.getOrElse(defaultOverlap),
+              source = "collection"
+            )
+        }
+    }
+
+  /** File extension of `filename` (lower-cased, with leading dot). */
+  private def extractExtension(filename: String): Option[String] = {
+    val lastDot = filename.lastIndexOf('.')
+    if (lastDot > 0 && lastDot < filename.length - 1) Some(filename.substring(lastDot).toLowerCase)
+    else None
+  }
+}

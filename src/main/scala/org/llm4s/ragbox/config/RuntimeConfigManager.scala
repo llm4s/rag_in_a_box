@@ -1,13 +1,14 @@
 package org.llm4s.ragbox.config
 
-import cats.effect.{IO, Ref}
+import cats.effect.IO
+import cats.effect.std.Mutex
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model._
 
-import java.sql.{Connection, DriverManager, Timestamp}
+import java.sql.{Connection, Timestamp}
 import java.time.Instant
-import java.util.Properties
 import java.util.concurrent.atomic.AtomicReference
-import scala.compiletime.uninitialized
+import javax.sql.DataSource
 
 /**
  * Manages runtime-modifiable configuration.
@@ -15,10 +16,17 @@ import scala.compiletime.uninitialized
  * Provides thread-safe access to hot/warm settings that can be changed
  * without server restart. Changes are persisted to the database for
  * durability and audit trail.
+ *
+ * Reads are lock-free (an `AtomicReference`, so hot-path getters stay synchronous). Updates are
+ * serialised by a mutex: each one computes its changes against the current config, writes the
+ * history rows in one transaction and only then publishes the new config. Two concurrent
+ * updates therefore never lose each other's changes, and the history always matches the
+ * published config (a failed history write changes nothing).
  */
-class RuntimeConfigManager(
+class RuntimeConfigManager private (
   initialConfig: AppConfig,
-  dbConfig: DatabaseConfig
+  dataSource: DataSource,
+  updateLock: Mutex[IO]
 ) {
 
   // Mutable state for runtime settings
@@ -35,8 +43,7 @@ class RuntimeConfigManager(
     )
   )
 
-  private var lastModified: Option[Instant] = None
-  private var connection: Connection = uninitialized
+  @volatile private var lastModified: Option[Instant] = None
 
   // Valid values for validation
   private val validFusionStrategies = Set("rrf", "weighted", "vector_only", "keyword_only")
@@ -45,15 +52,7 @@ class RuntimeConfigManager(
   /**
    * Initialize the database connection and create tables.
    */
-  def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword.reveal)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
+  def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       stmt.execute(
@@ -134,104 +133,22 @@ class RuntimeConfigManager(
   /**
    * Update runtime configuration.
    */
-  def update(request: RuntimeConfigUpdateRequest): IO[RuntimeConfigUpdateResponse] = IO {
-    val current = currentConfig.get()
-    val changes = scala.collection.mutable.ArrayBuffer.empty[SettingUpdateResult]
-    val now = Instant.now()
-
-    var updated = current
-
-    // Update hot settings
-    request.topK.foreach { v =>
-      if (v != current.topK) {
-        recordChange("topK", current.topK.toString, v.toString, now)
-        changes += SettingUpdateResult("topK", current.topK.toString, v.toString, "hot", effectiveImmediately = true)
-        updated = updated.copy(topK = v)
-      }
+  def update(request: RuntimeConfigUpdateRequest): IO[RuntimeConfigUpdateResponse] =
+    updateLock.lock.surround {
+      for {
+        now <- IO.realTimeInstant
+        current <- IO(currentConfig.get())
+        (updated, changes) = RuntimeConfigManager.applyRequest(current, request)
+        _ <- IO.whenA(changes.nonEmpty)(
+          ConnectionPool.withTransaction(dataSource) { connection =>
+            changes.foreach(c => recordChange(connection, c.field, c.oldValue, c.newValue, now))
+          } *> IO {
+            currentConfig.set(updated)
+            lastModified = Some(now)
+          }
+        )
+      } yield RuntimeConfigManager.updateResponse(updated, changes.map(_.result))
     }
-
-    request.fusionStrategy.foreach { v =>
-      if (v != current.fusionStrategy) {
-        recordChange("fusionStrategy", current.fusionStrategy, v, now)
-        changes += SettingUpdateResult("fusionStrategy", current.fusionStrategy, v, "hot", effectiveImmediately = true)
-        updated = updated.copy(fusionStrategy = v)
-      }
-    }
-
-    request.rrfK.foreach { v =>
-      if (v != current.rrfK) {
-        recordChange("rrfK", current.rrfK.toString, v.toString, now)
-        changes += SettingUpdateResult("rrfK", current.rrfK.toString, v.toString, "hot", effectiveImmediately = true)
-        updated = updated.copy(rrfK = v)
-      }
-    }
-
-    request.systemPrompt.foreach { v =>
-      if (v != current.systemPrompt) {
-        recordChange("systemPrompt", current.systemPrompt, v, now)
-        changes += SettingUpdateResult("systemPrompt", current.systemPrompt.take(50) + "...", v.take(50) + "...", "hot", effectiveImmediately = true)
-        updated = updated.copy(systemPrompt = v)
-      }
-    }
-
-    request.llmTemperature.foreach { v =>
-      if (v != current.llmTemperature) {
-        recordChange("llmTemperature", current.llmTemperature.toString, v.toString, now)
-        changes += SettingUpdateResult("llmTemperature", current.llmTemperature.toString, v.toString, "hot", effectiveImmediately = true)
-        updated = updated.copy(llmTemperature = v)
-      }
-    }
-
-    // Update warm settings
-    request.chunkingStrategy.foreach { v =>
-      if (v != current.chunkingStrategy) {
-        recordChange("chunkingStrategy", current.chunkingStrategy, v, now)
-        changes += SettingUpdateResult("chunkingStrategy", current.chunkingStrategy, v, "warm", effectiveImmediately = false)
-        updated = updated.copy(chunkingStrategy = v)
-      }
-    }
-
-    request.chunkSize.foreach { v =>
-      if (v != current.chunkSize) {
-        recordChange("chunkSize", current.chunkSize.toString, v.toString, now)
-        changes += SettingUpdateResult("chunkSize", current.chunkSize.toString, v.toString, "warm", effectiveImmediately = false)
-        updated = updated.copy(chunkSize = v)
-      }
-    }
-
-    request.chunkOverlap.foreach { v =>
-      if (v != current.chunkOverlap) {
-        recordChange("chunkOverlap", current.chunkOverlap.toString, v.toString, now)
-        changes += SettingUpdateResult("chunkOverlap", current.chunkOverlap.toString, v.toString, "warm", effectiveImmediately = false)
-        updated = updated.copy(chunkOverlap = v)
-      }
-    }
-
-    // Apply changes
-    if (changes.nonEmpty) {
-      currentConfig.set(updated)
-      lastModified = Some(now)
-    }
-
-    val hotChanges = changes.count(_.changeability == "hot")
-    val warmChanges = changes.count(_.changeability == "warm")
-    val message = if (changes.isEmpty) {
-      "No changes applied"
-    } else {
-      val parts = Seq(
-        if (hotChanges > 0) Some(s"$hotChanges hot setting(s) updated (immediate effect)") else None,
-        if (warmChanges > 0) Some(s"$warmChanges warm setting(s) updated (affects new documents)") else None
-      ).flatten
-      parts.mkString(", ")
-    }
-
-    RuntimeConfigUpdateResponse(
-      success = true,
-      changes = changes.toSeq,
-      current = updated,
-      message = message
-    )
-  }
 
   /**
    * Validate proposed configuration changes.
@@ -309,7 +226,7 @@ class RuntimeConfigManager(
   /**
    * Get configuration change history.
    */
-  def getHistory(page: Int, pageSize: Int): IO[ConfigHistoryResponse] = IO {
+  def getHistory(page: Int, pageSize: Int): IO[ConfigHistoryResponse] = ConnectionPool.withConnection(dataSource) { connection =>
     val offset = (page - 1) * pageSize
 
     // Get total count
@@ -358,7 +275,7 @@ class RuntimeConfigManager(
   /**
    * Record a configuration change to the database.
    */
-  private def recordChange(field: String, oldValue: String, newValue: String, changedAt: Instant): Unit = {
+  private def recordChange(connection: Connection, field: String, oldValue: String, newValue: String, changedAt: Instant): Unit = {
     val sql = "INSERT INTO config_history (field, old_value, new_value, changed_at) VALUES (?, ?, ?, ?)"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -373,22 +290,87 @@ class RuntimeConfigManager(
   }
 
   /**
-   * Close database connection.
+   * Nothing to close: the connection pool is owned by the caller.
    */
-  def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
+  def close(): IO[Unit] = IO.unit
 }
 
 object RuntimeConfigManager {
 
+  /** One changed setting: its history row and its entry in the update response. */
+  private[config] final case class Change(field: String, oldValue: String, newValue: String, result: SettingUpdateResult)
+
+  private def hot(field: String, oldValue: String, newValue: String, shownOld: String, shownNew: String): Change =
+    Change(field, oldValue, newValue, SettingUpdateResult(field, shownOld, shownNew, "hot", effectiveImmediately = true))
+
+  private def warm(field: String, oldValue: String, newValue: String): Change =
+    Change(field, oldValue, newValue, SettingUpdateResult(field, oldValue, newValue, "warm", effectiveImmediately = false))
+
   /**
-   * Create and initialize a RuntimeConfigManager.
+   * Apply `request` to `current`: the resulting config and the settings that actually changed.
+   * Pure, so the update can be computed inside the update lock without side effects.
    */
-  def apply(config: AppConfig): IO[RuntimeConfigManager] = {
-    val manager = new RuntimeConfigManager(config, config.database)
-    manager.initialize().as(manager)
+  private[config] def applyRequest(current: RuntimeConfig, request: RuntimeConfigUpdateRequest): (RuntimeConfig, Seq[Change]) = {
+    var updated = current
+    val changes = Vector.newBuilder[Change]
+
+    request.topK.filter(_ != current.topK).foreach { v =>
+      changes += hot("topK", current.topK.toString, v.toString, current.topK.toString, v.toString)
+      updated = updated.copy(topK = v)
+    }
+    request.fusionStrategy.filter(_ != current.fusionStrategy).foreach { v =>
+      changes += hot("fusionStrategy", current.fusionStrategy, v, current.fusionStrategy, v)
+      updated = updated.copy(fusionStrategy = v)
+    }
+    request.rrfK.filter(_ != current.rrfK).foreach { v =>
+      changes += hot("rrfK", current.rrfK.toString, v.toString, current.rrfK.toString, v.toString)
+      updated = updated.copy(rrfK = v)
+    }
+    request.systemPrompt.filter(_ != current.systemPrompt).foreach { v =>
+      changes += hot("systemPrompt", current.systemPrompt, v, current.systemPrompt.take(50) + "...", v.take(50) + "...")
+      updated = updated.copy(systemPrompt = v)
+    }
+    request.llmTemperature.filter(_ != current.llmTemperature).foreach { v =>
+      changes += hot("llmTemperature", current.llmTemperature.toString, v.toString, current.llmTemperature.toString, v.toString)
+      updated = updated.copy(llmTemperature = v)
+    }
+    request.chunkingStrategy.filter(_ != current.chunkingStrategy).foreach { v =>
+      changes += warm("chunkingStrategy", current.chunkingStrategy, v)
+      updated = updated.copy(chunkingStrategy = v)
+    }
+    request.chunkSize.filter(_ != current.chunkSize).foreach { v =>
+      changes += warm("chunkSize", current.chunkSize.toString, v.toString)
+      updated = updated.copy(chunkSize = v)
+    }
+    request.chunkOverlap.filter(_ != current.chunkOverlap).foreach { v =>
+      changes += warm("chunkOverlap", current.chunkOverlap.toString, v.toString)
+      updated = updated.copy(chunkOverlap = v)
+    }
+
+    (updated, changes.result())
   }
+
+  private def updateResponse(updated: RuntimeConfig, changes: Seq[SettingUpdateResult]): RuntimeConfigUpdateResponse = {
+    val hotChanges = changes.count(_.changeability == "hot")
+    val warmChanges = changes.count(_.changeability == "warm")
+    val message = if (changes.isEmpty) {
+      "No changes applied"
+    } else {
+      Seq(
+        Option.when(hotChanges > 0)(s"$hotChanges hot setting(s) updated (immediate effect)"),
+        Option.when(warmChanges > 0)(s"$warmChanges warm setting(s) updated (affects new documents)")
+      ).flatten.mkString(", ")
+    }
+    RuntimeConfigUpdateResponse(success = true, changes = changes, current = updated, message = message)
+  }
+
+  /**
+   * Create and initialize a RuntimeConfigManager over the shared connection pool.
+   */
+  def apply(config: AppConfig, dataSource: DataSource): IO[RuntimeConfigManager] =
+    for {
+      lock <- Mutex[IO]
+      manager = new RuntimeConfigManager(config, dataSource, lock)
+      _ <- manager.initialize()
+    } yield manager
 }

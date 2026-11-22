@@ -1,34 +1,22 @@
 package org.llm4s.ragbox.store
 
 import cats.effect.IO
-import cats.syntax.all._
 import io.circe.parser._
 import io.circe.syntax._
-import org.llm4s.ragbox.config.DatabaseConfig
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.model.{ChunkInfo, ChunkListResponse, ChunkMetadataInfo, ChunkSizeDistribution, SizeBucket}
 
-import java.sql.{Connection, DriverManager, ResultSet, Timestamp}
-import java.util.Properties
-import scala.compiletime.uninitialized
+import java.sql.ResultSet
+import javax.sql.DataSource
 
 /**
  * PostgreSQL-backed chunk store.
  *
  * Stores chunk content and metadata for visibility into the chunking process.
  */
-class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
+class PgChunkStore(dataSource: DataSource) extends ChunkStore {
 
-  private var connection: Connection = uninitialized
-
-  override def initialize(): IO[Unit] = IO {
-    Class.forName("org.postgresql.Driver")
-
-    val props = new Properties()
-    props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword.reveal)
-
-    connection = DriverManager.getConnection(dbConfig.connectionString, props)
-
+  override def initialize(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       stmt.execute(
@@ -66,7 +54,22 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def store(documentId: String, chunks: Seq[ChunkInfo]): IO[Unit] = IO {
+  /**
+   * Replace a document's chunks atomically: the delete and the inserts run in one transaction,
+   * so a failure part-way leaves the previous chunks in place. A transaction-scoped advisory
+   * lock on the document id serialises concurrent stores of the same document: without it, the
+   * second transaction's delete (whose snapshot cannot see the first one's new rows) would be
+   * followed by inserts that violate `UNIQUE(document_id, chunk_index)`.
+   */
+  override def store(documentId: String, chunks: Seq[ChunkInfo]): IO[Unit] = ConnectionPool.withTransaction(dataSource) { connection =>
+    val lockStmt = connection.prepareStatement("SELECT pg_advisory_xact_lock(hashtext('chunk_registry'), hashtext(?))")
+    try {
+      lockStmt.setString(1, documentId)
+      lockStmt.execute()
+    } finally {
+      lockStmt.close()
+    }
+
     // First delete existing chunks for this document
     val deleteSql = "DELETE FROM chunk_registry WHERE document_id = ?"
     val deleteStmt = connection.prepareStatement(deleteSql)
@@ -107,7 +110,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def getChunks(documentId: String): IO[Seq[ChunkInfo]] = IO {
+  override def getChunks(documentId: String): IO[Seq[ChunkInfo]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT id, document_id, chunk_index, content, content_length, metadata,
         |       headings, is_code_block, language, start_offset, end_offset
@@ -128,7 +131,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def getChunk(documentId: String, index: Int): IO[Option[ChunkInfo]] = IO {
+  override def getChunk(documentId: String, index: Int): IO[Option[ChunkInfo]] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql =
       """SELECT id, document_id, chunk_index, content, content_length, metadata,
         |       headings, is_code_block, language, start_offset, end_offset
@@ -145,7 +148,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def listChunks(page: Int, pageSize: Int): IO[ChunkListResponse] = IO {
+  override def listChunks(page: Int, pageSize: Int): IO[ChunkListResponse] = ConnectionPool.withConnection(dataSource) { connection =>
     val offset = (page - 1) * pageSize
 
     // Get total count
@@ -185,7 +188,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def getChunkSizeDistribution(): IO[ChunkSizeDistribution] = IO {
+  override def getChunkSizeDistribution(): IO[ChunkSizeDistribution] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       // Get min, max, avg
@@ -263,7 +266,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def count(): IO[Int] = IO {
+  override def count(): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       val rs = stmt.executeQuery("SELECT COUNT(*) FROM chunk_registry")
@@ -273,7 +276,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def countByDocument(documentId: String): IO[Int] = IO {
+  override def countByDocument(documentId: String): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "SELECT COUNT(*) FROM chunk_registry WHERE document_id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -285,7 +288,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def countByCollection(collection: String): IO[Int] = IO {
+  override def countByCollection(collection: String): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
     // Handle "default" as the pseudo-collection for chunks without explicit collection
     val (sql, useParam) = if (collection == "default") {
       ("SELECT COUNT(*) FROM chunk_registry WHERE collection IS NULL", false)
@@ -302,7 +305,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def avgChunkSize(): IO[Double] = IO {
+  override def avgChunkSize(): IO[Double] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       val rs = stmt.executeQuery("SELECT AVG(content_length) FROM chunk_registry")
@@ -312,7 +315,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def avgChunkSizeByCollection(collection: String): IO[Double] = IO {
+  override def avgChunkSizeByCollection(collection: String): IO[Double] = ConnectionPool.withConnection(dataSource) { connection =>
     // Handle "default" as the pseudo-collection for chunks without explicit collection
     val (sql, useParam) = if (collection == "default") {
       ("SELECT AVG(content_length) FROM chunk_registry WHERE collection IS NULL", false)
@@ -329,7 +332,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def deleteByDocument(documentId: String): IO[Unit] = IO {
+  override def deleteByDocument(documentId: String): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "DELETE FROM chunk_registry WHERE document_id = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -340,7 +343,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def deleteByCollection(collection: String): IO[Unit] = IO {
+  override def deleteByCollection(collection: String): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val sql = "DELETE FROM chunk_registry WHERE collection = ?"
     val stmt = connection.prepareStatement(sql)
     try {
@@ -351,7 +354,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def clear(): IO[Unit] = IO {
+  override def clear(): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
     val stmt = connection.createStatement()
     try {
       stmt.execute("DELETE FROM chunk_registry")
@@ -360,11 +363,7 @@ class PgChunkStore(dbConfig: DatabaseConfig) extends ChunkStore {
     }
   }
 
-  override def close(): IO[Unit] = IO {
-    if (connection != null && !connection.isClosed) {
-      connection.close()
-    }
-  }
+  override def close(): IO[Unit] = IO.unit
 
   private def rowToChunkInfo(rs: ResultSet): ChunkInfo = {
     val metadataJson = rs.getString("metadata")
@@ -405,8 +404,8 @@ object PgChunkStore {
   /**
    * Create and initialize a PostgreSQL chunk store.
    */
-  def apply(dbConfig: DatabaseConfig): IO[PgChunkStore] = {
-    val store = new PgChunkStore(dbConfig)
+  def apply(dataSource: DataSource): IO[PgChunkStore] = {
+    val store = new PgChunkStore(dataSource)
     store.initialize().as(store)
   }
 }

@@ -107,6 +107,7 @@ object CollectionConfigRoutes {
       for {
         allConfigs <- collectionConfigRegistry.getAll()
         allCollections <- documentRegistry.listCollections()
+        docCounts <- documentRegistry.countsByCollection()
         runtimeConfig <- runtimeConfigManager.get
 
         defaultEffective = EffectiveCollectionConfig(
@@ -117,25 +118,23 @@ object CollectionConfigRoutes {
           source = "default"
         )
 
-        // Build responses for all collections (with and without custom configs)
+        // Build responses for all collections (with and without custom configs) from the
+        // queries above - no query per collection
         configMap = allConfigs.map(c => c.collection -> c).toMap
-        collectionResponses <- allCollections.toList.traverse { coll =>
-          for {
-            docCount <- documentRegistry.countByCollection(coll)
-            effective <- collectionConfigRegistry.getEffective(
-              collection = coll,
+        collectionResponses = allCollections.toList.map { coll =>
+          CollectionConfigResponse(
+            collection = coll,
+            hasCustomConfig = configMap.contains(coll),
+            config = configMap.get(coll),
+            effectiveConfig = CollectionConfigRegistry.resolveEffective(
+              maybeConfig = configMap.get(coll),
               filename = None,
               defaultStrategy = runtimeConfig.config.chunkingStrategy,
               defaultTargetSize = runtimeConfig.config.chunkSize,
               defaultMaxSize = runtimeConfig.config.chunkSize * 2,
               defaultOverlap = runtimeConfig.config.chunkOverlap
-            )
-          } yield CollectionConfigResponse(
-            collection = coll,
-            hasCustomConfig = configMap.contains(coll),
-            config = configMap.get(coll),
-            effectiveConfig = effective,
-            documentCount = docCount
+            ),
+            documentCount = docCounts.getOrElse(coll, 0)
           )
         }
 
