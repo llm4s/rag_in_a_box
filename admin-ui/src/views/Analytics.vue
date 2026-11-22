@@ -2,6 +2,7 @@
 import { onMounted, computed, ref } from 'vue'
 import { useAnalyticsStore } from '@/stores/analytics'
 import { LatencyChart } from '@/components/charts'
+import QueryLogDetail from '@/components/QueryLogDetail.vue'
 
 const analyticsStore = useAnalyticsStore()
 
@@ -16,6 +17,13 @@ const selectedQueryId = ref<string | null>(null)
 const feedbackDialog = ref(false)
 const feedbackRating = ref(3)
 const feedbackComment = ref('')
+const detailDialog = ref(false)
+const detailLoading = ref(false)
+const detailQueryId = ref<string | null>(null)
+// The selected query, once fetched (the store keeps the last one fetched)
+const detailQuery = computed(() =>
+  analyticsStore.selectedQuery?.id === detailQueryId.value ? analyticsStore.selectedQuery : null
+)
 
 const timeRangeOptions = [
   { title: 'Last 24 Hours', value: '24h' },
@@ -65,6 +73,17 @@ function onTimeRangeChange(value: '24h' | '7d' | '30d' | 'custom') {
 function onPageChange(page: number) {
   currentPage.value = page
   analyticsStore.fetchQueryList(page, pageSize.value)
+}
+
+async function openDetailDialog(queryId: string) {
+  detailQueryId.value = queryId
+  detailDialog.value = true
+  detailLoading.value = true
+  try {
+    await analyticsStore.fetchQueryById(queryId)
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 function openFeedbackDialog(queryId: string) {
@@ -328,7 +347,17 @@ const totalPages = computed(() => {
               <span v-else class="text-grey">-</span>
             </td>
             <td class="text-caption">{{ formatDate(query.createdAt) }}</td>
-            <td>
+            <td class="text-no-wrap">
+              <v-btn
+                icon
+                size="small"
+                variant="text"
+                @click="openDetailDialog(query.id)"
+                :aria-label="`Details of query ${query.id}`"
+              >
+                <v-icon>mdi-information-outline</v-icon>
+                <v-tooltip activator="parent" location="top">Details</v-tooltip>
+              </v-btn>
               <v-btn
                 icon
                 size="small"
@@ -358,6 +387,24 @@ const totalPages = computed(() => {
         ></v-pagination>
       </v-card-actions>
     </v-card>
+
+    <!-- Query Detail Dialog -->
+    <v-dialog v-model="detailDialog" max-width="720" scrollable>
+      <v-card>
+        <v-card-title>Query Details</v-card-title>
+        <v-card-text>
+          <v-skeleton-loader v-if="detailLoading && !detailQuery" type="paragraph, table"></v-skeleton-loader>
+          <QueryLogDetail v-else-if="detailQuery" :entry="detailQuery" />
+          <div v-else class="text-center text-grey py-4">
+            {{ analyticsStore.error || 'Query not found' }}
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer></v-spacer>
+          <v-btn @click="detailDialog = false">Close</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <!-- Feedback Dialog -->
     <v-dialog v-model="feedbackDialog" max-width="400">

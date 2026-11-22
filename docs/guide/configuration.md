@@ -508,6 +508,10 @@ INGEST_ALLOWED_ROOTS=/data/docs
 (and enables ingestion). `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and
 `schedule`, which apply to **every** configured source, with or without `INGEST_DIR`.
 
+Source names must be unique: each source's documents are tracked by its name, so startup
+fails when two configured sources share one (including a HOCON source named `env-directory`
+while `INGEST_DIR` is set, and two unnamed sources of the same `type`, which are named after it).
+
 ### Schedules
 
 `schedule` / `INGEST_SCHEDULE` is one of:

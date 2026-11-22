@@ -180,6 +180,10 @@ class ApiConsistency59StackSpec extends AnyFlatSpec with Matchers with PgVectorF
       logged._2.hcursor.downField("configSnapshot").get[Double]("similarityThreshold") shouldBe Right(0.25)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Option[Double]]("similarityThreshold") shouldBe Right(None)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Int]("topK").isRight shouldBe true
+      // The default rrf fusion records its constant; reranking is recorded too
+      loggedWithout._2.hcursor.downField("configSnapshot").get[String]("fusionStrategy") shouldBe Right("rrf")
+      loggedWithout._2.hcursor.downField("configSnapshot").get[Int]("rrfK").isRight shouldBe true
+      loggedWithout._2.hcursor.downField("configSnapshot").get[String]("reranking") shouldBe Right("none")
     }
   }
 

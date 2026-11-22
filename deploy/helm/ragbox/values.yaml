@@ -273,6 +273,66 @@ config:
     format: "json"
 
 # =============================================================================
+# Ingestion
+# =============================================================================
+# Every setting is optional: unset (empty / false), its variable is not set and the app's
+# default applies. Lists may be a YAML list or a comma-separated string. See
+# docs/guide/configuration.md (Ingestion) for what each one does.
+
+ingestion:
+  # -- Directory to ingest (INGEST_DIR): adds a directory source named `env-directory` and
+  # enables ingestion. Mount it with extraVolumes / extraVolumeMounts.
+  dir: ""
+  # -- File patterns for `dir` (INGEST_PATTERNS), e.g. ["*.md", "*.pdf"] (empty: *.md, *.txt, *.pdf)
+  patterns: []
+  # -- Descend into subdirectories of `dir` (INGEST_RECURSIVE; set only with `dir`)
+  recursive: true
+  # -- Run every configured source once at startup (INGEST_ON_STARTUP)
+  onStartup: false
+  # -- When to run every configured source (INGEST_SCHEDULE): five-field cron, hourly / daily /
+  # weekly, or an interval such as "6h". An invalid schedule fails startup.
+  schedule: ""
+  # -- Time zone of a cron schedule (INGEST_SCHEDULE_TZ), e.g. "Europe/London" (empty: the
+  # server's)
+  scheduleTimeZone: ""
+  # -- Directories directory ingestion may read under (INGEST_ALLOWED_ROOTS; empty: the
+  # configured directory sources, i.e. `dir`)
+  allowedRoots: []
+  url:
+    # -- The only hosts URL and web-crawler ingestion may fetch (INGEST_URL_ALLOWED_HOSTS);
+    # "*.example.com" matches subdomains. Empty: any public host.
+    allowedHosts: []
+    # -- Allow fetching URLs that resolve to private / loopback / link-local addresses
+    # (INGEST_URL_ALLOW_PRIVATE_NETWORKS)
+    allowPrivateNetworks: false
+
+# -- Extra environment variables for the server container and the migration job, as EnvVar
+# objects (`name` with `value` or `valueFrom`). Listed after the chart's own variables, so one
+# with the same name overrides the chart's.
+extraEnv: []
+#  - name: JAVA_TOOL_OPTIONS
+#    value: "-XX:MaxRAMPercentage=75"
+
+# -- Extra envFrom sources for the server container and the migration job (after the chart's
+# ConfigMap, so their variables override it). The migration job runs before install / upgrade:
+# what it references must exist by then.
+extraEnvFrom: []
+#  - secretRef:
+#      name: ragbox-extra-env
+
+# -- Extra volumes for the server pod, e.g. a PersistentVolumeClaim holding ingestion.dir
+extraVolumes: []
+#  - name: docs
+#    persistentVolumeClaim:
+#      claimName: ragbox-docs
+
+# -- Extra volume mounts for the server container
+extraVolumeMounts: []
+#  - name: docs
+#    mountPath: /data/docs
+#    readOnly: true
+
+# =============================================================================
 # Secrets Configuration
 # =============================================================================
 

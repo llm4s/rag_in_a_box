@@ -556,13 +556,17 @@ object ErrorResponse {
  * Records the effective configuration used for a query.
  *
  * @param similarityThreshold the minimum chunk similarity the query applied (none: no threshold)
+ * @param rrfK the RRF constant, with `rrf` fusion (none otherwise, and in entries logged before it was recorded)
+ * @param reranking the reranking strategy (`none`, `cohere` or `llm`; none in entries logged before it was recorded)
  */
 final case class QueryConfigSnapshot(
   topK: Int,
   fusionStrategy: String,
   systemPrompt: Option[String] = None,
   llmTemperature: Option[Double] = None,
-  similarityThreshold: Option[Double] = None
+  similarityThreshold: Option[Double] = None,
+  rrfK: Option[Int] = None,
+  reranking: Option[String] = None
 ) derives Codec.AsObject
 
 /**

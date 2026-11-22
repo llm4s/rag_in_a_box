@@ -350,4 +350,53 @@ class IngestionConfigSpec extends AnyFlatSpec with Matchers {
     errors("apis") shouldBe empty
     errors("docs") shouldBe empty
   }
+
+  "AppConfig.validate" should "reject duplicate ingestion source names" in {
+    val config = org.llm4s.ragbox.testkit.TestFixtures.testAppConfig
+    def errors(ingestion: IngestionConfig) = config.copy(ingestion = ingestion).validate().filter(_.contains("must be unique"))
+    val docs = UrlSourceConfig("docs", Seq("https://example.com/"))
+    val docsDir = DirectorySourceConfig("docs", "/data")
+    errors(IngestionConfig(sources = Seq(docs, docsDir))) shouldBe Seq(
+      "Ingestion source name 'docs' is used by 2 sources; source names must be unique"
+    )
+    // Disabled sources count too; each duplicated name is reported once
+    errors(IngestionConfig(sources = Seq(docs, docsDir.copy(enabled = false), docs, UrlSourceConfig("a", Nil), UrlSourceConfig("a", Nil)))) shouldBe Seq(
+      "Ingestion source name 'a' is used by 2 sources; source names must be unique",
+      "Ingestion source name 'docs' is used by 3 sources; source names must be unique"
+    )
+    errors(IngestionConfig(sources = Seq(docs, docsDir.copy(name = "dir")))) shouldBe empty
+    errors(IngestionConfig()) shouldBe empty
+  }
+
+  it should "reject unnamed HOCON sources of the same type, which are named after it" in {
+    val hocon = IngestionConfig.fromConfig(ConfigFactory.parseString(
+      """ingestion {
+        |  enabled = true
+        |  sources = [{ type = "directory", path = "/a" }, { type = "directory", path = "/b" }]
+        |}""".stripMargin
+    ))
+    hocon.duplicateSourceNameErrors shouldBe Seq(
+      "Ingestion source name 'directory' is used by 2 sources; source names must be unique " +
+        "(a source without a name is named after its type, 'directory': give each source a unique name)"
+    )
+  }
+
+  it should "reject a HOCON source named env-directory when INGEST_DIR is set" in {
+    val hocon = IngestionConfig.fromConfig(ConfigFactory.parseString(
+      """ingestion {
+        |  enabled = true
+        |  sources = [{ type = "directory", name = "env-directory", path = "/docs" }]
+        |}""".stripMargin
+    ))
+    hocon.duplicateSourceNameErrors shouldBe empty
+    val withDir = IngestionConfig.withEnv(hocon, Map("INGEST_DIR" -> "/data"))
+    // Both are kept, not the HOCON source silently replaced
+    withDir.sources.map(_.name) shouldBe Seq("env-directory", "env-directory")
+    withDir.duplicateSourceNameErrors shouldBe Seq(
+      "Ingestion source name 'env-directory' is used by 2 sources; source names must be unique " +
+        "('env-directory' is the name of the INGEST_DIR source: rename the configured source or unset INGEST_DIR)"
+    )
+    // A differently named HOCON directory source alongside INGEST_DIR is fine
+    IngestionConfig.withEnv(hoconWithUrlSource, Map("INGEST_DIR" -> "/data")).duplicateSourceNameErrors shouldBe empty
+  }
 }

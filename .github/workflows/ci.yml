@@ -266,6 +266,46 @@ jobs:
             --set migrations.job.enabled=true --show-only templates/migration-job.yaml \
             | grep -q 'helm.sh/hook: pre-install,pre-upgrade$'
 
+      - name: Lint and render chart with ingestion settings and extra env
+        run: |
+          set -euo pipefail
+          common="--set secrets.security.jwtSecret=ci-jwt-secret-0123456789abcdef0123456789 --set secrets.security.adminPassword=ci-admin-password --set postgresql.auth.password=ci-db-password"
+          # Unset, none of it is rendered
+          helm template ragbox deploy/helm/ragbox $common --set migrations.job.enabled=true > /tmp/defaults.yaml
+          if grep -E 'INGEST_|Extra variables|ragbox-extra-env' /tmp/defaults.yaml; then
+            echo "default render contains ingestion / extra env settings"; exit 1
+          fi
+          extra=(
+            --set ingestion.dir=/data/docs --set-json 'ingestion.patterns=["*.md","*.rst"]'
+            --set ingestion.recursive=false --set ingestion.onStartup=true
+            --set 'ingestion.schedule=0 2 * * *' --set ingestion.scheduleTimeZone=Europe/London
+            --set 'ingestion.allowedRoots=/data/docs\,/data/more'
+            --set-json 'ingestion.url.allowedHosts=["docs.example.com","*.example.org"]'
+            --set ingestion.url.allowPrivateNetworks=true
+            --set-json 'extraEnv=[{"name":"JAVA_TOOL_OPTIONS","value":"-XX:MaxRAMPercentage=75"}]'
+            --set-json 'extraEnvFrom=[{"secretRef":{"name":"ragbox-extra-env"}}]'
+            --set-json 'extraVolumes=[{"name":"docs","persistentVolumeClaim":{"claimName":"ragbox-docs"}}]'
+            --set-json 'extraVolumeMounts=[{"name":"docs","mountPath":"/data/docs","readOnly":true}]'
+            --set migrations.job.enabled=true
+          )
+          helm lint deploy/helm/ragbox $common "${extra[@]}"
+          helm template ragbox deploy/helm/ragbox $common "${extra[@]}" --show-only templates/configmap.yaml > /tmp/cm.yaml
+          for line in 'INGEST_DIR: "/data/docs"' 'INGEST_PATTERNS: "\*.md,\*.rst"' 'INGEST_RECURSIVE: "false"' \
+              'INGEST_ON_STARTUP: "true"' 'INGEST_SCHEDULE: "0 2 \* \* \*"' 'INGEST_SCHEDULE_TZ: "Europe/London"' \
+              'INGEST_ALLOWED_ROOTS: "/data/docs,/data/more"' 'INGEST_URL_ALLOWED_HOSTS: "docs.example.com,\*.example.org"' \
+              'INGEST_URL_ALLOW_PRIVATE_NETWORKS: "true"'; do
+            grep -q "^  $line\$" /tmp/cm.yaml || { echo "missing: $line"; cat /tmp/cm.yaml; exit 1; }
+          done
+          helm template ragbox deploy/helm/ragbox $common "${extra[@]}" --show-only templates/deployment.yaml > /tmp/deploy.yaml
+          grep -q 'name: JAVA_TOOL_OPTIONS' /tmp/deploy.yaml
+          grep -q 'name: ragbox-extra-env' /tmp/deploy.yaml
+          grep -q 'claimName: ragbox-docs' /tmp/deploy.yaml
+          grep -q 'mountPath: /data/docs' /tmp/deploy.yaml
+          # The migration job gets the extra env (e.g. database settings) too
+          helm template ragbox deploy/helm/ragbox $common "${extra[@]}" --show-only templates/migration-job.yaml > /tmp/job.yaml
+          grep -q 'name: JAVA_TOOL_OPTIONS' /tmp/job.yaml
+          grep -q 'name: ragbox-extra-env' /tmp/job.yaml
+
   # Install the Python SDK and run its tests (HTTP mocked with `responses`)
   python-sdk:
     name: Python SDK

@@ -49,6 +49,10 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--migrate-only"]
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: PG_HOST
               value: {{ include "ragbox.postgresql.host" . | quote }}
@@ -62,6 +66,10 @@ spec:
               value: {{ .Values.config.logging.format | quote }}
             # Database credentials
             {{- include "ragbox.databaseCredentialsEnv" . | trim | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            # Extra variables (extraEnv)
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml (.Values.migrations.job.resources | default .Values.resources) | nindent 12 }}
           volumeMounts:

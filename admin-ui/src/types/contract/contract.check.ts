@@ -103,6 +103,11 @@ conforms<Api.ContextItem>()(contract.ContextItem, true)
 conforms<Api.UsageInfo>()(contract.UsageInfo, true)
 conforms<Api.QueryResponse>()(contract.QueryResponse, true)
 
+// Analytics (query log)
+conforms<Api.QueryConfigSnapshot>()(contract.QueryConfigSnapshot, true)
+conforms<Api.QueryLogEntry>()(contract.QueryLogEntry, true)
+conforms<Api.QueryLogListResponse>()(contract.QueryLogListResponse, true)
+
 // Authentication
 conforms<Api.AuthModeResponse>()(contract.AuthModeResponse, true)
 conforms<Api.LoginResponse>()(contract.LoginResponse, true)
