@@ -66,7 +66,7 @@ POST /api/v1/ingest/directory
 The path must be inside an allowed root (`INGEST_ALLOWED_ROOTS`, comma-separated; by default the
 configured directory sources such as `INGEST_DIR`). With no allowed roots the endpoint is
 disabled. Paths are compared after resolving symlinks. A path outside the allowed roots answers
-`400`.
+`400`. `409 Conflict` while another ingest of the same path is running, on any replica.
 
 ---
 
@@ -94,7 +94,14 @@ POST /api/v1/ingest/run
 ```
 
 Runs every enabled configured source and answers with an array of results. `409 Conflict` when
-an ingestion run is already in progress. Progress is broadcast on the [WebSocket](/api/websocket).
+an ingestion run is already in progress on this replica, or any of the sources is being run
+by another replica sharing the database (see
+[Several replicas](/guide/configuration#several-replicas)); nothing is run then. Progress is
+broadcast on the [WebSocket](/api/websocket).
+
+```json
+{ "error": "conflict", "message": "Source 'env-directory' is already being ingested by another run (on this or another instance)" }
+```
 
 ## Run One Source {#run-source}
 
@@ -102,8 +109,9 @@ an ingestion run is already in progress. Progress is broadcast on the [WebSocket
 POST /api/v1/ingest/run/{source}
 ```
 
-One result; `404` for an unknown source name, `409` when a run is in progress. The source
-configured from `INGEST_DIR` is named `env-directory`.
+One result; `404` for an unknown source name, `409` when a run is in progress on this replica or
+the source is being run by another replica. The source configured from `INGEST_DIR` is named
+`env-directory`.
 
 ---
 
@@ -122,6 +130,8 @@ GET /api/v1/ingest/status
   "sources": [ { ...source... } ]
 }
 ```
+
+`running`, `lastRun` and `lastResults` describe the replica that answers.
 
 ## Sources {#sources}
 

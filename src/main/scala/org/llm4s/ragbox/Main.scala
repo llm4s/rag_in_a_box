@@ -13,7 +13,7 @@ import org.llm4s.rag.permissions.pg.PgSearchIndex
 import org.llm4s.ragbox.config.{AppConfig, RuntimeConfigManager}
 import org.llm4s.ragbox.registry.PgCollectionConfigRegistry
 import org.llm4s.ragbox.db.{ConnectionPool, Migrations}
-import org.llm4s.ragbox.ingestion.IngestionService
+import org.llm4s.ragbox.ingestion.{IngestionScheduler, IngestionService}
 import org.llm4s.ragbox.service.RAGService
 
 import javax.sql.DataSource
@@ -247,22 +247,15 @@ object Main extends IOApp {
   }
 
   /**
-   * Run ingestion on startup if configured.
+   * Run ingestion on startup if configured. Never fails startup: a run another replica already
+   * holds is skipped, and a failed run is logged.
    */
   private def runOnStartupIngestion(config: AppConfig, ingestionService: IngestionService): IO[Unit] = {
     if (config.ingestion.runOnStartup && config.ingestion.activeSources.isEmpty) {
       logger.warn("INGEST_ON_STARTUP / run-on-startup ignored: no ingestion sources are configured and enabled")
     } else if (config.ingestion.runOnStartup) {
-      logger.info("Running startup ingestion...") *>
-        ingestionService.runAll().flatMap { results =>
-          results.traverse_ { result =>
-            val status = if (result.isSuccess) "OK" else s"ERROR: ${result.error.getOrElse("unknown")}"
-            val msg = s"[${result.sourceType}] ${result.sourceName}: " +
-              s"added=${result.documentsAdded}, updated=${result.documentsUpdated}, " +
-              s"unchanged=${result.documentsUnchanged} ($status)"
-            if (result.isSuccess) logger.info(msg) else logger.error(msg)
-          }
-        }
+      // Skipped (info log) when another replica is already running the sources
+      IngestionScheduler.runLogged("startup", ingestionService.runAll())
     } else {
       IO.unit
     }

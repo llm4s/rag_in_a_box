@@ -14,7 +14,8 @@ import scala.concurrent.duration._
  *
  * The next run is always computed from the clock when the previous one ends, so a run that
  * overruns its slot skips the missed slots instead of running back to back. A run that fails is
- * logged and the schedule carries on; a run that would overlap a manual one is skipped.
+ * logged and the schedule carries on; a run that would overlap another run - a manual one, or one
+ * on another instance sharing the database ([[IngestionLock]]) - is skipped.
  */
 class IngestionScheduler(
   runAll: IO[Seq[IngestionResult]],
@@ -48,8 +49,19 @@ class IngestionScheduler(
     IO.realTimeInstant.flatMap(loop)
   }
 
-  private def runOnce: IO[Unit] =
-    IO(logger.info("Starting scheduled ingestion...")) *>
+  private def runOnce: IO[Unit] = IngestionScheduler.runLogged("scheduled", runAll)
+}
+
+object IngestionScheduler {
+  private val logger = LoggerFactory.getLogger(getClass)
+
+  /**
+   * Run `runAll` for `trigger` (`scheduled`, `startup`), logging the outcome. Never fails: a run
+   * refused because another is in progress, here or on another instance, is skipped with an info
+   * log; any other failure is logged as an error.
+   */
+  def runLogged(trigger: String, runAll: IO[Seq[IngestionResult]]): IO[Unit] =
+    IO(logger.info(s"Starting $trigger ingestion...")) *>
       runAll.attempt.flatMap {
         case Right(results) =>
           val summary = results.map { r =>
@@ -57,15 +69,13 @@ class IngestionScheduler(
               s"deleted=${r.documentsDeleted}, unchanged=${r.documentsUnchanged}" +
               r.error.fold("")(e => s", error=$e")
           }.mkString("; ")
-          IO(logger.info(s"Scheduled ingestion complete: $summary"))
-        case Left(_: IngestionAlreadyRunning) =>
-          IO(logger.info("Skipping scheduled ingestion: a run is already in progress"))
+          val message = s"${trigger.capitalize} ingestion complete: $summary"
+          IO(if (results.forall(_.isSuccess)) logger.info(message) else logger.warn(message))
+        case Left(e: IngestionAlreadyRunning) =>
+          IO(logger.info(s"Skipping $trigger ingestion: ${e.getMessage}"))
         case Left(e) =>
-          IO(logger.error(s"Scheduled ingestion failed: ${e.getMessage}", e))
+          IO(logger.error(s"${trigger.capitalize} ingestion failed: ${e.getMessage}", e))
       }
-}
-
-object IngestionScheduler {
 
   /** Run `ingestionService`'s sources on `schedule`. */
   def apply(ingestionService: IngestionService, schedule: IngestionSchedule): IngestionScheduler =

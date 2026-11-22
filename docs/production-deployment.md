@@ -458,7 +458,10 @@ RAG in a Box supports horizontal scaling with shared PostgreSQL:
 3. Rate limits and login throttling are kept per instance, so the effective limit is multiplied by the replica count
 4. Schema migrations at startup are safe with several replicas (Flyway serialises them with
    a database lock); or run them once with `--migrate-only` and set `DB_MIGRATE_ON_START=false`
-5. Scale API replicas:
+5. `INGEST_SCHEDULE` and `INGEST_ON_STARTUP` are safe on every replica: replicas take a
+   PostgreSQL advisory lock per source, so each source is synced by one replica at a time and the
+   others skip the run (see [Several replicas](guide/configuration.md#several-replicas))
+6. Scale API replicas:
 
 ```yaml
 # Kubernetes
@@ -479,6 +482,10 @@ The service uses one HikariCP pool per instance with these defaults:
 The pool is shared by every component (registries, chunk store, permission search index).
 Blocking JDBC calls run on the blocking thread pool, so `DB_POOL_SIZE` bounds concurrent
 database work rather than request concurrency.
+
+An ingestion run also holds one dedicated connection, outside the pool, for its cluster-wide
+lock (one for a run of the configured sources, one per concurrent one-shot directory ingest).
+Size PostgreSQL's `max_connections` for `replicas x (DB_POOL_SIZE + 2)` or more.
 
 ## Backup and Recovery
 

@@ -77,13 +77,19 @@ object IngestionEvent {
 }
 
 /**
- * Raised when an ingestion run is requested while another is still in progress.
- * The ingestion routes map it to 409 Conflict.
+ * Raised when an ingestion run is requested while another is still in progress, on this instance
+ * or (for a source another instance is syncing) on another one. The ingestion routes map it to
+ * 409 Conflict, with this message; the schedule and startup ingestion skip the run.
  */
-final case class IngestionAlreadyRunning() extends RuntimeException(IngestionAlreadyRunning.Message)
+final case class IngestionAlreadyRunning(message: String = IngestionAlreadyRunning.Message)
+    extends RuntimeException(message)
 
 object IngestionAlreadyRunning {
   val Message: String = "An ingestion run is already in progress"
+
+  /** The failure for a run refused because another run holds `sourceId`'s cluster-wide lock. */
+  def elsewhere(sourceId: String): IngestionAlreadyRunning =
+    IngestionAlreadyRunning(s"Source '$sourceId' is already being ingested by another run (on this or another instance)")
 }
 
 /**
@@ -102,8 +108,14 @@ object IngestionAlreadyRunning {
  *  - '''Permission mode.''' Documents go into a collection - the default one unless the
  *    source's metadata names another - so permission-filtered queries can retrieve them.
  *
- * Only one run of the configured sources happens at a time: [[runAll]] and [[runSource]] fail
- * with [[IngestionAlreadyRunning]] while a run is in progress.
+ * Only one run of the configured sources happens at a time on an instance: [[runAll]] and
+ * [[runSource]] fail with [[IngestionAlreadyRunning]] while a run is in progress.
+ *
+ * '''Several instances.''' Runs also take `lock`'s cluster-wide lock of each source they sync
+ * ([[IngestionLock]]): [[runAll]] takes every enabled source's before it starts, [[runSource]]
+ * its source's, and [[ingestDirectory]] that of the directory it syncs. A run that finds a lock
+ * held by another run, on any instance, fails with [[IngestionAlreadyRunning]] and syncs nothing.
+ * The locks are released however the run ends, and with the session if the instance dies.
  *
  * '''Ingestion policy.''' Directories are read only under the allowed roots
  * ([[IngestionConfig.allowedRoots]]), and the walk never follows a symlink out of the directory.
@@ -113,7 +125,8 @@ object IngestionAlreadyRunning {
 class IngestionService(
   ragService: RAGService,
   config: IngestionConfig,
-  listener: IngestionEvent => IO[Unit] = _ => IO.unit
+  listener: IngestionEvent => IO[Unit] = _ => IO.unit,
+  lock: IngestionLock = IngestionLock.none
 ) {
 
   private val logger = LoggerFactory.getLogger(getClass)
@@ -135,15 +148,25 @@ class IngestionService(
     status.update(_.copy(nextScheduledRun = next))
 
   /**
-   * Run `run` while holding the "running" flag, or fail with [[IngestionAlreadyRunning]] if it
-   * is held. The flag is cleared however `run` ends: success, error or cancellation.
+   * Run `run` while holding the "running" flag and the cluster-wide locks of `sourceIds`, or fail
+   * with [[IngestionAlreadyRunning]] if the flag or any of the locks is held. Both are released
+   * however `run` ends: success, error or cancellation.
    */
-  private def exclusively[A](run: IO[A]): IO[A] =
+  private def exclusively[A](sourceIds: Seq[String])(run: IO[A]): IO[A] =
     Resource.make(
       status
         .modify(s => if (s.running) (s, false) else (s.copy(running = true), true))
         .flatMap(acquired => IO.raiseUnless(acquired)(IngestionAlreadyRunning()))
-    )(_ => status.update(_.copy(running = false))).surround(run)
+    )(_ => status.update(_.copy(running = false))).surround(clusterExclusively(sourceIds)(run))
+
+  /** Run `run` holding the cluster-wide locks of `sourceIds`, or fail with [[IngestionAlreadyRunning]]. */
+  private def clusterExclusively[A](sourceIds: Seq[String])(run: IO[A]): IO[A] =
+    lock.tryLock(sourceIds).use {
+      case Right(()) => run
+      case Left(held) =>
+        IO(logger.info(s"Not running ingestion: source '$held' is being ingested by another run")) *>
+          IO.raiseError(IngestionAlreadyRunning.elsewhere(held))
+    }
 
   /**
    * Run ingestion from all configured sources.
@@ -153,14 +176,16 @@ class IngestionService(
    */
   def runAll(): IO[Seq[IngestionResult]] =
     if (!config.enabled) IO.pure(Seq.empty)
-    else
-      exclusively {
-        config.sources.filter(_.enabled).traverse(runSourceConfig).flatTap { results =>
+    else {
+      val sources = config.sources.filter(_.enabled)
+      exclusively(sources.map(_.name)) {
+        sources.traverse(runSourceConfig).flatTap { results =>
           IO.realTimeInstant.flatMap { now =>
             status.update(_.copy(lastRun = Some(now), lastResults = results))
           }
         }
       }
+    }
 
   /**
    * Run ingestion from a single source by name.
@@ -170,7 +195,7 @@ class IngestionService(
    */
   def runSource(sourceName: String): IO[Option[IngestionResult]] =
     config.sources.find(_.name == sourceName) match {
-      case Some(source) => exclusively(runSourceConfig(source)).map(Some(_))
+      case Some(source) => exclusively(Seq(source.name))(runSourceConfig(source)).map(Some(_))
       case None => IO.pure(None)
     }
 
@@ -411,7 +436,9 @@ class IngestionService(
    * Ingest a single directory (one-shot, not using config).
    *
    * Synced as its own source, `api:directory:<path>`: files removed from the directory since the
-   * last one-shot ingest of the same path are removed, and nothing else is.
+   * last one-shot ingest of the same path are removed, and nothing else is. Fails with
+   * [[IngestionAlreadyRunning]] while another one-shot ingest of the same path is running, on
+   * any instance; it may run alongside a run of the configured sources.
    */
   def ingestDirectory(
     path: String,
@@ -420,15 +447,19 @@ class IngestionService(
     metadata: Map[String, String] = Map.empty
   ): IO[IngestionResult] =
     IO.realTimeInstant.flatMap { startTime =>
-      reporting(path) {
-        confinedDirectoryLoader(path, patterns, recursive, metadata + ("source" -> "api"), maxDepth = 10).flatMap {
-          loader => syncSource(s"api:directory:$path", path, "directory", loader, removeUnlisted = true, startTime)
+      val sourceId = s"api:directory:$path"
+      clusterExclusively(Seq(sourceId)) {
+        reporting(path) {
+          confinedDirectoryLoader(path, patterns, recursive, metadata + ("source" -> "api"), maxDepth = 10).flatMap {
+            loader => syncSource(sourceId, path, "directory", loader, removeUnlisted = true, startTime)
+          }
         }
       }
     }
 
   /**
-   * Ingest URLs (one-shot). Unchanged pages are not re-embedded; nothing is removed.
+   * Ingest URLs (one-shot). Unchanged pages are not re-embedded; nothing is removed. Not
+   * coordinated with other runs: it only upserts, so overlapping URL ingests are harmless.
    */
   def ingestUrls(
     urls: Seq[String],
@@ -510,9 +541,10 @@ object IngestionService {
   def apply(
     ragService: RAGService,
     config: IngestionConfig,
-    listener: IngestionEvent => IO[Unit] = _ => IO.unit
+    listener: IngestionEvent => IO[Unit] = _ => IO.unit,
+    lock: IngestionLock = IngestionLock.none
   ): IngestionService =
-    new IngestionService(ragService, config, listener)
+    new IngestionService(ragService, config, listener, lock)
 
   /**
    * The S3 loader for a source. Static credentials, when configured, are passed to the same
