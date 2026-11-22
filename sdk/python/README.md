@@ -154,7 +154,7 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `query(question, top_k, collection)` | `POST /api/v1/query` | Query with answer generation |
+| `query(question, top_k, collection, include_metadata, similarity_threshold)` | `POST /api/v1/query` | Query with answer generation |
 | `search(query, top_k, collection)` | `POST /api/v1/search` | Search without LLM |
 
 #### Sync Operations

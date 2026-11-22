@@ -132,6 +132,39 @@ class ExperimentService(
     transitioned(id, "archive", Set(ExperimentStatus.Draft, ExperimentStatus.Completed), "archived")(experimentRegistry.archive(id))
 
   /**
+   * Update a draft experiment: each field the request gives replaces the experiment's, and the
+   * result is validated like a new experiment. Only drafts can change, so a running experiment's
+   * results always belong to one definition.
+   */
+  def updateExperiment(id: String, request: UpdateExperimentRequest): IO[ExperimentOperationResponse] =
+    for {
+      exp <- requireStatus(id, "update", Set(ExperimentStatus.Draft))
+      merged = exp.copy(
+        name = request.name.map(_.trim).getOrElse(exp.name),
+        description = request.description.orElse(exp.description),
+        baselineConfig = request.baselineConfig.getOrElse(exp.baselineConfig),
+        variantConfig = request.variantConfig.getOrElse(exp.variantConfig),
+        trafficSplit = request.trafficSplit.getOrElse(exp.trafficSplit)
+      )
+      _ <- ExperimentService.validate(CreateExperimentRequest(
+        name = merged.name,
+        description = merged.description,
+        baselineConfig = merged.baselineConfig,
+        variantConfig = merged.variantConfig,
+        trafficSplit = Some(merged.trafficSplit),
+        collection = merged.collection
+      )) match {
+        case Nil => IO.unit
+        case errors => IO.raiseError(InvalidExperimentError(errors))
+      }
+      updated <- experimentRegistry.updateDraft(merged)
+      result <- updated match {
+        case Some(e) => IO.pure(e)
+        case None => requireStatus(id, "update", Set(ExperimentStatus.Draft)) *> IO.raiseError(ExperimentStateError(exp, "update", Set(ExperimentStatus.Draft)))
+      }
+    } yield ExperimentOperationResponse(success = true, message = s"Experiment '${result.name}' updated successfully", experiment = Some(result))
+
+  /**
    * Delete a draft experiment.
    */
   def deleteExperiment(id: String): IO[ExperimentOperationResponse] =

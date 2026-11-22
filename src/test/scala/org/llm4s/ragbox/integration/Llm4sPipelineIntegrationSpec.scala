@@ -242,4 +242,54 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     search.results.flatMap(_.documentId) shouldBe Seq("zebra")
     answer.left.map(_.getMessage).left.getOrElse("") should include("LLM client required")
   }
+
+  "A similarity threshold" should "keep chunks below it from the answer LLM and the response" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val vectorOnly: AppConfig => AppConfig = c => c.copy(rag = c.rag.copy(search = c.rag.search.copy(fusionStrategy = "vector_only")))
+    val (all, filtered, none) = run(plainService(db, llm = Some(llm), configure = vectorOnly).use { service =>
+      for {
+        _ <- service.ingestDocument("Zebras have black and white stripes.", "zebra", Map.empty)
+        _ <- service.ingestDocument("Penguins live in the southern hemisphere.", "penguin", Map.empty)
+        all <- service.queryWithAnswer("zebras have stripes", Some(2))
+        // vector_only: score is the vector similarity; cut between the two chunks
+        cut = all.contexts.map(_.score).sum / 2
+        filtered <- service.queryWithAnswer("zebras have stripes", Some(2), RAGService.SettingsOverride(similarityThreshold = Some(cut)))
+        none <- service.queryWithAnswer("zebras have stripes", Some(2), RAGService.SettingsOverride(similarityThreshold = Some(1.0)))
+      } yield (all, filtered, none)
+    })
+
+    all.contexts.flatMap(_.documentId) shouldBe Seq("zebra", "penguin")
+    all.contexts.map(_.score).distinct.size shouldBe 2
+    filtered.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+    none.contexts shouldBe empty
+    filtered.answer shouldBe FakeLLM.Answer
+    filtered.metrics.map(_.chunksRetrieved) shouldBe Some(1)
+
+    // What the LLM was sent: llm4s's prompt and temperature, with only the kept chunks
+    val prompts = llm.requests.map { case (conversation, options) => (conversation.messages.last.content, options.temperature) }
+    prompts.head._1 should include("Penguins")
+    prompts(1)._1 should include("[1] Zebras have black and white stripes.")
+    prompts(1)._1 should not include "Penguins"
+    prompts(1)._2 shouldBe 0.0
+    prompts(2)._1 should include("Context:\n\n\nQuestion: zebras have stripes")
+  }
+
+  it should "apply in permission mode too" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val (all, filtered) = run(permissionService(db, llm = Some(llm)).use { service =>
+      val anonymous = org.llm4s.rag.permissions.UserAuthorization.Anonymous
+      for {
+        _ <- service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.")
+        _ <- service.ingestWithPermissions(RAGService.DefaultCollection, "penguin", "Penguins live in the southern hemisphere.")
+        all <- service.queryWithPermissionsAndAnswer("zebras have stripes", anonymous, "*", Some(2))
+        cut = all.contexts.map(_.score).sum / 2
+        filtered <- service.queryWithPermissionsAndAnswer("zebras have stripes", anonymous, "*", Some(2),
+          RAGService.SettingsOverride(similarityThreshold = Some(cut)))
+      } yield (all, filtered)
+    })
+    all.contexts.flatMap(_.documentId).toSet shouldBe Set("zebra", "penguin")
+    filtered.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+  }
 }

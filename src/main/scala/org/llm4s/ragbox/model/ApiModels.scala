@@ -213,6 +213,11 @@ final case class SyncStatusResponse(
 /**
  * Override parameters for query experimentation.
  * Allows testing different configurations without changing system defaults.
+ *
+ * @param llmTemperature      rejected (400): llm4s 0.6.0 answers `/query` at temperature 0.0
+ *                            (llm4s/llm4s#2715; ragbox #40 adopts the fix)
+ * @param similarityThreshold minimum vector similarity (0 to 1) of a chunk to be used for the
+ *                            answer and returned; keyword-only matches are kept
  */
 final case class QueryOverrides(
   topK: Option[Int] = None,
@@ -228,7 +233,7 @@ final case class QueryOverrides(
  * @param question The query question
  * @param collection Optional collection filter
  * @param topK Optional number of chunks to retrieve
- * @param includeMetadata Whether to include metadata in response
+ * @param includeMetadata Whether contexts carry their chunk metadata (default true)
  * @param experimentId Optional experiment ID to track this query
  * @param overrides Optional parameter overrides for experimentation
  */

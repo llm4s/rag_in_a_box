@@ -186,8 +186,10 @@ POST /api/v1/collections/{name}/config/preview
 ```
 
 ```json
-{ "collection": "docs", "filename": "notes.txt" }
+{ "filename": "notes.txt" }
 ```
+
+The collection is the one in the path.
 
 ```json
 {

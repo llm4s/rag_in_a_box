@@ -127,6 +127,23 @@ GET /api/v1/experiments/{id}
 
 ---
 
+## Update a Draft {#update}
+
+```
+PATCH /api/v1/experiments/{id}
+```
+
+```json
+{ "variantConfig": { "topK": 10 }, "trafficSplit": 0.3 }
+```
+
+Each field given (`name`, `description`, `baselineConfig`, `variantConfig`, `trafficSplit`)
+replaces the experiment's; the others are unchanged. The result is validated like a new
+experiment (`400`). Only a `draft` can change (`409` otherwise), so a running or completed
+experiment's results always belong to one definition. Answers like the lifecycle operations below.
+
+---
+
 ## Lifecycle {#lifecycle}
 
 | Method | Path | Allowed from | Result |

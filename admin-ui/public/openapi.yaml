@@ -1454,10 +1454,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [collection]
+              description: The collection is the one in the path
               properties:
-                collection:
-                  type: string
                 filename:
                   type: string
       responses:
@@ -2466,6 +2464,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Experiments]
+      summary: Update a draft experiment
+      description: |
+        Auth: admin. Each field given replaces the experiment's; the ones left out are unchanged.
+        The result is validated like a new experiment (400). Only draft experiments can change
+        (409 otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateExperimentRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ExperimentOperation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ExperimentOperation'
     delete:
       tags: [Experiments]
       summary: Delete a draft experiment
@@ -3286,8 +3310,19 @@ components:
           type: string
         llmTemperature:
           type: number
+          description: |
+            Not supported: a request that sets it is rejected with 400. llm4s 0.6.0 answers
+            `/query` at temperature 0.0 (llm4s/llm4s#2715); the runtime `llmTemperature` applies
+            to chat.
         similarityThreshold:
           type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            Minimum vector (cosine) similarity of a retrieved chunk. Chunks below it are neither
+            sent to the LLM nor returned. Compared with the chunk's vector similarity, not with
+            `score` (whose scale depends on the fusion strategy); chunks found by keyword search
+            only are kept.
     QueryRequest:
       type: object
       required: [question]
@@ -3302,6 +3337,7 @@ components:
         includeMetadata:
           type: boolean
           default: true
+          description: When false, contexts carry an empty `metadata` (`documentId` and `chunkIndex` remain)
         experimentId:
           type: string
         overrides:
@@ -3488,6 +3524,7 @@ components:
           example: engineering/backend
         description:
           type: string
+          description: Stored in the collection's metadata as `description`
         queryableBy:
           type: array
           description: External principal ids; empty or absent means public
@@ -4393,6 +4430,19 @@ components:
           default: 0.5
         collection:
           type: string
+    UpdateExperimentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        baselineConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        variantConfig:
+          $ref: '#/components/schemas/ExperimentConfig'
+        trafficSplit:
+          type: number
     VariantMetrics:
       type: object
       properties:

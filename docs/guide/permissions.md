@@ -102,6 +102,7 @@ curl -X POST http://localhost:8080/api/v1/collections \
 | Property | Type | Description |
 |----------|------|-------------|
 | `path` | string | Hierarchical path (e.g., `docs/guides/api`) |
+| `description` | string | Optional; stored in the collection's metadata as `description` |
 | `queryableBy` | array | List of principal external IDs (optional; omitted = public) |
 | `isLeaf` | boolean | Whether collection holds documents directly (default `true`) |
 | `metadata` | object | Additional string key-value metadata |

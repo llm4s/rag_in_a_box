@@ -461,7 +461,9 @@ class RagBoxClient:
         self,
         question: str,
         top_k: Optional[int] = None,
-        collection: Optional[str] = None
+        collection: Optional[str] = None,
+        include_metadata: bool = True,
+        similarity_threshold: Optional[float] = None
     ) -> QueryResult:
         """
         Query with answer generation (``POST /api/v1/query``).
@@ -470,6 +472,9 @@ class RagBoxClient:
             question: The question to answer
             top_k: Number of context chunks to retrieve
             collection: Optional collection or pattern (e.g. ``docs/*``) to search
+            include_metadata: If False, contexts come back without their metadata
+            similarity_threshold: Minimum vector similarity (0 to 1) of a chunk to be used
+                for the answer and returned
 
         Returns:
             QueryResult with answer and supporting contexts
@@ -479,6 +484,10 @@ class RagBoxClient:
             data["topK"] = top_k
         if collection:
             data["collection"] = collection
+        if not include_metadata:
+            data["includeMetadata"] = False
+        if similarity_threshold is not None:
+            data["overrides"] = {"similarityThreshold": similarity_threshold}
 
         response = self._request("POST", "/api/v1/query", json=data)
         result = response.json()

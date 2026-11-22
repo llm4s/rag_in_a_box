@@ -82,7 +82,7 @@ export async function previewEffectiveConfig(
 ): Promise<EffectiveConfigPreviewResponse> {
   const response = await client.post<EffectiveConfigPreviewResponse>(
     `/collections/${encodeURIComponent(collection)}/config/preview`,
-    { collection, filename: filename || undefined }
+    { filename: filename || undefined }
   )
   return response.data
 }

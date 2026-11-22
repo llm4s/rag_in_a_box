@@ -75,14 +75,16 @@ an invalid `?pattern=` is a `400`.
 ```json
 {
   "path": "company/engineering",
+  "description": "Engineering handbook",
   "queryableBy": ["group:engineering", "user:cto@example.com"],
   "isLeaf": true,
   "metadata": { "owner": "platform" }
 }
 ```
 
-`isLeaf` defaults to `true`; a collection with an empty `queryableBy` is public. **201
-Created** with the collection object:
+`isLeaf` defaults to `true`; a collection with an empty `queryableBy` is public. `description`
+is stored in the collection's metadata (as `description`). **201 Created** with the collection
+object:
 
 ```json
 {
@@ -92,7 +94,7 @@ Created** with the collection object:
   "queryableBy": [4, 7],
   "isLeaf": true,
   "isPublic": false,
-  "metadata": { "owner": "platform" }
+  "metadata": { "owner": "platform", "description": "Engineering handbook" }
 }
 ```
 

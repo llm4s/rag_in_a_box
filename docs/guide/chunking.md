@@ -209,7 +209,7 @@ settings.
 | `/api/v1/collections/{collection}/config` | GET | any authenticated | `{collection, hasCustomConfig, config, effectiveConfig, documentCount}` |
 | `/api/v1/collections/{collection}/config` | PUT | admin | Set `strategy`, `targetSize`, `maxSize`, `overlap`, `fileTypeStrategies` (all optional) |
 | `/api/v1/collections/{collection}/config` | DELETE | admin | Remove the custom config (`404` if there is none) |
-| `/api/v1/collections/{collection}/config/preview` | POST | admin | Effective config for `{"collection", "filename"}` |
+| `/api/v1/collections/{collection}/config/preview` | POST | admin | Effective config for `{"filename"}` in the path's collection |
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/collections/docs/config \

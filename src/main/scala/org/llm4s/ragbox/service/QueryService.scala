@@ -2,6 +2,7 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import cats.syntax.all._
+import org.llm4s.llmconnect.LLMClient
 import org.llm4s.llmconnect.model.CompletionOptions
 import org.llm4s.rag.{RAGAnswerResult, RAGSearchResult}
 import org.llm4s.rag.permissions.{CollectionPattern, UserAuthorization}
@@ -38,9 +39,15 @@ final class QueryService(pipelines: RagPipelines) {
    * runtime settings (an experiment group's or a request's; built on first use, then reused).
    */
   def queryWithAnswer(question: String, topK: Option[Int], overrides: RAGService.SettingsOverride): IO[QueryResponse] =
-    pipelines.requireLlm *>
-      pipelines.withOverrides(overrides)(r => measured(r.queryWithAnswer(question, Some(resolveTopK(topK)))))
-        .map(toQueryResponse.tupled)
+    pipelines.requireLlm.flatMap { client =>
+      val k = Some(resolveTopK(topK))
+      pipelines.withOverrides(overrides)(r =>
+        overrides.similarityThreshold match {
+          case None => measured(r.queryWithAnswer(question, k))
+          case Some(threshold) => answerAboveThreshold(client, overrides, question, threshold)(r.query(question, k))
+        }
+      ).map(toQueryResponse.tupled)
+    }
 
   /** [[queryWithAnswer]] with permission filtering. */
   def queryWithPermissionsAndAnswer(
@@ -50,10 +57,41 @@ final class QueryService(pipelines: RagPipelines) {
     topK: Option[Int],
     overrides: RAGService.SettingsOverride
   ): IO[QueryResponse] =
-    (pipelines.requireLlm, QueryService.parsePattern(collectionPattern)).flatMapN { (_, pattern) =>
+    (pipelines.requireLlm, QueryService.parsePattern(collectionPattern)).flatMapN { (client, pattern) =>
+      val k = Some(resolveTopK(topK))
       pipelines.withOverrides(overrides)(r =>
-        measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, Some(resolveTopK(topK))))
+        overrides.similarityThreshold match {
+          case None => measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, k))
+          case Some(threshold) =>
+            answerAboveThreshold(client, overrides, question, threshold)(r.queryWithPermissions(auth, pattern, question, k))
+        }
       ).map(toQueryResponse.tupled)
+    }
+
+  /**
+   * An answer from the retrieved chunks whose similarity reaches `threshold` only.
+   *
+   * llm4s's `queryWithAnswer` retrieves and answers in one call, with no hook between the two, so
+   * with a threshold ragbox composes the two llm4s steps itself - as for chat: `retrieve`, keep the
+   * chunks [[QueryService.aboveThreshold]], then the answer LLM with the same prompt and
+   * temperature (0.0) llm4s 0.6.0 answers with. Chunks below the threshold are neither sent to the
+   * LLM nor returned.
+   */
+  private def answerAboveThreshold(
+    client: LLMClient,
+    overrides: RAGService.SettingsOverride,
+    question: String,
+    threshold: Double
+  )(retrieve: => Result[Seq[RAGSearchResult]]): IO[(RAGAnswerResult, QueryMetricsTracing.Collected, Long)] =
+    IO.fromEither(pipelines.settingsFor(overrides)).flatMap { settings =>
+      measured {
+        for {
+          retrieved <- retrieve
+          contexts = QueryService.aboveThreshold(retrieved, threshold)
+          conversation = Llm4sPipeline.chatConversation(settings.systemPrompt, Nil, contexts, question)
+          completion <- client.complete(conversation, CompletionOptions(temperature = QueryService.LlmAnswerTemperature))
+        } yield RAGAnswerResult(answer = completion.content, question = question, contexts = contexts, usage = completion.usage)
+      }
     }
 
   /**
@@ -159,6 +197,20 @@ final class QueryService(pipelines: RagPipelines) {
 }
 
 object QueryService {
+
+  /** The temperature llm4s 0.6.0's `RAG.queryWithAnswer` answers at (llm4s/llm4s#2715). */
+  val LlmAnswerTemperature: Double = 0.0
+
+  /**
+   * The results whose vector similarity is at least `threshold`.
+   *
+   * The threshold is compared with the vector (cosine) similarity llm4s reports for each result,
+   * 0 to 1 - not with `score`, whose scale depends on the fusion strategy (with RRF it is a rank
+   * score of about 1/(k + rank)). A result found by keyword search only has no similarity and is
+   * kept: the threshold filters what vector search matched, not lexical matches.
+   */
+  def aboveThreshold(results: Seq[RAGSearchResult], threshold: Double): Seq[RAGSearchResult] =
+    results.filter(_.vectorScore.forall(_ >= threshold))
 
   def parsePattern(pattern: String): IO[CollectionPattern] =
     IO.fromEither(

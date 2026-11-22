@@ -154,6 +154,7 @@ in those collections (and their descendants), and may only query patterns inside
 | GET | [`/api/v1/experiments`](/api/experiments#list) | Admin | List experiments |
 | GET | [`/api/v1/experiments/running`](/api/experiments#running) | Admin | The running experiment |
 | GET | [`/api/v1/experiments/{id}`](/api/experiments#get) | Admin | One experiment |
+| PATCH | [`/api/v1/experiments/{id}`](/api/experiments#update) | Admin | Update a draft |
 | PUT | [`/api/v1/experiments/{id}/start`](/api/experiments#lifecycle) | Admin | Start |
 | PUT | [`/api/v1/experiments/{id}/stop`](/api/experiments#lifecycle) | Admin | Stop |
 | PUT | [`/api/v1/experiments/{id}/archive`](/api/experiments#lifecycle) | Admin | Archive |

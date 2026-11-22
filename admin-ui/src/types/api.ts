@@ -845,7 +845,7 @@ export interface QueryOverrides {
   topK?: number
   fusionStrategy?: string
   systemPrompt?: string
-  llmTemperature?: number
+  /** Minimum vector similarity (0 to 1). (`llmTemperature` is rejected: llm4s 0.6.0, #40.) */
   similarityThreshold?: number
 }
 
