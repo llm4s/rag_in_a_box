@@ -1,27 +1,22 @@
 import { test, expect } from '@playwright/test'
+import { createDocument } from './support/api'
 
 test.describe('Visibility', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/visibility')
-  })
-
-  test('should display visibility page with header', async ({ page }) => {
+  test('shows stats, collections and the chunk browser', async ({ page, request }) => {
+    await createDocument(request)
+    await page.goto('visibility')
     await expect(page.getByRole('heading', { name: 'System Visibility' })).toBeVisible()
-  })
 
-  test('should display configuration section', async ({ page }) => {
-    await expect(page.getByText(/configuration|settings/i).first()).toBeVisible({ timeout: 10000 })
-  })
+    for (const label of ['Documents', 'Chunks', 'Collections', 'Avg Chunks/Doc']) {
+      await expect(page.locator('.text-caption').getByText(label, { exact: true })).toBeVisible()
+    }
 
-  test('should display chunks section', async ({ page }) => {
-    await expect(page.getByText(/chunks/i).first()).toBeVisible({ timeout: 10000 })
-  })
+    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible()
+    await expect(page.getByText(/\d+ documents, \d+ chunks/).first()).toBeVisible()
 
-  test('should display system statistics', async ({ page }) => {
-    await expect(page.getByText(/statistics|stats/i).first()).toBeVisible({ timeout: 10000 })
-  })
-
-  test('should have refresh button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /refresh/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Chunk Browser' })).toBeVisible()
+    await expect(page.getByText('No chunks found')).toHaveCount(0)
+    await page.locator('.v-expansion-panel-title').first().click()
+    await expect(page.getByText(/Document: [0-9a-f]{8}\.\.\./).first()).toBeVisible()
   })
 })

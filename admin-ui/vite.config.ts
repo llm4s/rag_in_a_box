@@ -7,6 +7,24 @@ import { fileURLToPath, URL } from 'node:url'
 export default defineConfig(({ mode }) => {
   // Disable PWA for Storybook builds
   const isStorybook = process.env.STORYBOOK === 'true'
+  // Backend the dev / preview server proxies to (the e2e suite runs one on another port)
+  const apiTarget = process.env.RAGBOX_API_URL ?? 'http://localhost:8080'
+  const proxy = {
+    '/api': {
+      target: apiTarget,
+      changeOrigin: true
+    },
+    '/health': {
+      target: apiTarget,
+      changeOrigin: true
+    },
+    // Live updates (stores/websocket.ts)
+    '/ws': {
+      target: apiTarget.replace(/^http/, 'ws'),
+      ws: true,
+      changeOrigin: true
+    }
+  }
 
   return {
     plugins: [
@@ -55,22 +73,11 @@ export default defineConfig(({ mode }) => {
   base: '/admin/',
   server: {
     port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
-      },
-      '/health': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
-      },
-      // Live updates (stores/websocket.ts)
-      '/ws': {
-        target: 'ws://localhost:8080',
-        ws: true,
-        changeOrigin: true
-      }
-    }
+    proxy
+  },
+  // `vite preview` (used by the e2e suite) serves the production build with the same proxy
+  preview: {
+    proxy
   },
   build: {
     outDir: 'dist',

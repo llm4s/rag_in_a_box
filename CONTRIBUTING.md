@@ -118,6 +118,25 @@ rag_in_a_box/
    npm run build
    ```
 
+5. **End-to-end tests (Playwright)**
+
+   The e2e suite (`admin-ui/e2e`) drives the built UI against a real backend and
+   PostgreSQL. A small stub (`e2e/support/stub-llm.mjs`) stands in for the OpenAI API,
+   so no API key is needed and nothing is billed. Playwright starts the stub, the backend
+   (`sbt -batch run`, open auth mode, port 18080) and the UI (`vite build` + `vite preview`,
+   port 14173); you only start the database:
+   ```bash
+   npm run test:e2e:db               # throwaway pgvector container on port 15433
+   npx playwright install chromium   # once
+   npm run test:e2e                  # or: npm run test:e2e:ui
+   docker stop ragbox-e2e-pg         # when done (the container is removed on stop)
+   ```
+   Servers already running on those ports are reused, so you can keep a backend
+   running between runs. Ports and the backend command can be changed with
+   `E2E_PG_PORT`, `E2E_BACKEND_PORT`, `E2E_UI_PORT`, `E2E_STUB_PORT` and
+   `E2E_BACKEND_CMD` (see `playwright.config.ts`). Tests create uniquely named data and
+   do not need an empty database. CI runs the suite in the `E2E` job.
+
 ### Docker
 
 Build the complete Docker image:

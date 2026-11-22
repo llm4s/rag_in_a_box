@@ -1,24 +1,25 @@
 import { test, expect } from '@playwright/test'
+import { createDocument, runQuery } from './support/api'
 
 test.describe('Analytics', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/analytics')
-  })
+  test('shows query analytics for recorded queries', async ({ page, request }) => {
+    const doc = await createDocument(request)
+    await runQuery(request, `What does ${doc.filename} say about the fox?`)
 
-  test('should display analytics page with header', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
-  })
+    await page.goto('analytics')
+    await expect(page.getByRole('heading', { name: 'Query Analytics' })).toBeVisible()
 
-  test('should display time range selector', async ({ page }) => {
-    // Look for time range filter options
-    await expect(page.getByText(/24 hours|7 days|30 days/i).first()).toBeVisible({ timeout: 10000 })
-  })
+    for (const range of ['Last 24 Hours', 'Last 7 Days', 'Last 30 Days']) {
+      await expect(page.getByRole('button', { name: range })).toBeVisible()
+    }
 
-  test('should display query stats section', async ({ page }) => {
-    await expect(page.getByText(/queries|total/i).first()).toBeVisible({ timeout: 10000 })
-  })
+    const totalCard = page.locator('.v-card').filter({ hasText: 'Total Queries' }).first()
+    await expect(totalCard).toBeVisible()
+    await expect(totalCard.locator('.text-h4')).not.toHaveText('0')
+    await expect(page.getByText('Avg Latency')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Latency Percentiles' })).toBeVisible()
 
-  test('should display latency metrics', async ({ page }) => {
-    await expect(page.getByText(/latency|response time/i).first()).toBeVisible({ timeout: 10000 })
+    await page.getByRole('button', { name: 'Last 7 Days' }).click()
+    await expect(totalCard).toBeVisible()
   })
 })

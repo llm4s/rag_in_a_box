@@ -1,38 +1,48 @@
 import { test, expect } from '@playwright/test'
 
-test.describe('Chunking Preview Page', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/chunking')
-  })
+const SAMPLE = Array.from(
+  { length: 12 },
+  (_, i) => `Sentence number ${i + 1} explains one more detail about how chunking splits long documents.`
+).join(' ')
 
-  test('should display chunking preview heading', async ({ page }) => {
+test.describe('Chunking Preview', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('chunking')
     await expect(page.getByRole('heading', { name: 'Chunking Preview' })).toBeVisible()
   })
 
-  test('should display mode tabs', async ({ page }) => {
-    await expect(page.getByRole('tab', { name: /Preview/i })).toBeVisible()
-    await expect(page.getByRole('tab', { name: /Compare/i })).toBeVisible()
+  test('shows the input controls', async ({ page }) => {
+    await expect(page.getByRole('tab', { name: 'Preview' })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Compare Strategies' })).toBeVisible()
+    await expect(page.getByLabel('Text to chunk')).toBeVisible()
+    await expect(page.getByLabel('Strategy')).toBeVisible()
+    await expect(page.getByLabel('Chunk Size')).toBeVisible()
+    await expect(page.getByLabel('Overlap')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Preview Chunks' })).toBeDisabled()
   })
 
-  test('should display text input area', async ({ page }) => {
-    await expect(page.getByLabel(/Enter text/i)).toBeVisible()
+  test('previews how a text is chunked', async ({ page }) => {
+    await page.getByLabel('Text to chunk').fill(SAMPLE)
+    await page.getByLabel('Chunk Size').fill('200')
+    await page.getByLabel('Overlap').fill('20')
+    await page.getByRole('button', { name: 'Preview Chunks' }).click()
+    // ~1100 characters in chunks of ~200: several chunks
+    await expect(page.getByText(/\((?:[3-9]|\d{2,}) chunks, avg \d+ chars\)/)).toBeVisible()
   })
 
-  test('should display strategy selector', async ({ page }) => {
-    await expect(page.getByLabel(/Strategy/i)).toBeVisible()
-  })
-
-  test('should display chunk size and overlap inputs', async ({ page }) => {
-    await expect(page.getByLabel(/Chunk Size/i)).toBeVisible()
-    await expect(page.getByLabel(/Overlap/i)).toBeVisible()
-  })
-
-  test('should have preview button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /Preview/i })).toBeVisible()
-  })
-
-  test('should switch to compare mode', async ({ page }) => {
-    await page.getByRole('tab', { name: /Compare/i }).click()
-    await expect(page.getByRole('button', { name: /Compare Strategies/i })).toBeVisible()
+  test('compares chunking strategies', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Compare Strategies' }).click()
+    await page.getByLabel('Text to chunk').fill(SAMPLE)
+    const compare = page.getByRole('button', { name: 'Compare Strategies' })
+    await expect(compare).toBeVisible()
+    // Pick two strategies if none are preselected
+    const chips = page.locator('.v-chip-group .v-chip')
+    await expect(chips.first()).toBeVisible()
+    if (await compare.isDisabled()) {
+      await chips.nth(0).click()
+      await chips.nth(1).click()
+    }
+    await compare.click()
+    await expect(page.getByText('Comparison Results')).toBeVisible()
   })
 })
