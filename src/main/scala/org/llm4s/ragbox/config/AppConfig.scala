@@ -365,7 +365,7 @@ sealed trait AuthMode
 object AuthMode {
   case object Open extends AuthMode     // No authentication
   case object Basic extends AuthMode    // Username/password with JWT
-  case object OAuth extends AuthMode    // OAuth2/OIDC (future)
+  case object OAuth extends AuthMode    // OAuth2/OIDC with an external identity provider
 
   def fromString(s: String): AuthMode = s.toLowerCase match {
     case "open" => Open
@@ -804,7 +804,9 @@ object AppConfig {
         case "okta" =>
           val domain = getOptionalString(config, "security.auth.oauth.okta-domain")
             .getOrElse(throw new IllegalArgumentException("OAUTH_OKTA_DOMAIN required for Okta provider"))
-          OidcProviders.okta(domain, clientId, clientSecret, redirectUri)
+          val authServerId = getOptionalString(config, "security.auth.oauth.okta-auth-server-id")
+            .getOrElse(OidcProviders.OktaDefaultAuthServerId)
+          OidcProviders.okta(domain, clientId, clientSecret, redirectUri, authServerId)
 
         case "keycloak" =>
           val baseUrl = getOptionalString(config, "security.auth.oauth.keycloak-base-url")
@@ -856,7 +858,6 @@ object AppConfig {
         provider = if (scopes.isEmpty) providerConfig else providerConfig.copy(scopes = scopes),
         claimMapping = claimMapping,
         session = sessionConfig,
-        pkceEnabled = Try(config.getBoolean("security.auth.oauth.pkce-enabled")).getOrElse(true),
         stateTtl = Try(config.getInt("security.auth.oauth.state-ttl")).getOrElse(300),
         sessionStorage = getOptionalString(config, "security.auth.oauth.session-storage")
           .map(OAuthSessionStorage.fromString(_).fold(e => throw new IllegalArgumentException(e), identity))

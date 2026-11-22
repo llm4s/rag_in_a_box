@@ -63,12 +63,16 @@ object OAuthSessionStorage:
   given Encoder[OAuthSessionStorage] = Encoder.encodeString.contramap(_.toString.toLowerCase)
   given Decoder[OAuthSessionStorage] = Decoder.decodeString.emap(fromString)
 
-/** Complete OAuth configuration */
+/**
+ * Complete OAuth configuration.
+ *
+ * There is no PKCE switch: every login uses PKCE (S256), as OAuth 2.1 and the OAuth security
+ * BCP (RFC 9700) require of every client, and every supported provider accepts it.
+ */
 case class OAuthConfig(
     provider: OidcProviderConfig,
     claimMapping: ClaimMappingConfig = ClaimMappingConfig(),
     session: OAuthSessionConfig = OAuthSessionConfig(),
-    pkceEnabled: Boolean = true,
     stateTtl: Int = 300, // 5 minutes in seconds
     sessionStorage: OAuthSessionStorage = OAuthSessionStorage.Memory,
     adminGroups: Set[String] = Set.empty // members of these groups are ragbox administrators

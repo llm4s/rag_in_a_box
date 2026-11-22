@@ -57,7 +57,7 @@ data:
   OAUTH_REDIRECT_URI: {{ required "config.auth.oauth.redirectUri is required when config.auth.mode=oauth" $oauth.redirectUri | quote }}
   OAUTH_SESSION_STORAGE: {{ $oauth.sessionStorage | default "postgres" | quote }}
   OAUTH_SESSION_COOKIE_SECURE: {{ $oauth.cookieSecure | quote }}
-  {{- range $key, $env := dict "scopes" "OAUTH_SCOPES" "adminGroups" "OAUTH_ADMIN_GROUPS" "groupsClaim" "OAUTH_CLAIM_GROUPS" "azureTenantId" "OAUTH_AZURE_TENANT_ID" "oktaDomain" "OAUTH_OKTA_DOMAIN" "keycloakBaseUrl" "OAUTH_KEYCLOAK_BASE_URL" "keycloakRealm" "OAUTH_KEYCLOAK_REALM" "issuer" "OAUTH_ISSUER" "authorizationEndpoint" "OAUTH_AUTHORIZATION_ENDPOINT" "tokenEndpoint" "OAUTH_TOKEN_ENDPOINT" "userinfoEndpoint" "OAUTH_USERINFO_ENDPOINT" "jwksUri" "OAUTH_JWKS_URI" }}
+  {{- range $key, $env := dict "scopes" "OAUTH_SCOPES" "adminGroups" "OAUTH_ADMIN_GROUPS" "groupsClaim" "OAUTH_CLAIM_GROUPS" "azureTenantId" "OAUTH_AZURE_TENANT_ID" "oktaDomain" "OAUTH_OKTA_DOMAIN" "oktaAuthServerId" "OAUTH_OKTA_AUTH_SERVER_ID" "keycloakBaseUrl" "OAUTH_KEYCLOAK_BASE_URL" "keycloakRealm" "OAUTH_KEYCLOAK_REALM" "issuer" "OAUTH_ISSUER" "authorizationEndpoint" "OAUTH_AUTHORIZATION_ENDPOINT" "tokenEndpoint" "OAUTH_TOKEN_ENDPOINT" "userinfoEndpoint" "OAUTH_USERINFO_ENDPOINT" "jwksUri" "OAUTH_JWKS_URI" }}
   {{- with index $oauth $key }}
   {{ $env }}: {{ . | quote }}
   {{- end }}

@@ -19,7 +19,8 @@ RAG in a Box enforces PKCE for all OAuth flows. PKCE prevents authorization code
 2. **Code Challenge**: SHA-256 hash of the verifier, sent with the authorization request
 3. **Verification**: Provider validates the original verifier when exchanging the code
 
-PKCE (`S256`) is always used and cannot be disabled (the `OAUTH_PKCE_ENABLED` setting is parsed but has no effect).
+PKCE (`S256`) is always used and cannot be disabled, as OAuth 2.1 and the OAuth 2.0 Security Best
+Current Practice (RFC 9700) require of every client; all the provider presets support it.
 
 ### State Parameter and Browser Binding (Login CSRF Protection)
 
@@ -75,7 +76,7 @@ ID tokens are validated using industry-standard checks:
 | Not Before | Token must be valid (if `nbf` claim present) |
 | Nonce | Must equal the nonce sent in the authorization request (browser logins) |
 
-JWKS keys are cached (up to 10 keys for 24 hours, with at most 10 JWKS fetches per minute); a token signed with a key id that is not in the cache triggers a fetch, which is how key rotation is picked up.
+JWKS keys are cached by key id (up to 10 keys for 1 hour, with at most 10 JWKS fetches per minute); a token signed with a key id that is not in the cache triggers a fetch, which is how key rotation is picked up.
 
 ### User Identity
 
@@ -303,9 +304,12 @@ Consider logging:
 
 Identity providers rotate signing keys periodically. RAG in a Box handles this by:
 
-1. Caching JWKS keys by key id (`kid`) for performance (up to 10 keys, 24 hours)
-2. Fetching the JWKS again when a token names a key id that is not cached (rate limited to 10 fetches a minute)
+1. Caching JWKS keys by key id (`kid`) for performance (up to 10 keys, for 1 hour)
+2. Fetching the JWKS again when a token names a key id that is not cached (rate limited to 10 fetches a minute),
+   so a new signing key works from its first token, without a scheduled refresh
 3. Accepting any key the provider currently publishes, so old and new keys both work during a rotation
+4. Forgetting cached keys after an hour, so a key the provider has retired (removed from its JWKS) stops
+   being accepted within an hour
 
 ### Client Secret Rotation
 

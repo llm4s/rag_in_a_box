@@ -201,6 +201,8 @@ config:
       azureTenantId: ""
       # -- Okta domain (provider: okta)
       oktaDomain: ""
+      # -- Okta custom authorization server id (provider: okta; empty = "default")
+      oktaAuthServerId: ""
       # -- Keycloak base URL (provider: keycloak)
       keycloakBaseUrl: ""
       # -- Keycloak realm (provider: keycloak)

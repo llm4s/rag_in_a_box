@@ -68,6 +68,26 @@ class OAuthConfigSpec extends AnyFlatSpec with Matchers {
     config.authorizationEndpoint shouldBe "https://my-company.okta.com/oauth2/my-auth-server/v1/authorize"
   }
 
+  private def parsedOAuth(settings: String): OAuthConfig = {
+    import com.typesafe.config.ConfigFactory
+    val config = ConfigFactory.parseString(settings).withFallback(ConfigFactory.load()).resolve()
+    AppConfig.parseConfig(config).security.auth.oauth.get
+  }
+
+  private val oktaSettings =
+    """security.auth.oauth { provider = okta, okta-domain = "acme.okta.com", client-id = c, client-secret = s, redirect-uri = "http://localhost/cb" }"""
+
+  "OAUTH_OKTA_AUTH_SERVER_ID" should "default to Okta's default authorization server" in {
+    parsedOAuth(oktaSettings).provider.issuer shouldBe "https://acme.okta.com/oauth2/default"
+  }
+
+  it should "select another authorization server" in {
+    val provider = parsedOAuth(oktaSettings + "\nsecurity.auth.oauth.okta-auth-server-id = aus123").provider
+    provider.issuer shouldBe "https://acme.okta.com/oauth2/aus123"
+    provider.jwksUri shouldBe "https://acme.okta.com/oauth2/aus123/v1/keys"
+    provider.tokenEndpoint shouldBe "https://acme.okta.com/oauth2/aus123/v1/token"
+  }
+
   "OidcProviders.keycloak" should "create correct provider config with realm" in {
     val config = OidcProviders.keycloak(
       baseUrl = "https://keycloak.example.com",

@@ -27,10 +27,29 @@ class MockOidcServer(
     val issuer: String,
     keyPair: KeyPair
 ):
-  private val publicKey = keyPair.getPublic.asInstanceOf[RSAPublicKey]
-  private val privateKey = keyPair.getPrivate.asInstanceOf[RSAPrivateKey]
-  private val algorithm = Algorithm.RSA256(publicKey, privateKey)
-  private val keyId = "test-key-id"
+  /** The published signing keys, newest (the one tokens are signed with) first. */
+  private val keys: AtomicReference[List[(String, KeyPair)]] = new AtomicReference(List("test-key-id" -> keyPair))
+
+  private def keyId: String = keys.get.head._1
+  private def algorithm: Algorithm =
+    val pair = keys.get.head._2
+    Algorithm.RSA256(pair.getPublic.asInstanceOf[RSAPublicKey], pair.getPrivate.asInstanceOf[RSAPrivateKey])
+
+  /** Number of times the JWKS endpoint was fetched. */
+  val jwksFetches: java.util.concurrent.atomic.AtomicInteger = new java.util.concurrent.atomic.AtomicInteger(0)
+
+  /**
+   * Rotate the signing key: tokens are signed with a new key (with a new `kid`) from now on.
+   * With `retirePrevious` the old keys are removed from the JWKS, as a provider does once the
+   * tokens they signed have expired.
+   *
+   * @return the new key id
+   */
+  def rotateKey(retirePrevious: Boolean): String =
+    val newId = s"key-${UUID.randomUUID()}"
+    val pair = MockOidcServer.newKeyPair()
+    keys.updateAndGet(current => (newId -> pair) :: (if retirePrevious then Nil else current))
+    newId
 
   /** ID token the mock token endpoint will return next (set by tests). */
   val nextIdToken: AtomicReference[Option[String]] = new AtomicReference(None)
@@ -119,20 +138,20 @@ class MockOidcServer(
    * Get JWKS JSON for the test key.
    */
   def jwksJson: Json =
-    val n = Base64.getUrlEncoder.withoutPadding().encodeToString(publicKey.getModulus.toByteArray)
-    val e = Base64.getUrlEncoder.withoutPadding().encodeToString(publicKey.getPublicExponent.toByteArray)
-
     Json.obj(
-      "keys" -> Json.arr(
+      "keys" -> Json.fromValues(keys.get.map { case (kid, pair) =>
+        val publicKey = pair.getPublic.asInstanceOf[RSAPublicKey]
+        val n = Base64.getUrlEncoder.withoutPadding().encodeToString(publicKey.getModulus.toByteArray)
+        val e = Base64.getUrlEncoder.withoutPadding().encodeToString(publicKey.getPublicExponent.toByteArray)
         Json.obj(
           "kty" -> Json.fromString("RSA"),
-          "kid" -> Json.fromString(keyId),
+          "kid" -> Json.fromString(kid),
           "use" -> Json.fromString("sig"),
           "alg" -> Json.fromString("RS256"),
           "n" -> Json.fromString(n),
           "e" -> Json.fromString(e)
         )
-      )
+      })
     )
 
   /**
@@ -141,7 +160,7 @@ class MockOidcServer(
   def routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     // JWKS endpoint
     case GET -> Root / ".well-known" / "jwks.json" =>
-      Ok(jwksJson)
+      IO(jwksFetches.incrementAndGet()) *> Ok(jwksJson)
 
     // Token endpoint: returns whatever ID token the test configured
     case req @ POST -> Root / "token" =>
@@ -189,10 +208,12 @@ object MockOidcServer:
    * Create a mock OIDC server with a fresh RSA key pair.
    */
   def create(port: Int = 9999): MockOidcServer =
+    new MockOidcServer(port, s"http://localhost:$port", newKeyPair())
+
+  private[testkit] def newKeyPair(): KeyPair =
     val keyGen = KeyPairGenerator.getInstance("RSA")
     keyGen.initialize(2048)
-    val keyPair = keyGen.generateKeyPair()
-    new MockOidcServer(port, s"http://localhost:$port", keyPair)
+    keyGen.generateKeyPair()
 
   /**
    * Create a mock OIDC server as a Resource that starts and stops automatically.

@@ -388,6 +388,7 @@ principals). See [OAuth configuration](../oauth-configuration.md) for provider w
 | `OAUTH_REDIRECT_URI` | - | Callback URL, e.g. `https://ragbox.example.com/api/v1/oauth/callback` |
 | `OAUTH_AZURE_TENANT_ID` | - | Azure AD tenant (provider `azure`, required) |
 | `OAUTH_OKTA_DOMAIN` | - | Okta domain (provider `okta`, required) |
+| `OAUTH_OKTA_AUTH_SERVER_ID` | `default` | Okta custom authorization server id (provider `okta`) |
 | `OAUTH_KEYCLOAK_BASE_URL` / `OAUTH_KEYCLOAK_REALM` | - | Keycloak server and realm (provider `keycloak`, required) |
 | `OAUTH_AUTHORIZATION_ENDPOINT`, `OAUTH_TOKEN_ENDPOINT`, `OAUTH_USERINFO_ENDPOINT`, `OAUTH_JWKS_URI`, `OAUTH_ISSUER` | - | Endpoints of a `custom` provider (all required) |
 | `OAUTH_SCOPES` | provider preset (e.g. `openid profile email`) | Scopes to request, space- or comma-separated; must include `openid` |
@@ -397,7 +398,6 @@ principals). See [OAuth configuration](../oauth-configuration.md) for provider w
 | `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
 | `OAUTH_SESSION_COOKIE_SECURE` | `true` | `Secure` flag on the cookie (set `false` only for plain-HTTP development) |
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session lifetime in seconds |
-| `OAUTH_PKCE_ENABLED` | `true` | Use PKCE |
 | `OAUTH_STATE_TTL` | `300` | Seconds a login may take between redirect and callback |
 
 ---

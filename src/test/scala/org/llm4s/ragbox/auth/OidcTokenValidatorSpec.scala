@@ -6,6 +6,8 @@ import org.llm4s.ragbox.testkit.MockOidcServer
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AsyncWordSpec
 
+import scala.concurrent.duration.*
+
 class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
 
   "OidcTokenValidator" should {
@@ -235,6 +237,41 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
             expectedNonce = Some("nonce-abc")
           )
         yield result.left.toOption.get shouldBe a[OidcError.InvalidNonce]
+      }
+    }
+
+    "accept tokens signed with a rotated-in key, fetching the JWKS only for an unknown kid" in {
+      MockOidcServer.resource().use { mockServer =>
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer))
+          first <- validator.validate(mockServer.generateIdToken(subject = "before"))
+          again <- validator.validate(mockServer.generateIdToken(subject = "before-again"))
+          fetchesBefore = mockServer.jwksFetches.get
+          _ = mockServer.rotateKey(retirePrevious = false)
+          rotated <- validator.validate(mockServer.generateIdToken(subject = "after"))
+        yield
+          first.map(_.subject) shouldBe Right("before")
+          again.map(_.subject) shouldBe Right("before-again")
+          fetchesBefore shouldBe 1 // the cached key served the second token
+          rotated.map(_.subject) shouldBe Right("after")
+          mockServer.jwksFetches.get shouldBe 2 // the new kid was fetched once
+      }
+    }
+
+    "stop accepting a retired key once its cache entry expires" in {
+      MockOidcServer.resource().use { mockServer =>
+        val oldToken = mockServer.generateIdToken(subject = "old-key")
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer), keyCacheTtl = 300.millis)
+          before <- validator.validate(oldToken)
+          _ = mockServer.rotateKey(retirePrevious = true)
+          newKey <- validator.validate(mockServer.generateIdToken(subject = "new-key"))
+          _ <- IO.sleep(600.millis)
+          after <- validator.validate(oldToken)
+        yield
+          before.map(_.subject) shouldBe Right("old-key")
+          newKey.map(_.subject) shouldBe Right("new-key")
+          after.left.toOption.get shouldBe a[OidcError.JwksError]
       }
     }
   }
