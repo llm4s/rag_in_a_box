@@ -45,9 +45,9 @@ docker compose up -d --build
   startup.
 - The schema is created by Flyway migrations on startup.
 
-Compose only passes a fixed list of variables into the container (API keys, `LLM_*`,
-`EMBEDDING_*`, `RAG_*`, `INGEST_*`, `API_KEY`, logging, metrics and hardening settings). To use
-others, e.g. `AUTH_MODE` or `JWT_SECRET`, add them to the `api` service's `environment:`.
+Compose passes every variable in `.env` into the container (`env_file`), with the defaults of
+`application.conf`; only the database connection, the listen address and `INGEST_DIR` (`/data`)
+are fixed by `docker-compose.yml`.
 
 {: .note }
 Compose starts in `open` auth mode: every request is an anonymous administrator. That is fine

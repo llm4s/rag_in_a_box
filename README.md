@@ -75,11 +75,11 @@ Compose starts PostgreSQL + pgvector (host port 15432) and the server (port 8080
 mode**: no authentication, every request is an administrator. That is fine on your own machine,
 not anywhere else; see [Authentication](#authentication).
 
-`docker-compose.yml` passes a fixed list of variables to the server (models, API keys, chunking
-and search settings, `API_KEY`, ingestion, logging, rate limits). To use others, such as
-`AUTH_MODE`, `JWT_SECRET`, `ADMIN_PASSWORD`, `COHERE_API_KEY` or the `OAUTH_*` settings, add them
-to the `api` service's `environment:` block. Files in `./data` (or `INGEST_HOST_DIR`) are
-mounted at `/data` for directory ingestion.
+`docker-compose.yml` passes every variable in `.env` to the server (`env_file`), so any setting
+in [.env.example](.env.example), such as `AUTH_MODE`, `JWT_SECRET` or the `OAUTH_*` settings,
+works as it does with `./run.sh`, with the same defaults. Only the database connection (the
+compose `postgres` service), the listen address and `INGEST_DIR` are fixed. Files in `./data`
+(or `INGEST_HOST_DIR`) are mounted at `/data` for directory ingestion.
 
 ### Local development
 
