@@ -72,8 +72,9 @@ At least the keys for the configured LLM and embedding providers are needed.
 ragbox's tables are created and upgraded by [Flyway](https://documentation.red-gate.com/flyway)
 migrations shipped in the jar; applied migrations are recorded in `flyway_schema_history`. The
 server applies pending migrations at startup, before it serves anything. With several replicas
-this is safe: Flyway holds a PostgreSQL advisory lock while it migrates, so replicas starting
-together wait for each other and each migration runs exactly once.
+this is safe: ragbox holds a PostgreSQL advisory lock for the whole migration run (including
+Flyway's first-run "create or baseline the history table" step, which Flyway's own lock does not
+cover), so replicas starting together wait for each other and each migration runs exactly once.
 
 If you prefer to migrate as a separate step (for example a Kubernetes `Job` or Helm hook that
 runs before the rollout), run the image with `--migrate-only`, which migrates and exits, and
