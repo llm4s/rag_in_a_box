@@ -45,10 +45,49 @@ final case class AppConfig(
         errors += "JWT_SECRET must be explicitly set when auth mode is 'basic' (for multi-instance deployments)"
       } else if (security.auth.jwtSecret.length < 32) {
         errors += "JWT_SECRET must be at least 32 characters for security"
+      } else if (Placeholders.isPlaceholder(security.auth.jwtSecret)) {
+        errors += "JWT_SECRET is still a placeholder value (CHANGE_ME / REPLACE-ME); generate one, e.g. `openssl rand -base64 32`"
       }
-      if (security.auth.basic.adminPassword.isEmpty) {
-        errors += "ADMIN_PASSWORD must be set when auth mode is 'basic'"
+      security.auth.basic.adminPassword match {
+        case None =>
+          errors += "ADMIN_PASSWORD must be set when auth mode is 'basic'"
+        case Some(pw) if Placeholders.isPlaceholder(pw) || pw == "admin" =>
+          errors += "ADMIN_PASSWORD is a placeholder or the old default 'admin'; set a real password"
+        case Some(pw) =>
+          PasswordPolicy(security.auth.passwordMinLength).check(pw).left.foreach(e => errors += s"ADMIN_PASSWORD: $e")
       }
+    }
+    if (security.auth.passwordMinLength < 1) {
+      errors += s"PASSWORD_MIN_LENGTH must be at least 1 (got ${security.auth.passwordMinLength})"
+    }
+    if (security.auth.passwordHashIterations < PasswordHashParams.MinIterations) {
+      errors += s"PASSWORD_HASH_ITERATIONS must be at least ${PasswordHashParams.MinIterations} (got ${security.auth.passwordHashIterations})"
+    }
+    security.apiKey.filter(Placeholders.isPlaceholder).foreach { _ =>
+      errors += "API_KEY is still a placeholder value (CHANGE_ME / REPLACE-ME)"
+    }
+
+    // CORS origins must be origins (scheme://host[:port]), bare host names or *
+    production.cors.allowedOrigins.filterNot(CorsConfig.isValidOrigin).foreach { o =>
+      errors += s"ALLOWED_ORIGINS entry '$o' is not an origin (expected e.g. https://app.example.com or *)"
+    }
+
+    // Rate limiting
+    production.rateLimit.trustedProxyErrors.foreach(errors += _)
+    if (production.rateLimit.maxRequests < 1) {
+      errors += s"RATE_LIMIT_MAX_REQUESTS must be at least 1 (got ${production.rateLimit.maxRequests})"
+    }
+    if (production.rateLimit.windowSeconds < 1) {
+      errors += s"RATE_LIMIT_WINDOW_SECONDS must be at least 1 (got ${production.rateLimit.windowSeconds})"
+    }
+    if (production.rateLimit.maxClients < 1) {
+      errors += s"RATE_LIMIT_MAX_CLIENTS must be at least 1 (got ${production.rateLimit.maxClients})"
+    }
+    if (production.rateLimit.loginMaxAttempts < 0) {
+      errors += s"RATE_LIMIT_LOGIN_MAX_ATTEMPTS must be non-negative (got ${production.rateLimit.loginMaxAttempts})"
+    }
+    if (production.rateLimit.loginWindowSeconds < 1) {
+      errors += s"RATE_LIMIT_LOGIN_WINDOW_SECONDS must be at least 1 (got ${production.rateLimit.loginWindowSeconds})"
     }
 
     // OAuth config validation when mode is OAuth
@@ -65,6 +104,9 @@ final case class AppConfig(
           }
           if (oauth.provider.redirectUri.isEmpty) {
             errors += "OAUTH_REDIRECT_URI required when auth mode is 'oauth'"
+          }
+          if (!oauth.provider.scopes.contains("openid")) {
+            errors += s"OAUTH_SCOPES must include 'openid' (got: ${oauth.provider.scopes.mkString(" ")})"
           }
       }
     }
@@ -347,8 +389,59 @@ final case class AuthConfig(
   jwtSecret: String,
   jwtSecretExplicitlySet: Boolean,  // True if JWT_SECRET was explicitly configured
   jwtExpiration: Long,  // Expiration in seconds (default: 24 hours)
-  trustedProxyHeaders: Boolean = false  // honour X-User-Id / X-Group-Ids from admin credentials
+  trustedProxyHeaders: Boolean = false,  // honour X-User-Id / X-Group-Ids from admin credentials
+  jwtIssuer: String = AuthConfig.DefaultJwtIssuer,      // `iss` of issued JWTs, required on validation
+  jwtAudience: String = AuthConfig.DefaultJwtAudience,  // `aud` of issued JWTs, required on validation
+  passwordMinLength: Int = PasswordPolicy.DefaultMinLength,
+  passwordHashIterations: Int = PasswordHashParams.DefaultIterations
 )
+
+object AuthConfig {
+  val DefaultJwtIssuer: String = "rag-in-a-box"
+  val DefaultJwtAudience: String = "rag-in-a-box"
+}
+
+/**
+ * Recognises the placeholder secrets shipped in templates and examples (`CHANGE_ME...`,
+ * `REPLACE-ME`, `your-...-secret`), so a deployment that forgot to fill them in fails at
+ * startup instead of running with a publicly known secret.
+ */
+object Placeholders {
+  private val Markers =
+    Seq("changeme", "replaceme", "yoursecret", "your32char", "yourjwtsecret", "youradminpassword", "yoursecure")
+
+  def isPlaceholder(value: String): Boolean = {
+    val normalized = value.toLowerCase.filter(_.isLetterOrDigit)
+    Markers.exists(normalized.contains)
+  }
+}
+
+/**
+ * Password rules for user creation, resets, password changes and `ADMIN_PASSWORD`.
+ *
+ * @param minLength minimum number of characters (`PASSWORD_MIN_LENGTH`)
+ */
+final case class PasswordPolicy(minLength: Int = PasswordPolicy.DefaultMinLength) {
+
+  def check(password: String): Either[String, Unit] =
+    if (password.isEmpty) Left("Password is required")
+    else if (password.length < minLength) Left(s"Password must be at least $minLength characters")
+    else if (password.length > PasswordPolicy.MaxLength) Left(s"Password must be at most ${PasswordPolicy.MaxLength} characters")
+    else Right(())
+}
+
+object PasswordPolicy {
+  val DefaultMinLength: Int = 12
+  /** Upper bound, so a huge password cannot be used to burn CPU in the key derivation. */
+  val MaxLength: Int = 1024
+}
+
+/** Parameters of the PBKDF2 password hash (see `org.llm4s.ragbox.auth.PasswordHashing`). */
+object PasswordHashParams {
+  /** OWASP's recommendation for PBKDF2-HMAC-SHA256. */
+  val DefaultIterations: Int = 600000
+  val MinIterations: Int = 1000
+}
 
 /**
  * Basic authentication configuration.
@@ -392,7 +485,8 @@ final case class SecurityConfig(
  * Metrics and observability configuration.
  */
 final case class MetricsConfig(
-  enabled: Boolean
+  enabled: Boolean,
+  requireAuth: Boolean = true  // serve /metrics to administrators only (e.g. Bearer API_KEY)
 )
 
 /**
@@ -418,26 +512,93 @@ final case class ProductionConfig(
 
 /**
  * CORS configuration.
+ *
+ * Cross-origin requests are denied by default (no CORS headers are sent, so browsers block
+ * cross-origin reads); the admin UI is served from the same origin and needs none. An explicit
+ * `ALLOWED_ORIGINS` list allows exactly those origins and takes precedence over
+ * `CORS_ALLOW_ALL_ORIGINS`; `ALLOWED_ORIGINS=*` (or `CORS_ALLOW_ALL_ORIGINS=true` with no list)
+ * allows every origin.
+ *
+ * @param allowedOrigins origins such as `https://app.example.com` (a bare host name matches it
+ *                       over any scheme), or `*`
  */
 final case class CorsConfig(
-  allowedOrigins: Seq[String],
-  allowAllOrigins: Boolean
+  allowedOrigins: Seq[String] = Seq.empty,
+  allowAllOrigins: Boolean = false
 ) {
-  /**
-   * Check if CORS should allow all origins.
-   * True if explicitly enabled or if no specific origins configured.
-   */
-  def isAllowAll: Boolean = allowAllOrigins || allowedOrigins.isEmpty
+  private val explicitOrigins: Seq[String] = allowedOrigins.filterNot(_ == "*")
+
+  /** Every origin is allowed: `ALLOWED_ORIGINS=*`, or allow-all with no explicit list. */
+  def isAllowAll: Boolean =
+    allowedOrigins.contains("*") || (allowAllOrigins && allowedOrigins.isEmpty)
+
+  /** No cross-origin access at all (the default). */
+  def isDenyAll: Boolean = !isAllowAll && explicitOrigins.isEmpty
+
+  /** Whether `origin` (as sent in the `Origin` header) may make cross-origin requests. */
+  def allows(origin: String): Boolean = isAllowAll || {
+    val o = origin.trim.toLowerCase.stripSuffix("/")
+    explicitOrigins.exists { allowed =>
+      val a = allowed.trim.toLowerCase.stripSuffix("/")
+      if (a.contains("://")) o == a else o.endsWith(s"://$a")
+    }
+  }
+
+  def describe: String =
+    if (isAllowAll) "allow all origins"
+    else if (isDenyAll) "same-origin only (no cross-origin access)"
+    else s"restricted to ${explicitOrigins.mkString(", ")}"
+}
+
+object CorsConfig {
+  /** `*`, `scheme://host[:port]` or a bare `host[:port]`: no path, query, user info or spaces. */
+  def isValidOrigin(origin: String): Boolean = {
+    val o = origin.trim.stripSuffix("/")
+    o == "*" || (o.nonEmpty && !o.exists(_.isWhitespace) && {
+      val host = o.split("://", 2) match {
+        case Array(scheme, h) => Option.when(scheme.matches("[A-Za-z][A-Za-z0-9+.-]*"))(h)
+        case _ => Some(o)
+      }
+      host.exists(h => h.nonEmpty && !h.exists(c => c == '/' || c == '?' || c == '#' || c == '@' || c == '*'))
+    })
+  }
 }
 
 /**
  * Rate limiting configuration.
+ *
+ * @param enabled            per-client limit on all requests (health checks and /metrics exempt)
+ * @param maxRequests        requests a client may make per window
+ * @param windowSeconds      window length
+ * @param trustedProxies     IPs / CIDRs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP`
+ *                           identify the client; from anyone else those headers are ignored
+ * @param maxClients         most clients tracked at once (the oldest windows are evicted beyond it)
+ * @param loginMaxAttempts   failed `POST /api/v1/auth/login` attempts allowed per client IP and
+ *                           per username per login window (0 disables); applies even when
+ *                           `enabled` is false
+ * @param loginWindowSeconds login throttling window
  */
 final case class RateLimitConfig(
   enabled: Boolean,
   maxRequests: Int,
-  windowSeconds: Int
-)
+  windowSeconds: Int,
+  trustedProxies: Seq[String] = Seq.empty,
+  maxClients: Int = RateLimitConfig.DefaultMaxClients,
+  loginMaxAttempts: Int = RateLimitConfig.DefaultLoginMaxAttempts,
+  loginWindowSeconds: Int = RateLimitConfig.DefaultLoginWindowSeconds
+) {
+  /** Entries of [[trustedProxies]] that are not IP addresses or CIDRs. */
+  def trustedProxyErrors: List[String] =
+    trustedProxies.toList.filter(p => org.llm4s.ragbox.middleware.ClientIp.parseCidr(p).isEmpty).map { p =>
+      s"RATE_LIMIT_TRUSTED_PROXIES entry '$p' is not an IP address or CIDR"
+    }
+}
+
+object RateLimitConfig {
+  val DefaultMaxClients: Int = 10000
+  val DefaultLoginMaxAttempts: Int = 10
+  val DefaultLoginWindowSeconds: Int = 300
+}
 
 /**
  * Request size limiting configuration.
@@ -559,17 +720,31 @@ object AppConfig {
           jwtSecretExplicitlySet = Try(config.getString("security.auth.jwt-secret")).toOption.exists(_.nonEmpty),
           jwtExpiration = Try(config.getLong("security.auth.jwt-expiration")).getOrElse(86400L),  // 24 hours
           trustedProxyHeaders = config.hasPath("security.auth.trusted-proxy-headers") &&
-            config.getBoolean("security.auth.trusted-proxy-headers")
+            config.getBoolean("security.auth.trusted-proxy-headers"),
+          jwtIssuer = getOptionalString(config, "security.auth.jwt-issuer").getOrElse(AuthConfig.DefaultJwtIssuer),
+          jwtAudience = getOptionalString(config, "security.auth.jwt-audience").getOrElse(AuthConfig.DefaultJwtAudience),
+          passwordMinLength = getOptionalInt(config, "security.auth.password-min-length")
+            .getOrElse(PasswordPolicy.DefaultMinLength),
+          passwordHashIterations = getOptionalInt(config, "security.auth.password-hash-iterations")
+            .getOrElse(PasswordHashParams.DefaultIterations)
         )
       ),
       metrics = MetricsConfig(
-        enabled = Try(config.getBoolean("metrics.enabled")).getOrElse(false)
+        enabled = Try(config.getBoolean("metrics.enabled")).getOrElse(false),
+        // Not wrapped in Try: an invalid METRICS_REQUIRE_AUTH must not silently expose /metrics
+        requireAuth = !config.hasPath("metrics.require-auth") || config.getBoolean("metrics.require-auth")
       ),
       production = ProductionConfig(
         rateLimit = RateLimitConfig(
           enabled = Try(config.getBoolean("production.rate-limit.enabled")).getOrElse(false),
           maxRequests = Try(config.getInt("production.rate-limit.max-requests")).getOrElse(100),
-          windowSeconds = Try(config.getInt("production.rate-limit.window-seconds")).getOrElse(60)
+          windowSeconds = Try(config.getInt("production.rate-limit.window-seconds")).getOrElse(60),
+          trustedProxies = stringList(config, "production.rate-limit.trusted-proxies"),
+          maxClients = getOptionalInt(config, "production.rate-limit.max-clients").getOrElse(RateLimitConfig.DefaultMaxClients),
+          loginMaxAttempts = getOptionalInt(config, "production.rate-limit.login.max-attempts")
+            .getOrElse(RateLimitConfig.DefaultLoginMaxAttempts),
+          loginWindowSeconds = getOptionalInt(config, "production.rate-limit.login.window-seconds")
+            .getOrElse(RateLimitConfig.DefaultLoginWindowSeconds)
         ),
         requestSize = RequestSizeConfig(
           enabled = Try(config.getBoolean("production.request-size.enabled")).getOrElse(true),
@@ -580,11 +755,8 @@ object AppConfig {
           drainConnectionsSeconds = Try(config.getInt("production.shutdown.drain-connections-seconds")).getOrElse(5)
         ),
         cors = CorsConfig(
-          allowedOrigins = Try {
-            import scala.jdk.CollectionConverters._
-            config.getStringList("production.cors.allowed-origins").asScala.toSeq
-          }.getOrElse(Seq.empty),
-          allowAllOrigins = Try(config.getBoolean("production.cors.allow-all-origins")).getOrElse(true)
+          allowedOrigins = stringList(config, "production.cors.allowed-origins"),
+          allowAllOrigins = Try(config.getBoolean("production.cors.allow-all-origins")).getOrElse(false)
         )
       ),
       permissions = PermissionsConfig(
@@ -599,6 +771,21 @@ object AppConfig {
 
   private def getOptionalInt(config: Config, path: String): Option[Int] =
     Try(config.getInt(path)).toOption
+
+  /**
+   * A list setting given either as a HOCON list or as one string split on `separators` (a
+   * regex; env vars can only carry strings).
+   */
+  private def stringList(config: Config, path: String, separators: String = ","): Seq[String] =
+    if (!config.hasPath(path)) Seq.empty
+    else {
+      import scala.jdk.CollectionConverters._
+      Try(config.getStringList(path).asScala.toSeq)
+        .orElse(Try(config.getString(path).split(separators).toSeq))
+        .getOrElse(Seq.empty)
+        .map(_.trim)
+        .filter(_.nonEmpty)
+    }
 
   /**
    * Parse OAuth configuration from config.
@@ -671,8 +858,11 @@ object AppConfig {
         cookieMaxAge = Try(config.getInt("security.auth.oauth.session.cookie-max-age")).getOrElse(86400)
       )
 
+      // OAUTH_SCOPES (space- or comma-separated) replaces the provider preset's scopes
+      val scopes = stringList(config, "security.auth.oauth.scopes", "[,\\s]+").distinct.toList
+
       Some(OAuthConfig(
-        provider = providerConfig,
+        provider = if (scopes.isEmpty) providerConfig else providerConfig.copy(scopes = scopes),
         claimMapping = claimMapping,
         session = sessionConfig,
         pkceEnabled = Try(config.getBoolean("security.auth.oauth.pkce-enabled")).getOrElse(true),

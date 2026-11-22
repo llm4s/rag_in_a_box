@@ -47,10 +47,10 @@ object Main extends IOApp {
       _ <- logger.info(s"Database: ${config.database.effectiveHost}:${config.database.effectivePort}/${config.database.effectiveDatabase}${if (config.database.parsedUrl.isDefined) " (from DATABASE_URL)" else ""}")
       _ <- logger.info("Document registry: PostgreSQL (persistent)")
       _ <- logger.info(s"Authentication: mode=${config.security.auth.mode.toString.toLowerCase}, API key ${if (config.security.apiKey.exists(_.nonEmpty)) "set" else "not set"}${if (!config.security.isEnabled) " (open: every request is an anonymous administrator)" else ""}")
-      _ <- logger.info(s"Metrics endpoint: ${if (config.metrics.enabled) "enabled (/metrics)" else "disabled"}")
-      _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}")
+      _ <- logger.info(s"Metrics endpoint: ${if (!config.metrics.enabled) "disabled" else if (config.metrics.requireAuth) "enabled (/metrics, administrators only)" else "enabled (/metrics, public)"}")
+      _ <- logger.info(s"Rate limiting: ${if (config.production.rateLimit.enabled) s"enabled (${config.production.rateLimit.maxRequests}/${config.production.rateLimit.windowSeconds}s)" else "disabled"}; login throttling: ${if (config.production.rateLimit.loginMaxAttempts > 0) s"${config.production.rateLimit.loginMaxAttempts} failures/${config.production.rateLimit.loginWindowSeconds}s per IP and per username" else "disabled"}; trusted proxies: ${if (config.production.rateLimit.trustedProxies.isEmpty) "none" else config.production.rateLimit.trustedProxies.mkString(", ")}")
       _ <- logger.info(s"Request size limit: ${if (config.production.requestSize.enabled) s"enabled (${config.production.requestSize.maxBodySizeMb}MB)" else "disabled"}")
-      _ <- logger.info(s"CORS: ${if (config.production.cors.isAllowAll) "allow all origins" else s"restricted to ${config.production.cors.allowedOrigins.mkString(", ")}"}")
+      _ <- logger.info(s"CORS: ${config.production.cors.describe}")
       exitCode <- server(config).use(_ => IO.never).as(ExitCode.Success)
     } yield exitCode
   }

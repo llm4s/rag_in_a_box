@@ -164,6 +164,64 @@ config:
   auth:
     # -- Auth mode (open, basic, oauth)
     mode: "basic"
+    # -- Admin username created in basic mode (password: secrets.security.adminPassword)
+    adminUsername: "admin"
+    # -- Minimum password length for users and the admin password
+    passwordMinLength: 12
+    # -- JWT `iss` claim (empty: the app default, rag-in-a-box)
+    jwtIssuer: ""
+    # -- JWT `aud` claim (empty: the app default). Give releases that share a JWT secret
+    # different audiences.
+    jwtAudience: ""
+    # -- Let administrator credentials (e.g. a gateway holding the API key) act for an end user
+    # via X-User-Id / X-Group-Ids headers
+    trustedProxyHeaders: false
+    # -- With trustedProxyHeaders: let X-Admin: true keep administrator rights
+    allowAdminHeader: false
+
+    # OAuth2/OIDC (mode: oauth). The client secret goes in secrets.oauth.clientSecret.
+    oauth:
+      # -- Provider preset: google, azure, okta, keycloak, custom
+      provider: "google"
+      # -- OAuth client ID
+      clientId: ""
+      # -- Redirect URI registered with the provider, e.g. https://ragbox.example.com/api/v1/oauth/callback
+      redirectUri: ""
+      # -- Scopes, space-separated (empty: the provider preset's; must include openid)
+      scopes: ""
+      # -- Comma-separated groups whose members are administrators
+      adminGroups: ""
+      # -- Where sessions live: memory or postgres (use postgres with more than one replica)
+      sessionStorage: "postgres"
+      # -- Secure session cookies (HTTPS); false only for local HTTP testing
+      cookieSecure: true
+      # -- Groups claim name
+      groupsClaim: ""
+      # -- Azure AD tenant ID (provider: azure)
+      azureTenantId: ""
+      # -- Okta domain (provider: okta)
+      oktaDomain: ""
+      # -- Keycloak base URL (provider: keycloak)
+      keycloakBaseUrl: ""
+      # -- Keycloak realm (provider: keycloak)
+      keycloakRealm: ""
+      # Custom provider endpoints (provider: custom)
+      # -- Issuer
+      issuer: ""
+      # -- Authorization endpoint
+      authorizationEndpoint: ""
+      # -- Token endpoint
+      tokenEndpoint: ""
+      # -- Userinfo endpoint
+      userinfoEndpoint: ""
+      # -- JWKS URI
+      jwksUri: ""
+
+  # CORS
+  cors:
+    # -- Origins (comma-separated) allowed to call the API from a browser, or "*". Empty: same
+    # origin only (the admin UI is same-origin and needs nothing).
+    allowedOrigins: ""
 
   # Production hardening
   rateLimit:
@@ -173,6 +231,17 @@ config:
     maxRequests: 100
     # -- Window size in seconds
     windowSeconds: 60
+    # -- Reverse proxies (IPs / CIDRs, comma-separated) whose X-Forwarded-For identifies the
+    # client. The default trusts the private ranges, where an in-cluster ingress controller
+    # lives; narrow it to your ingress pods' / load balancer's range if you can. Set "" if the
+    # pods are reachable directly from untrusted private addresses.
+    trustedProxies: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # -- Most clients tracked at once
+    maxClients: 10000
+    # -- Failed logins allowed per client IP and per username per login window (0 disables)
+    loginMaxAttempts: 10
+    # -- Login throttling window in seconds
+    loginWindowSeconds: 300
 
   requestSize:
     # -- Enable request size limiting
@@ -190,6 +259,10 @@ config:
   metrics:
     # -- Enable Prometheus metrics
     enabled: true
+    # -- Serve /metrics to administrators only. Annotation-based scraping (podAnnotations)
+    # sends no credentials: scrape with a bearer token (API key or admin-scoped rat_ token), or
+    # set false and keep /metrics away from the public ingress.
+    requireAuth: true
 
   logging:
     # -- Log level (DEBUG, INFO, WARN, ERROR)
@@ -210,9 +283,15 @@ secrets:
     # -- JWT secret for token signing (32+ chars). If empty, a random value is
     # generated on install and kept across upgrades.
     jwtSecret: ""
-    # -- Admin password for basic auth. If empty, a random value is generated on
-    # install and kept across upgrades (see NOTES for how to read it).
+    # -- Admin password for basic auth (12+ characters). If empty, a random value is
+    # generated on install and kept across upgrades (see NOTES for how to read it).
     adminPassword: ""
+    # -- Static administrator API key (optional; sent as X-API-Key or Authorization: Bearer)
+    apiKey: ""
+
+  oauth:
+    # -- OAuth client secret (mode: oauth)
+    clientSecret: ""
 
   # API keys (leave empty if not using)
   apiKeys:
@@ -224,7 +303,7 @@ secrets:
     voyage: ""
 
   # -- Use an existing secret instead of creating one (must contain jwt-secret,
-  # admin-password and optionally the *-api-key keys)
+  # admin-password and optionally the *-api-key, api-key and oauth-client-secret keys)
   existingSecret: ""
 
 # =============================================================================

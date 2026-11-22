@@ -36,12 +36,49 @@ data:
   RAG_FUSION_STRATEGY: {{ .Values.config.rag.fusionStrategy | quote }}
 
   # Authentication
-  AUTH_MODE: {{ .Values.config.auth.mode | quote }}
+  {{- $auth := .Values.config.auth }}
+  AUTH_MODE: {{ $auth.mode | quote }}
+  ADMIN_USERNAME: {{ $auth.adminUsername | default "admin" | quote }}
+  PASSWORD_MIN_LENGTH: {{ $auth.passwordMinLength | default 12 | quote }}
+  AUTH_TRUSTED_PROXY_HEADERS: {{ $auth.trustedProxyHeaders | default false | quote }}
+  ALLOW_ADMIN_HEADER: {{ $auth.allowAdminHeader | default false | quote }}
+  {{- with $auth.jwtIssuer }}
+  JWT_ISSUER: {{ . | quote }}
+  {{- end }}
+  {{- with $auth.jwtAudience }}
+  JWT_AUDIENCE: {{ . | quote }}
+  {{- end }}
+  {{- if eq $auth.mode "oauth" }}
+  {{- $oauth := $auth.oauth }}
+
+  # OAuth2/OIDC (client secret from the secret)
+  OAUTH_PROVIDER: {{ $oauth.provider | quote }}
+  OAUTH_CLIENT_ID: {{ required "config.auth.oauth.clientId is required when config.auth.mode=oauth" $oauth.clientId | quote }}
+  OAUTH_REDIRECT_URI: {{ required "config.auth.oauth.redirectUri is required when config.auth.mode=oauth" $oauth.redirectUri | quote }}
+  OAUTH_SESSION_STORAGE: {{ $oauth.sessionStorage | default "postgres" | quote }}
+  OAUTH_SESSION_COOKIE_SECURE: {{ $oauth.cookieSecure | quote }}
+  {{- range $key, $env := dict "scopes" "OAUTH_SCOPES" "adminGroups" "OAUTH_ADMIN_GROUPS" "groupsClaim" "OAUTH_CLAIM_GROUPS" "azureTenantId" "OAUTH_AZURE_TENANT_ID" "oktaDomain" "OAUTH_OKTA_DOMAIN" "keycloakBaseUrl" "OAUTH_KEYCLOAK_BASE_URL" "keycloakRealm" "OAUTH_KEYCLOAK_REALM" "issuer" "OAUTH_ISSUER" "authorizationEndpoint" "OAUTH_AUTHORIZATION_ENDPOINT" "tokenEndpoint" "OAUTH_TOKEN_ENDPOINT" "userinfoEndpoint" "OAUTH_USERINFO_ENDPOINT" "jwksUri" "OAUTH_JWKS_URI" }}
+  {{- with index $oauth $key }}
+  {{ $env }}: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
+  # CORS (empty: same-origin only)
+  {{- with .Values.config.cors.allowedOrigins }}
+  ALLOWED_ORIGINS: {{ . | quote }}
+  {{- end }}
 
   # Rate limiting
   RATE_LIMIT_ENABLED: {{ .Values.config.rateLimit.enabled | quote }}
   RATE_LIMIT_MAX_REQUESTS: {{ .Values.config.rateLimit.maxRequests | quote }}
   RATE_LIMIT_WINDOW_SECONDS: {{ .Values.config.rateLimit.windowSeconds | quote }}
+  {{- with .Values.config.rateLimit.trustedProxies }}
+  RATE_LIMIT_TRUSTED_PROXIES: {{ . | quote }}
+  {{- end }}
+  RATE_LIMIT_MAX_CLIENTS: {{ .Values.config.rateLimit.maxClients | default 10000 | quote }}
+  RATE_LIMIT_LOGIN_MAX_ATTEMPTS: {{ .Values.config.rateLimit.loginMaxAttempts | quote }}
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: {{ .Values.config.rateLimit.loginWindowSeconds | default 300 | quote }}
 
   # Request size
   REQUEST_SIZE_ENABLED: {{ .Values.config.requestSize.enabled | quote }}
@@ -53,5 +90,6 @@ data:
 
   # Observability
   METRICS_ENABLED: {{ .Values.config.metrics.enabled | quote }}
+  METRICS_REQUIRE_AUTH: {{ .Values.config.metrics.requireAuth | quote }}
   LOG_LEVEL: {{ .Values.config.logging.level | quote }}
   LOG_FORMAT: {{ .Values.config.logging.format | quote }}

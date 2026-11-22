@@ -5,14 +5,17 @@ import io.circe._
 import io.circe.generic.semiauto._
 import io.circe.parser._
 import io.circe.syntax._
-import org.llm4s.ragbox.config.{AuthConfig, AuthMode, BasicAuthConfig}
+import org.llm4s.ragbox.config.{AuthConfig, AuthMode, PasswordPolicy}
+import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.slf4j.Slf4jLogger
 
 import java.nio.charset.StandardCharsets
-import java.security.{MessageDigest, SecureRandom}
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import scala.util.Try
 
 /**
  * JWT token payload.
@@ -22,7 +25,9 @@ final case class JwtPayload(
   username: String,
   role: String,
   exp: Long,           // Expiration timestamp
-  iat: Long            // Issued at timestamp
+  iat: Long,           // Issued at timestamp
+  iss: String,         // Issuer (AuthConfig.jwtIssuer)
+  aud: String          // Audience (AuthConfig.jwtAudience)
 )
 
 object JwtPayload {
@@ -50,72 +55,94 @@ object TokenValidationResult {
 }
 
 /**
- * Authentication service.
- *
- * Handles password hashing, JWT token generation and validation.
+ * Authentication service: password hashing ([[PasswordHashing]]), the bootstrap admin account,
+ * password logins and JWT issue/validation.
  */
 class AuthService(
   userRegistry: UserRegistry,
   authConfig: AuthConfig
 ) {
 
-  // PBKDF2 iterations - 100,000 for strong password hashing (OWASP recommendation)
-  private val PBKDF2_ITERATIONS = 100000
+  private val logger: Logger[IO] = Slf4jLogger.getLoggerFromClass[IO](classOf[AuthService])
+
+  private val iterations = authConfig.passwordHashIterations
+  private val policy = PasswordPolicy(authConfig.passwordMinLength)
 
   private val jwtHeader = """{"alg":"HS256","typ":"JWT"}"""
   private val base64Encoder = Base64.getUrlEncoder.withoutPadding()
   private val base64Decoder = Base64.getUrlDecoder
 
+  /** Verified against for unknown users, so a login takes as long whether or not the user exists. */
+  private lazy val dummyHash = PasswordHashing.hash("ragbox-timing-equaliser", iterations)
+
   /**
-   * Initialize the auth service.
-   * Creates the default admin user if no users exist.
-   * For basic auth mode, uses ADMIN_PASSWORD env var.
-   * For open mode, uses "admin" as default password for convenience.
+   * Prepare the user table at startup (basic mode only; the other modes have no password login).
+   *
+   *  - No users yet: create the admin account `ADMIN_USERNAME` with `ADMIN_PASSWORD` (config
+   *    validation makes sure basic mode has a real one).
+   *  - The admin account still has the password `admin` that earlier versions seeded in open
+   *    mode: reset it to `ADMIN_PASSWORD`, so a well-known password never survives into basic
+   *    mode.
+   *
+   * No account is ever created with a default password.
    */
-  def initialize(): IO[Unit] = {
-    userRegistry.count().flatMap { userCount =>
-      if (userCount > 0) {
-        IO.unit  // Users already exist, skip bootstrap
-      } else {
-        // No users exist - create default admin
-        val adminUsername = authConfig.basic.adminUsername
-        val adminPassword = authConfig.mode match {
-          case AuthMode.Basic =>
-            authConfig.basic.adminPassword.getOrElse {
-              throw new RuntimeException("ADMIN_PASSWORD must be set when auth.mode=basic")
+  def initialize(): IO[Unit] =
+    if (authConfig.mode != AuthMode.Basic) IO.unit
+    else {
+      val adminUsername = authConfig.basic.adminUsername
+      IO.fromOption(authConfig.basic.adminPassword.filter(_.nonEmpty))(
+        new IllegalStateException("ADMIN_PASSWORD must be set when auth.mode=basic")
+      ).flatMap { adminPassword =>
+        userRegistry.count().flatMap {
+          case 0 =>
+            hash(adminPassword).flatMap(userRegistry.create(adminUsername, _, UserRole.Admin)).flatMap { user =>
+              logger.info(s"Created admin user '${user.username}' (password from ADMIN_PASSWORD)")
             }
           case _ =>
-            // For open mode, use provided password or default to "admin"
-            authConfig.basic.adminPassword.getOrElse("admin")
-        }
-        val hash = hashPassword(adminPassword)
-        userRegistry.create(adminUsername, hash, UserRole.Admin).flatMap { user =>
-          IO(println(s"  Created default admin user: ${user.username}"))
+            userRegistry.getByUsername(adminUsername).flatMap {
+              case Some(user) =>
+                verify(AuthService.LegacyDefaultPassword, user.passwordHash).flatMap {
+                  case false => IO.unit
+                  case true =>
+                    hash(adminPassword).flatMap(userRegistry.updatePassword(user.id, _)) *>
+                      logger.warn(
+                        s"User '$adminUsername' still had the old default password 'admin'; " +
+                          "it has been reset to ADMIN_PASSWORD"
+                      )
+                }
+              case None => IO.unit
+            }
         }
       }
     }
-  }
 
   /**
-   * Authenticate user with username and password.
+   * Authenticate user with username and password. Unknown users and wrong passwords give the
+   * same result and take as long. A successful login upgrades a legacy or weaker password hash.
    */
-  def authenticate(username: String, password: String): IO[AuthResult] = {
-    userRegistry.getByUsername(username).map {
-      case Some(user) if verifyPassword(password, user.passwordHash) =>
-        val token = generateToken(user)
-        AuthResult.Success(user, token)
-      case Some(_) =>
-        AuthResult.Failure("Invalid password")
+  def authenticate(username: String, password: String): IO[AuthResult] =
+    userRegistry.getByUsername(username).flatMap {
+      case Some(user) =>
+        verify(password, user.passwordHash).flatMap {
+          case true =>
+            val upgrade =
+              if (PasswordHashing.needsRehash(user.passwordHash, iterations))
+                hash(password).flatMap(userRegistry.updatePassword(user.id, _)).void
+                  .handleErrorWith(e => logger.warn(s"Could not upgrade the password hash of '${user.username}': ${e.getMessage}"))
+              else IO.unit
+            upgrade.as(AuthResult.Success(user, generateToken(user)))
+          case false => IO.pure(AuthResult.Failure(AuthService.LoginFailed))
+        }
       case None =>
-        AuthResult.Failure("User not found")
+        verify(password, dummyHash).as(AuthResult.Failure(AuthService.LoginFailed))
     }
-  }
 
   /**
-   * Validate a JWT token.
+   * Validate a JWT: the header must name HS256, the signature must match, and the token must
+   * be unexpired and carry this server's `iss` and `aud`.
    */
   def validateToken(token: String): TokenValidationResult = {
-    val parts = token.split("\\.")
+    val parts = token.split("\\.", -1)
     if (parts.length != 3) {
       return TokenValidationResult.Invalid("Invalid token format")
     }
@@ -123,6 +150,14 @@ class AuthService(
     val headerB64 = parts(0)
     val payloadB64 = parts(1)
     val signature = parts(2)
+
+    // Only HS256 is ever issued; anything else (none, RS256, ...) is rejected outright
+    val algOk = Try(new String(base64Decoder.decode(headerB64), StandardCharsets.UTF_8)).toOption
+      .flatMap(parse(_).toOption)
+      .exists(_.hcursor.get[String]("alg").contains("HS256"))
+    if (!algOk) {
+      return TokenValidationResult.Invalid("Unsupported token algorithm")
+    }
 
     // Verify signature (constant-time, so response timing does not reveal how much matched)
     val expectedSignature = sign(s"$headerB64.$payloadB64")
@@ -139,7 +174,11 @@ class AuthService(
       parse(payloadJson).flatMap(_.as[JwtPayload]) match {
         case Right(payload) =>
           val now = Instant.now().getEpochSecond
-          if (payload.exp < now) {
+          if (payload.iss != authConfig.jwtIssuer) {
+            TokenValidationResult.Invalid("Invalid token issuer")
+          } else if (payload.aud != authConfig.jwtAudience) {
+            TokenValidationResult.Invalid("Invalid token audience")
+          } else if (payload.exp < now) {
             TokenValidationResult.Expired
           } else {
             TokenValidationResult.Valid(
@@ -160,40 +199,48 @@ class AuthService(
   /**
    * Create a new user (admin only).
    */
-  def createUser(username: String, password: String, role: UserRole): IO[Either[String, User]] = {
-    userRegistry.exists(username).flatMap {
-      case true => IO.pure(Left("Username already exists"))
-      case false =>
-        val hash = hashPassword(password)
-        userRegistry.create(username, hash, role).map(Right(_))
-    }
-  }
+  def createUser(username: String, password: String, role: UserRole): IO[Either[String, User]] =
+    if (username.trim.isEmpty) IO.pure(Left("Username is required"))
+    else
+      policy.check(password) match {
+        case Left(error) => IO.pure(Left(error))
+        case Right(_) =>
+          userRegistry.exists(username).flatMap {
+            case true => IO.pure(Left("Username already exists"))
+            case false => hash(password).flatMap(userRegistry.create(username, _, role)).map(Right(_))
+          }
+      }
 
   /**
    * Change user password.
    */
-  def changePassword(userId: Int, oldPassword: String, newPassword: String): IO[Either[String, Unit]] = {
+  def changePassword(userId: Int, oldPassword: String, newPassword: String): IO[Either[String, Unit]] =
     userRegistry.getById(userId).flatMap {
-      case Some(user) if verifyPassword(oldPassword, user.passwordHash) =>
-        val newHash = hashPassword(newPassword)
-        userRegistry.updatePassword(userId, newHash).map(_ => Right(()))
-      case Some(_) =>
-        IO.pure(Left("Invalid current password"))
+      case Some(user) =>
+        verify(oldPassword, user.passwordHash).flatMap {
+          case false => IO.pure(Left("Invalid current password"))
+          case true =>
+            policy.check(newPassword) match {
+              case Left(error) => IO.pure(Left(error))
+              case Right(_) => hash(newPassword).flatMap(userRegistry.updatePassword(userId, _)).as(Right(()))
+            }
+        }
       case None =>
         IO.pure(Left("User not found"))
     }
-  }
 
   /**
    * Reset user password (admin only).
    */
-  def resetPassword(userId: Int, newPassword: String): IO[Either[String, Unit]] = {
-    val newHash = hashPassword(newPassword)
-    userRegistry.updatePassword(userId, newHash).map { success =>
-      if (success) Right(())
-      else Left("User not found")
+  def resetPassword(userId: Int, newPassword: String): IO[Either[String, Unit]] =
+    policy.check(newPassword) match {
+      case Left(error) => IO.pure(Left(error))
+      case Right(_) =>
+        hash(newPassword).flatMap(userRegistry.updatePassword(userId, _)).map { success =>
+          if (success) Right(())
+          else Left("User not found")
+        }
     }
-  }
 
   /**
    * Generate a JWT token for the user.
@@ -205,7 +252,9 @@ class AuthService(
       username = user.username,
       role = user.role.name,
       exp = now + authConfig.jwtExpiration,
-      iat = now
+      iat = now,
+      iss = authConfig.jwtIssuer,
+      aud = authConfig.jwtAudience
     )
 
     val headerB64 = base64Encoder.encodeToString(jwtHeader.getBytes(StandardCharsets.UTF_8))
@@ -215,45 +264,15 @@ class AuthService(
     s"$headerB64.$payloadB64.$signature"
   }
 
-  /**
-   * Hash a password using PBKDF2-like approach with SHA-256.
-   */
-  def hashPassword(password: String): String = {
-    val salt = new Array[Byte](16)
-    new SecureRandom().nextBytes(salt)
-    val hash = pbkdf2(password, salt, PBKDF2_ITERATIONS)
-    val saltB64 = Base64.getEncoder.encodeToString(salt)
-    val hashB64 = Base64.getEncoder.encodeToString(hash)
-    s"$saltB64:$hashB64"
-  }
+  /** Hash a password (PBKDF2-HMAC-SHA256 with the configured iterations). */
+  def hashPassword(password: String): String = PasswordHashing.hash(password, iterations)
 
-  /**
-   * Verify a password against a hash.
-   */
-  def verifyPassword(password: String, storedHash: String): Boolean = {
-    val parts = storedHash.split(":")
-    if (parts.length != 2) return false
+  /** Verify a password against a stored hash (current or legacy format). */
+  def verifyPassword(password: String, storedHash: String): Boolean = PasswordHashing.verify(password, storedHash)
 
-    try {
-      val salt = Base64.getDecoder.decode(parts(0))
-      val expectedHash = Base64.getDecoder.decode(parts(1))
-      val actualHash = pbkdf2(password, salt, PBKDF2_ITERATIONS)
-      MessageDigest.isEqual(expectedHash, actualHash)
-    } catch {
-      case _: Exception => false
-    }
-  }
-
-  private def pbkdf2(password: String, salt: Array[Byte], iterations: Int): Array[Byte] = {
-    val mac = Mac.getInstance("HmacSHA256")
-    mac.init(new SecretKeySpec(password.getBytes(StandardCharsets.UTF_8), "HmacSHA256"))
-
-    var result = salt
-    for (_ <- 0 until iterations) {
-      result = mac.doFinal(result)
-    }
-    result
-  }
+  // Key derivation is deliberately slow: keep it off the compute pool
+  private def hash(password: String): IO[String] = IO.blocking(hashPassword(password))
+  private def verify(password: String, storedHash: String): IO[Boolean] = IO.blocking(verifyPassword(password, storedHash))
 
   private def sign(data: String): String = {
     val mac = Mac.getInstance("HmacSHA256")
@@ -264,6 +283,11 @@ class AuthService(
 }
 
 object AuthService {
+
+  /** The admin password earlier versions seeded in open mode; never accepted in basic mode. */
+  val LegacyDefaultPassword = "admin"
+
+  private val LoginFailed = "Invalid username or password"
 
   /**
    * Create and initialize an auth service.

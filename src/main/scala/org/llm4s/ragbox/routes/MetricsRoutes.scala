@@ -3,6 +3,7 @@ package org.llm4s.ragbox.routes
 import cats.effect.IO
 import org.http4s._
 import org.http4s.dsl.io._
+import org.llm4s.ragbox.auth.Principal
 import org.llm4s.ragbox.service.RAGService
 
 import java.lang.management.ManagementFactory
@@ -12,24 +13,33 @@ import java.lang.management.ManagementFactory
  *
  * Exposes metrics in Prometheus text format at /metrics.
  * Includes RAG stats, JVM metrics, and system info.
+ *
+ * [[authedRoutes]] (the default, `METRICS_REQUIRE_AUTH=true`) serve administrators only, e.g.
+ * a scraper sending `Authorization: Bearer <API_KEY>`; [[routes]] are public.
  */
 object MetricsRoutes {
 
   private val startTime: Long = System.currentTimeMillis()
 
+  /** Public `GET /metrics` (`METRICS_REQUIRE_AUTH=false`). */
   def routes(ragService: RAGService): HttpRoutes[IO] = HttpRoutes.of[IO] {
-
-    // GET /metrics - Prometheus metrics
-    case GET -> Root / "metrics" =>
-      for {
-        stats <- ragService.getStats.attempt
-        readiness <- ragService.readinessCheck.attempt
-        metrics = buildMetrics(stats, readiness)
-        response <- Ok(metrics).map(_.withContentType(
-          headers.`Content-Type`(MediaType.text.plain)
-        ))
-      } yield response
+    case GET -> Root / "metrics" => metrics(ragService)
   }
+
+  /** `GET /metrics` for administrators only. */
+  def authedRoutes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+    case GET -> Root / "metrics" as principal => Authz.requireAdmin(principal)(metrics(ragService))
+  }
+
+  private def metrics(ragService: RAGService): IO[Response[IO]] =
+    for {
+      stats <- ragService.getStats.attempt
+      readiness <- ragService.readinessCheck.attempt
+      metrics = buildMetrics(stats, readiness)
+      response <- Ok(metrics).map(_.withContentType(
+        headers.`Content-Type`(MediaType.text.plain)
+      ))
+    } yield response
 
   private def buildMetrics(
     statsResult: Either[Throwable, org.llm4s.ragbox.model.StatsResponse],

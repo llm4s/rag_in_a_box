@@ -68,7 +68,14 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `config.embedding.provider` | Embedding provider | `openai` |
 | `postgresql.enabled` | Deploy bundled PostgreSQL + pgvector StatefulSet | `true` |
 | `secrets.security.jwtSecret` | JWT signing secret | generated if empty |
-| `secrets.security.adminPassword` | Admin password (basic auth) | generated if empty |
+| `secrets.security.adminPassword` | Admin password (basic auth, 12+ characters) | generated if empty |
+| `secrets.security.apiKey` | Static administrator API key | none |
+| `secrets.oauth.clientSecret` | OAuth client secret (oauth mode) | none |
+| `config.auth.oauth.*` | OAuth provider, client ID, redirect URI, scopes, admin groups, ... | see values.yaml |
+| `config.cors.allowedOrigins` | Origins allowed to call the API from a browser (`*` for any) | same-origin only |
+| `config.rateLimit.trustedProxies` | Proxies whose `X-Forwarded-For` is believed | private ranges |
+| `config.rateLimit.loginMaxAttempts` | Failed logins per IP and per username per window | `10` |
+| `config.metrics.requireAuth` | `/metrics` for administrators only | `true` |
 | `podSecurityContext` / `securityContext` | Non-root UID 10001, read-only root FS, no privilege escalation, all capabilities dropped | secure defaults |
 
 ### Generated secrets
@@ -144,16 +151,43 @@ ingress:
 
 ### OAuth Configuration
 
-For OAuth authentication:
-
 ```yaml
 config:
   auth:
     mode: oauth
-
-# Add OAuth-specific environment variables via extraEnv
-# See the documentation for full OAuth setup
+    oauth:
+      provider: keycloak            # google, azure, okta, keycloak, custom
+      clientId: ragbox
+      redirectUri: https://ragbox.example.com/api/v1/oauth/callback
+      keycloakBaseUrl: https://sso.example.com
+      keycloakRealm: corp
+      scopes: "openid profile email groups"
+      adminGroups: ragbox-admins
+      sessionStorage: postgres      # needed with more than one replica
+secrets:
+  oauth:
+    clientSecret: "..."
 ```
+
+With `secrets.existingSecret`, put the client secret under the key `oauth-client-secret` (and an
+optional static API key under `api-key`).
+
+### Reverse proxies, rate limiting and CORS
+
+The app believes `X-Forwarded-For` only from `config.rateLimit.trustedProxies`. The default
+trusts the private address ranges, where an in-cluster ingress controller runs; narrow it to your
+ingress controller's or load balancer's range where you can. Failed logins are throttled per
+client IP and per username (`loginMaxAttempts` per `loginWindowSeconds`).
+
+Cross-origin browser access is off by default (the admin UI is same-origin); list origins in
+`config.cors.allowedOrigins` if a browser app on another origin calls the API.
+
+### Metrics
+
+`/metrics` is for administrators only (`config.metrics.requireAuth: true`). The
+`prometheus.io/*` pod annotations cannot send credentials: either scrape with a bearer
+credential (the API key or an admin-scoped `rat_` token, e.g. in a ServiceMonitor's
+`authorization`), or set `requireAuth: false` and keep `/metrics` off the public ingress.
 
 ## Upgrading
 

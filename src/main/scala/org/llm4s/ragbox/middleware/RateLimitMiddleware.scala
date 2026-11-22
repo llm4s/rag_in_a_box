@@ -2,195 +2,228 @@ package org.llm4s.ragbox.middleware
 
 import cats.data.{Kleisli, OptionT}
 import cats.effect.{Clock, IO, Ref}
-import cats.syntax.all._
+import fs2.{Chunk, Stream}
+import io.circe.parser.parse
+import io.circe.syntax._
 import org.http4s._
-import org.http4s.dsl.io._
+import org.http4s.circe._
+import org.llm4s.ragbox.config.RateLimitConfig
 import org.typelevel.ci.CIStringSyntax
 
-import java.util.concurrent.TimeUnit
+import scala.collection.immutable.VectorMap
 import scala.concurrent.duration._
 
 /**
- * Rate limiting middleware for API protection.
+ * Rate limiting, applied in front of authentication so that failed-authentication traffic is
+ * limited as well.
  *
- * Implements a sliding window rate limiter using in-memory storage.
- * Tracks requests per IP address and enforces configurable limits.
+ *  - '''Per client''' (when enabled): at most `maxRequests` requests per `window` per client
+ *    IP. Health checks and `/metrics` are exempt.
+ *  - '''Login throttling''' (on unless `loginMaxAttempts` is 0, independently of the per-client
+ *    limit): after `loginMaxAttempts` failed `POST /api/v1/auth/login` attempts within
+ *    `loginWindow`, from one client IP or for one username, further attempts answer 429 until the
+ *    window ends. A successful login clears the username's count.
+ *
+ * Client IPs come from [[ClientIp]]: forwarding headers count only from trusted proxies. Every
+ * counter is a bounded map (`maxClients` entries); expired windows are dropped as new ones are
+ * added and, beyond the bound, the oldest windows are evicted, so spoofed or rotating addresses
+ * cannot grow memory without limit.
  */
 object RateLimitMiddleware {
 
-  /**
-   * Rate limit configuration.
-   *
-   * @param maxRequests Maximum requests allowed in the window
-   * @param window Time window duration
-   * @param enabled Whether rate limiting is enabled
-   */
   final case class Config(
     maxRequests: Int,
     window: FiniteDuration,
-    enabled: Boolean
-  )
+    enabled: Boolean,
+    trustedProxies: Seq[String] = Seq.empty,
+    maxClients: Int = RateLimitConfig.DefaultMaxClients,
+    loginMaxAttempts: Int = RateLimitConfig.DefaultLoginMaxAttempts,
+    loginWindow: FiniteDuration = RateLimitConfig.DefaultLoginWindowSeconds.seconds
+  ) {
+    def loginThrottled: Boolean = loginMaxAttempts > 0
+  }
 
   object Config {
-    val default: Config = Config(
-      maxRequests = 100,
-      window = 1.minute,
-      enabled = false
+    val default: Config = Config(maxRequests = 100, window = 1.minute, enabled = false)
+
+    def from(c: RateLimitConfig): Config = Config(
+      maxRequests = c.maxRequests,
+      window = c.windowSeconds.seconds,
+      enabled = c.enabled,
+      trustedProxies = c.trustedProxies,
+      maxClients = c.maxClients,
+      loginMaxAttempts = c.loginMaxAttempts,
+      loginWindow = c.loginWindowSeconds.seconds
     )
   }
 
-  /**
-   * Request record for tracking.
-   */
-  final case class RequestRecord(
-    count: Int,
-    windowStart: Long
+  /** The counters behind one middleware instance. */
+  final class Limiters private[RateLimitMiddleware] (
+    val requests: WindowCounter,
+    val loginsByIp: WindowCounter,
+    val loginsByUser: WindowCounter
   )
 
-  /**
-   * Rate limit state tracking requests per IP.
-   */
-  final case class RateLimitState(
-    requests: Map[String, RequestRecord]
-  )
+  def createLimiters(config: Config): IO[Limiters] =
+    for {
+      requests <- WindowCounter.create(config.window, config.maxClients)
+      byIp <- WindowCounter.create(config.loginWindow, config.maxClients)
+      byUser <- WindowCounter.create(config.loginWindow, config.maxClients)
+    } yield new Limiters(requests, byIp, byUser)
 
-  object RateLimitState {
-    val empty: RateLimitState = RateLimitState(Map.empty)
-  }
+  val LoginPath = "/api/v1/auth/login"
 
-  /**
-   * Create rate limiting middleware.
-   *
-   * @param config Rate limit configuration
-   * @param state Shared state for request tracking
-   * @return Middleware that enforces rate limits
-   */
-  def apply(config: Config, state: Ref[IO, RateLimitState])(routes: HttpRoutes[IO]): HttpRoutes[IO] = {
-    if (!config.enabled) {
-      routes
-    } else {
-      Kleisli { (request: Request[IO]) =>
-        // Skip rate limiting for health endpoints
-        if (isHealthEndpoint(request)) {
-          routes(request)
-        } else {
-          for {
-            clientIp <- OptionT.liftF(IO.pure(extractClientIp(request)))
-            now <- OptionT.liftF(Clock[IO].realTime.map(_.toMillis))
-            allowed <- OptionT.liftF(checkAndUpdateLimit(state, config, clientIp, now))
-            response <- if (allowed) {
-              routes(request)
-            } else {
-              OptionT.liftF(rateLimitExceeded(config))
-            }
-          } yield response
+  def apply(config: Config, limiters: Limiters)(routes: HttpRoutes[IO]): HttpRoutes[IO] = {
+    val clientIp = ClientIp(config.trustedProxies)
+    Kleisli { (request: Request[IO]) =>
+      val ip = clientIp(request)
+      val throttled =
+        if (config.loginThrottled && request.method == Method.POST && request.pathInfo.renderString == LoginPath)
+          login(config, limiters, ip, request, routes)
+        else routes(request)
+
+      if (!config.enabled || isExempt(request)) throttled
+      else
+        OptionT.liftF(limiters.requests.tryAcquire(ip, config.maxRequests)).flatMap { allowed =>
+          if (allowed) throttled
+          else OptionT.liftF(tooManyRequests("Rate limit exceeded", config.maxRequests, config.window))
         }
-      }
     }
   }
 
   /**
-   * Create a new rate limit state reference.
+   * Login throttling. Each attempt is counted before it runs (so concurrent attempts cannot
+   * overshoot the limit) and refunded unless it answers 401; a success also clears the
+   * username's count.
    */
-  def createState: IO[Ref[IO, RateLimitState]] =
-    Ref.of[IO, RateLimitState](RateLimitState.empty)
-
-  /**
-   * Check if request is within rate limit and update counter.
-   */
-  private def checkAndUpdateLimit(
-    state: Ref[IO, RateLimitState],
+  private def login(
     config: Config,
-    clientIp: String,
-    now: Long
-  ): IO[Boolean] = {
-    val windowMs = config.window.toMillis
+    limiters: Limiters,
+    ip: String,
+    request: Request[IO],
+    routes: HttpRoutes[IO]
+  ): OptionT[IO, Response[IO]] =
+    OptionT.liftF(request.body.compile.to(Chunk)).flatMap { body =>
+      val username = usernameOf(body)
+      val max = config.loginMaxAttempts
+      val acquire: IO[Boolean] =
+        limiters.loginsByIp.tryAcquire(ip, max).flatMap {
+          case false => IO.pure(false)
+          case true =>
+            username.fold(IO.pure(true))(limiters.loginsByUser.tryAcquire(_, max)).flatTap { userOk =>
+              if (userOk) IO.unit else limiters.loginsByIp.release(ip)
+            }
+        }
+      def refund(succeeded: Boolean): IO[Unit] =
+        limiters.loginsByIp.release(ip) *>
+          username.fold(IO.unit)(u => if (succeeded) limiters.loginsByUser.reset(u) else limiters.loginsByUser.release(u))
 
-    state.modify { s =>
-      val record = s.requests.get(clientIp)
-
-      record match {
-        case Some(r) if now - r.windowStart < windowMs =>
-          // Within current window
-          if (r.count >= config.maxRequests) {
-            // Limit exceeded
-            (s, false)
-          } else {
-            // Increment counter
-            val updated = s.copy(
-              requests = s.requests.updated(clientIp, r.copy(count = r.count + 1))
-            )
-            (updated, true)
-          }
-
-        case _ =>
-          // New window or expired
-          val updated = s.copy(
-            requests = s.requests.updated(clientIp, RequestRecord(1, now))
+      OptionT.liftF(acquire).flatMap { allowed =>
+        if (!allowed) OptionT.liftF(tooManyRequests("Too many failed login attempts", max, config.loginWindow))
+        else
+          OptionT(
+            routes(request.withBodyStream(Stream.chunk(body))).value.flatTap {
+              case Some(response) if response.status == Status.Unauthorized => IO.unit
+              case Some(response) => refund(response.status.isSuccess)
+              case None => refund(succeeded = false)
+            }
           )
-          (updated, true)
       }
     }
-  }
 
-  /**
-   * Extract client IP from request.
-   * Checks X-Forwarded-For header first (for proxied requests).
-   */
-  private def extractClientIp(request: Request[IO]): String = {
-    request.headers.get(ci"X-Forwarded-For")
-      .map(_.head.value.split(",").head.trim)
-      .orElse(request.headers.get(ci"X-Real-IP").map(_.head.value))
-      .getOrElse(request.remoteAddr.map(_.toUriString).getOrElse("unknown"))
-  }
+  /** The `username` of a login body, normalised, if the body is JSON with one. */
+  private def usernameOf(body: Chunk[Byte]): Option[String] =
+    parse(new String(body.toArray, java.nio.charset.StandardCharsets.UTF_8)).toOption
+      .flatMap(_.hcursor.get[String]("username").toOption)
+      .map(_.trim.toLowerCase)
+      .filter(_.nonEmpty)
 
-  /**
-   * Check if this is a health endpoint (exempt from rate limiting).
-   */
-  private def isHealthEndpoint(request: Request[IO]): Boolean = {
+  private def isExempt(request: Request[IO]): Boolean = {
     val path = request.pathInfo.renderString
     path == "/health" || path == "/health/ready" || path == "/health/live" || path == "/metrics"
   }
 
-  /**
-   * Return 429 Too Many Requests response.
-   */
-  private def rateLimitExceeded(config: Config): IO[Response[IO]] = {
-    import io.circe.syntax._
-    import org.http4s.circe._
-
-    val retryAfter = config.window.toSeconds.toString
+  private def tooManyRequests(message: String, limit: Int, window: FiniteDuration): IO[Response[IO]] = {
+    val retryAfter = window.toSeconds.toString
     val body = Map(
-      "error" -> "Rate limit exceeded",
+      "error" -> message,
       "retryAfter" -> retryAfter,
-      "limit" -> config.maxRequests.toString,
-      "window" -> s"${config.window.toSeconds}s"
+      "limit" -> limit.toString,
+      "window" -> s"${window.toSeconds}s"
     )
-
     IO.pure(
       Response[IO](Status.TooManyRequests)
         .withHeaders(
           Header.Raw(ci"Retry-After", retryAfter),
-          Header.Raw(ci"X-RateLimit-Limit", config.maxRequests.toString),
+          Header.Raw(ci"X-RateLimit-Limit", limit.toString),
           Header.Raw(ci"X-RateLimit-Remaining", "0")
         )
         .withEntity(body.asJson)
     )
   }
+}
 
-  /**
-   * Periodic cleanup of expired entries to prevent memory leaks.
-   */
-  def cleanup(state: Ref[IO, RateLimitState], maxAge: FiniteDuration): IO[Unit] = {
-    for {
-      now <- Clock[IO].realTime.map(_.toMillis)
-      maxAgeMs = maxAge.toMillis
-      _ <- state.update { s =>
-        val cleaned = s.requests.filter { case (_, record) =>
-          now - record.windowStart < maxAgeMs
-        }
-        s.copy(requests = cleaned)
-      }
-    } yield ()
+/**
+ * Fixed-window counters per key, holding at most `maxKeys` keys.
+ *
+ * Keys are kept in the order their window started (a `VectorMap`; a new window re-inserts the
+ * key at the end), so the oldest windows are at the head: expired ones are dropped from there
+ * whenever a key is added, and beyond `maxKeys` the oldest are evicted.
+ */
+final class WindowCounter private (
+  state: Ref[IO, VectorMap[String, WindowCounter.Window]],
+  window: FiniteDuration,
+  maxKeys: Int
+) {
+  import WindowCounter.Window
+
+  private val windowMs = window.toMillis
+
+  private def now: IO[Long] = Clock[IO].realTime.map(_.toMillis)
+
+  private def current(m: VectorMap[String, Window], key: String, t: Long): Option[Window] =
+    m.get(key).filter(w => t - w.start < windowMs)
+
+  /** Start a new window for `key` with `count`, dropping expired and over-limit entries. */
+  private def startWindow(m: VectorMap[String, Window], key: String, count: Int, t: Long): VectorMap[String, Window] = {
+    var rest = m - key
+    while (rest.nonEmpty && (rest.size >= maxKeys || t - rest.head._2.start >= windowMs)) rest = rest.tail
+    rest.updated(key, Window(count, t))
   }
+
+  /** Count a request for `key` if it is under `max` in the current window. */
+  def tryAcquire(key: String, max: Int): IO[Boolean] =
+    now.flatMap { t =>
+      state.modify { m =>
+        current(m, key, t) match {
+          case Some(w) if w.count >= max => (m, false)
+          case Some(w) => (m.updated(key, w.copy(count = w.count + 1)), true)
+          case None => (startWindow(m, key, 1, t), true)
+        }
+      }
+    }
+
+  /** Take back one count of `key` in the current window. */
+  def release(key: String): IO[Unit] =
+    now.flatMap { t =>
+      state.update { m =>
+        current(m, key, t) match {
+          case Some(w) if w.count > 0 => m.updated(key, w.copy(count = w.count - 1))
+          case _ => m
+        }
+      }
+    }
+
+  def reset(key: String): IO[Unit] = state.update(_ - key)
+
+  /** Number of keys currently tracked. */
+  def size: IO[Int] = state.get.map(_.size)
+}
+
+object WindowCounter {
+
+  private[middleware] final case class Window(count: Int, start: Long)
+
+  def create(window: FiniteDuration, maxKeys: Int): IO[WindowCounter] =
+    Ref.of[IO, VectorMap[String, Window]](VectorMap.empty).map(new WindowCounter(_, window, math.max(1, maxKeys)))
 }

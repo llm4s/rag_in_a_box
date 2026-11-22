@@ -36,14 +36,15 @@ class AuthServiceSpec extends AnyFlatSpec with Matchers {
     // Hash should be non-empty
     hash should not be empty
 
-    // Hash should contain salt and hash separated by ':'
-    hash should include(":")
-    val parts = hash.split(":")
-    parts.length shouldBe 2
+    // pbkdf2-sha256$<iterations>$<salt>$<hash>
+    val parts = hash.split('$')
+    parts.length shouldBe 4
+    parts(0) shouldBe "pbkdf2-sha256"
+    parts(1) shouldBe testConfig.passwordHashIterations.toString
 
-    // Both parts should be base64 encoded
-    parts(0) should not be empty
-    parts(1) should not be empty
+    // Salt and hash should be base64 encoded
+    parts(2) should not be empty
+    parts(3) should not be empty
   }
 
   it should "verify passwords correctly" in {
@@ -154,6 +155,120 @@ class AuthServiceSpec extends AnyFlatSpec with Matchers {
     val result = shortExpService.validateToken(token)
 
     result shouldBe TokenValidationResult.Expired
+  }
+
+  // ------------------------------------------------------------------ JWT claims and header
+
+  private val someUser = User(7, "claims", "hash", UserRole.User, java.time.Instant.now())
+
+  private def b64(s: String): String =
+    java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(s.getBytes("UTF-8"))
+
+  private def hs256(secret: String, data: String): String = {
+    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+    mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes("UTF-8"), "HmacSHA256"))
+    java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(mac.doFinal(data.getBytes("UTF-8")))
+  }
+
+  /** A token signed with the test secret, with the given header and payload JSON. */
+  private def signed(header: String, payload: String): String = {
+    val data = s"${b64(header)}.${b64(payload)}"
+    s"$data.${hs256(testConfig.jwtSecret, data)}"
+  }
+
+  private def payload(iss: Option[String], aud: Option[String]): String = {
+    val exp = java.time.Instant.now().getEpochSecond + 3600
+    val claims = Seq(
+      Some(s""""sub":"7""""), Some(""""username":"claims""""), Some(""""role":"admin""""),
+      Some(s""""exp":$exp"""), Some(s""""iat":${exp - 3600}"""),
+      iss.map(i => s""""iss":"$i""""), aud.map(a => s""""aud":"$a"""")
+    ).flatten
+    claims.mkString("{", ",", "}")
+  }
+
+  private val hs256Header = """{"alg":"HS256","typ":"JWT"}"""
+
+  it should "issue tokens with this server's iss and aud claims" in {
+    val token = authService.generateToken(someUser)
+    val json = new String(java.util.Base64.getUrlDecoder.decode(token.split('.')(1)), "UTF-8")
+    json should include(s""""iss":"${testConfig.jwtIssuer}"""")
+    json should include(s""""aud":"${testConfig.jwtAudience}"""")
+  }
+
+  it should "reject correctly signed tokens with a wrong or missing issuer or audience" in {
+    val (iss, aud) = (testConfig.jwtIssuer, testConfig.jwtAudience)
+    authService.validateToken(signed(hs256Header, payload(Some(iss), Some(aud)))) shouldBe a[TokenValidationResult.Valid]
+    authService.validateToken(signed(hs256Header, payload(Some("someone-else"), Some(aud)))) shouldBe
+      TokenValidationResult.Invalid("Invalid token issuer")
+    authService.validateToken(signed(hs256Header, payload(Some(iss), Some("another-api")))) shouldBe
+      TokenValidationResult.Invalid("Invalid token audience")
+    // Tokens issued before iss/aud existed
+    authService.validateToken(signed(hs256Header, payload(None, None))) shouldBe a[TokenValidationResult.Invalid]
+  }
+
+  it should "reject tokens of another deployment that shares the secret but not the audience" in {
+    val other = new AuthService(mockRegistry, testConfig.copy(jwtAudience = "other-deployment"))
+    authService.validateToken(other.generateToken(someUser)) shouldBe TokenValidationResult.Invalid("Invalid token audience")
+  }
+
+  it should "reject tokens whose header names another algorithm, including alg=none" in {
+    val claims = payload(Some(testConfig.jwtIssuer), Some(testConfig.jwtAudience))
+    val unsupported = TokenValidationResult.Invalid("Unsupported token algorithm")
+    authService.validateToken(signed("""{"alg":"none","typ":"JWT"}""", claims)) shouldBe unsupported
+    authService.validateToken(s"${b64("""{"alg":"none"}""")}.${b64(claims)}.") shouldBe unsupported
+    authService.validateToken(signed("""{"alg":"RS256","typ":"JWT"}""", claims)) shouldBe unsupported
+    authService.validateToken(signed("""{"typ":"JWT"}""", claims)) shouldBe unsupported
+    authService.validateToken(signed("not json", claims)) shouldBe unsupported
+  }
+
+  // ------------------------------------------------------------------ password hashing
+
+  it should "not throw on an empty password" in {
+    noException should be thrownBy authService.hashPassword("")
+    authService.verifyPassword("", authService.hashPassword("non-empty-password")) shouldBe false
+    authService.verifyPassword("", PasswordHashing.legacyFormat("x")) shouldBe false
+  }
+
+  it should "still verify hashes in the legacy (pre-PBKDF2) format" in {
+    val legacy = PasswordHashing.legacyFormat("legacy-password")
+    legacy should not include "$"
+    authService.verifyPassword("legacy-password", legacy) shouldBe true
+    authService.verifyPassword("wrong", legacy) shouldBe false
+  }
+
+  it should "refuse passwords that break the policy on create and reset" in {
+    import cats.effect.unsafe.implicits.global
+    authService.createUser("bob", "", UserRole.User).unsafeRunSync() shouldBe Left("Password is required")
+    authService.createUser("bob", "short", UserRole.User).unsafeRunSync() shouldBe
+      Left(s"Password must be at least ${testConfig.passwordMinLength} characters")
+    authService.createUser("bob", "x" * 2000, UserRole.User).unsafeRunSync().isLeft shouldBe true
+    authService.createUser(" ", "long-enough-password", UserRole.User).unsafeRunSync() shouldBe Left("Username is required")
+    authService.resetPassword(1, "").unsafeRunSync() shouldBe Left("Password is required")
+    authService.createUser("bob", "long-enough-password", UserRole.User).unsafeRunSync().isRight shouldBe true
+  }
+}
+
+class PasswordHashingSpec extends AnyFlatSpec with Matchers {
+
+  "PasswordHashing" should "derive real PBKDF2-HMAC-SHA256 (RFC 7914 test vector)" in {
+    // RFC 7914 section 11: PBKDF2-HMAC-SHA256, P="passwd", S="salt", c=1, dkLen=64 (first 32 bytes)
+    val salt = java.util.Base64.getEncoder.withoutPadding().encodeToString("salt".getBytes("UTF-8"))
+    val expected = "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
+      .grouped(2).map(Integer.parseInt(_, 16).toByte).toArray
+    val hash = java.util.Base64.getEncoder.withoutPadding().encodeToString(expected)
+    PasswordHashing.verify("passwd", s"pbkdf2-sha256$$1$$$salt$$$hash") shouldBe true
+    PasswordHashing.verify("passwd2", s"pbkdf2-sha256$$1$$$salt$$$hash") shouldBe false
+  }
+
+  it should "ask for a rehash of legacy hashes and of hashes with fewer iterations" in {
+    PasswordHashing.needsRehash(PasswordHashing.legacyFormat("pw"), 1000) shouldBe true
+    PasswordHashing.needsRehash(PasswordHashing.hash("pw", 1000), 2000) shouldBe true
+    PasswordHashing.needsRehash(PasswordHashing.hash("pw", 2000), 2000) shouldBe false
+  }
+
+  it should "reject malformed stored hashes without throwing" in {
+    Seq("", "garbage", "a:b:c", "pbkdf2-sha256$x$y$z", "pbkdf2-sha256$0$AAAA$AAAA", "pbkdf2-sha256$-5$AAAA$AAAA", "!!:!!")
+      .foreach(h => PasswordHashing.verify("pw", h) shouldBe false)
   }
 }
 

@@ -320,15 +320,19 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 |----------|---------|-------------|
 | `AUTH_MODE` | `open` | Mode: `open`, `basic`, `oauth` |
 | `ADMIN_USERNAME` | `admin` | Admin username (basic mode) |
-| `ADMIN_PASSWORD` | - | Admin password (basic mode, required) |
-| `JWT_SECRET` | - | Secret for JWT signing (required for basic/oauth) |
+| `ADMIN_PASSWORD` | - | Admin password (basic mode, required; creates the admin user when there are no users, replaces the old default `admin`; must meet the password policy and not be a placeholder) |
+| `JWT_SECRET` | - | Secret for JWT signing (basic mode, required: 32+ characters, not a `CHANGE_ME` / `REPLACE-ME` placeholder) |
 | `JWT_EXPIRATION` | `86400` | Token expiration in seconds (24h) |
+| `JWT_ISSUER` | `rag-in-a-box` | `iss` claim written into and required of JWTs |
+| `JWT_AUDIENCE` | `rag-in-a-box` | `aud` claim written into and required of JWTs |
+| `PASSWORD_MIN_LENGTH` | `12` | Minimum password length for new and changed passwords and `ADMIN_PASSWORD` |
+| `PASSWORD_HASH_ITERATIONS` | `600000` | PBKDF2-HMAC-SHA256 iterations; weaker and legacy hashes are upgraded at the next login |
 
 ### Legacy API Key Mode
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_KEY` | - | Simple API key authentication |
+| `API_KEY` | - | Static administrator key, sent as `X-API-Key` or `Authorization: Bearer` (`?api_key=` is no longer accepted). Placeholders are rejected |
 | `ALLOW_ADMIN_HEADER` | `false` | With trusted proxy headers: `X-Admin: true` keeps admin rights for a proxied user |
 | `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let administrator credentials act for an end user via `X-User-Id` / `X-Group-Ids` (headers are stripped otherwise) |
 
@@ -340,9 +344,32 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_ENABLED` | `false` | Enable rate limiting |
-| `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
+| `RATE_LIMIT_ENABLED` | `false` | Enable the per-client request limit |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Window size in seconds |
+| `RATE_LIMIT_TRUSTED_PROXIES` | - | Comma-separated IPs / CIDRs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` identify the client. From any other peer these headers are ignored |
+| `RATE_LIMIT_MAX_CLIENTS` | `10000` | Most clients tracked at once (the oldest windows are evicted beyond it) |
+| `RATE_LIMIT_LOGIN_MAX_ATTEMPTS` | `10` | Failed `POST /api/v1/auth/login` attempts allowed per client IP and per username per login window; `0` disables. Applies even with `RATE_LIMIT_ENABLED=false` |
+| `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `300` | Login throttling window |
+
+The limiter runs in front of authentication, so requests that fail authentication count too.
+Health checks and `/metrics` are exempt. Without trusted proxies the client is the TCP peer;
+behind a proxy (an ingress controller, a load balancer) set `RATE_LIMIT_TRUSTED_PROXIES`, or
+every client shares the proxy's address and limit. Behind trusted proxies the client is the
+right-most `X-Forwarded-For` address that is not itself a trusted proxy.
+
+### CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALLOWED_ORIGINS` | - | Comma-separated origins allowed to call the API from a browser (`https://app.example.com`; a bare host matches any scheme), or `*` for any |
+| `CORS_ALLOW_ALL_ORIGINS` | `false` | Allow every origin when `ALLOWED_ORIGINS` is not set |
+
+By default no CORS headers are sent, so browsers only let pages from the server's own origin
+read responses. The admin UI is served from the same origin (`/admin`) and needs nothing; in
+development the Vite dev server (`npm run dev`, port 3000) proxies `/api`, `/health` and `/ws`
+to `localhost:8080`, so it is same-origin as well. An explicit `ALLOWED_ORIGINS` list takes
+precedence over `CORS_ALLOW_ALL_ORIGINS`.
 
 ### Request Size
 
@@ -350,6 +377,10 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 |----------|---------|-------------|
 | `REQUEST_SIZE_ENABLED` | `true` | Enable size limiting |
 | `MAX_BODY_SIZE_MB` | `10` | Maximum body size in MB |
+
+The limit applies to every request body, whatever the method: a larger `Content-Length` is
+refused up front, and bodies without one (chunked) are counted as they are read. Either way the
+answer is `413 Payload Too Large`.
 
 ### Graceful Shutdown
 
@@ -365,6 +396,7 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `METRICS_ENABLED` | `false` | Enable Prometheus metrics at `/metrics` |
+| `METRICS_REQUIRE_AUTH` | `true` | Serve `/metrics` to administrators only (e.g. `Authorization: Bearer <API_KEY>` or an admin-scoped `rat_` token). `false` makes it public |
 
 ---
 
@@ -510,8 +542,8 @@ export AUTH_MODE=open
 ```bash
 # Production with basic auth
 export AUTH_MODE=basic
-export ADMIN_PASSWORD=secure-password
-export JWT_SECRET=32-character-secret-key-here!!
+export ADMIN_PASSWORD="$(openssl rand -base64 18)"   # 12+ characters
+export JWT_SECRET="$(openssl rand -base64 32)"
 
 # Database
 export DATABASE_URL=postgresql://rag:password@db:5432/ragdb
@@ -521,7 +553,8 @@ export OPENAI_API_KEY=sk-...
 
 # Hardening
 export RATE_LIMIT_ENABLED=true
-export METRICS_ENABLED=true
+export RATE_LIMIT_TRUSTED_PROXIES=10.0.0.0/8   # your ingress / load balancer
+export METRICS_ENABLED=true                     # /metrics for administrators only
 ```
 
 ### Docker Compose

@@ -1,18 +1,18 @@
 package org.llm4s.ragbox
 
-import cats.effect.{IO, Ref, Resource}
+import cats.effect.{IO, Resource}
 import cats.effect.std.Supervisor
 import cats.syntax.all._
 import com.zaxxer.hikari.HikariDataSource
 import org.http4s.{HttpApp, HttpRoutes}
 import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
-import org.http4s.server.middleware.{CORS, Logger => HttpLogger}
+import org.http4s.server.middleware.CORS
 import org.http4s.server.websocket.WebSocketBuilder2
 import org.llm4s.ragbox.auth._
 import org.llm4s.ragbox.config.{AppConfig, AuthMode, RuntimeConfigManager}
 import org.llm4s.ragbox.ingestion.{IngestionEvent, IngestionScheduler, IngestionService}
-import org.llm4s.ragbox.middleware.{Authenticator, RateLimitMiddleware, RequestSizeMiddleware}
+import org.llm4s.ragbox.middleware.{Authenticator, RateLimitMiddleware, RequestLogger, RequestSizeMiddleware}
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, ExperimentRegistry, PgCollectionConfigRegistry, QueryLogRegistry}
 import org.llm4s.ragbox.routes._
 import org.llm4s.ragbox.routes.WebSocketRoutes.BroadcastHub
@@ -44,54 +44,48 @@ final class RagboxApp private (
   val hub: BroadcastHub,
   val oidc: Option[RagboxApp.Oidc],
   routes: RagboxApp.Routes,
-  rateLimitState: Ref[IO, RateLimitMiddleware.RateLimitState],
+  limiters: RateLimitMiddleware.Limiters,
   logger: Logger[IO]
 ) {
+
+  private val httpLogger: Logger[IO] = Slf4jLogger.getLoggerFromName[IO]("org.llm4s.ragbox.http")
 
   val authenticator: Authenticator =
     Authenticator(config.security, authService, userRegistry, tokenRegistry, oidc.map(_.service))
 
-  private val rateLimitConfig = RateLimitMiddleware.Config(
-    maxRequests = config.production.rateLimit.maxRequests,
-    window = config.production.rateLimit.windowSeconds.seconds,
-    enabled = config.production.rateLimit.enabled
-  )
-
   /**
-   * The complete HTTP app: public routes, then every other route behind the [[authenticator]],
-   * wrapped in request-size and rate limits, CORS and request logging.
+   * The complete HTTP app: public routes, then every other route behind the [[authenticator]].
+   * Outside the authenticator, from the inside out: rate limits (so failed authentication is
+   * limited too), the request-size limit, CORS, request logging (credentials redacted) and the
+   * removal of untrusted identity headers.
    */
   def httpApp(wsb: WebSocketBuilder2[IO]): HttpApp[IO] = {
     val all: HttpRoutes[IO] =
       routes.public <+> authenticator(Authz.tokenAllowlist(routes.authed <+> WebSocketRoutes.routes(wsb, hub)))
 
-    val limited = RateLimitMiddleware(rateLimitConfig, rateLimitState)(
-      RequestSizeMiddleware(RequestSizeMiddleware.Config(
-        maxBodySize = config.production.requestSize.maxBodySizeBytes,
-        enabled = config.production.requestSize.enabled
-      ))(all)
+    val limited = RequestSizeMiddleware(RequestSizeMiddleware.Config(
+      maxBodySize = config.production.requestSize.maxBodySizeBytes,
+      enabled = config.production.requestSize.enabled
+    ))(
+      RateLimitMiddleware(RateLimitMiddleware.Config.from(config.production.rateLimit), limiters)(all)
     ).orNotFound
 
+    // Same-origin only unless origins are configured: then CORS headers for those origins only
     val cors = config.production.cors
-    val corsPolicy =
-      if (cors.isAllowAll) CORS.policy.withAllowOriginAll
-      else {
-        val allowedOrigins = cors.allowedOrigins.map(_.toLowerCase).toSet
-        CORS.policy.withAllowOriginHostCi { origin =>
-          val originStr = origin.toString.toLowerCase
-          allowedOrigins.exists(allowed => originStr == allowed || originStr.endsWith(s"://$allowed"))
-        }
-      }
+    val withCors =
+      if (cors.isDenyAll) limited
+      else if (cors.isAllowAll) CORS.policy.withAllowOriginAll(limited)
+      else CORS.policy.withAllowOriginHostCi(origin => cors.allows(origin.toString))(limited)
 
     // Identity headers only count in trusted-proxy mode; otherwise nothing downstream sees them
     Authenticator.stripIdentityHeaders(config.security.auth.trustedProxyHeaders)(
-      HttpLogger.httpApp(logHeaders = false, logBody = false)(corsPolicy(limited))
+      RequestLogger(httpLogger)(withCors)
     )
   }
 
   /**
-   * Background work: the ingestion schedule, rate-limiter cleanup and expired OAuth
-   * session/state cleanup. Runs until `supervisor` is released.
+   * Background work: the ingestion schedule and expired OAuth session/state cleanup. Runs
+   * until `supervisor` is released. (The rate limiters bound and expire their own entries.)
    */
   def startBackgroundTasks(supervisor: Supervisor[IO]): IO[Unit] = {
     val scheduler = IngestionScheduler(ingestionService, config.ingestion)
@@ -100,15 +94,6 @@ final class RagboxApp private (
         logger.info(s"Starting ingestion scheduler (schedule: ${config.ingestion.schedule.get})...") *>
           scheduler.start(supervisor)
       else IO.unit
-
-    val rateLimitCleanup =
-      if (!rateLimitConfig.enabled) IO.unit
-      else {
-        val maxAge = rateLimitConfig.window * 2
-        supervisor.supervise(
-          (IO.sleep(5.minutes) *> RateLimitMiddleware.cleanup(rateLimitState, maxAge)).foreverM
-        ).void *> logger.info(s"Rate limiter cleanup started (maxAge: $maxAge)")
-      }
 
     val sessionCleanup = oidc.traverse_ { o =>
       val interval = math.max(60, o.config.stateTtl).seconds
@@ -119,7 +104,7 @@ final class RagboxApp private (
       supervisor.supervise(loop).void *> logger.info(s"OAuth session cleanup started (interval: $interval)")
     }
 
-    startScheduler *> rateLimitCleanup *> sessionCleanup
+    startScheduler *> sessionCleanup
   }
 }
 
@@ -167,14 +152,14 @@ object RagboxApp {
       experimentService = ExperimentService(experimentRegistry, queryLogRegistry, pool)
       chatSessionRegistry <- Resource.eval(ChatSessionRegistry(pool))
       oidc <- oidcComponents(config, pool, ragService, oidcHttpClient)
-      rateLimitState <- Resource.eval(RateLimitMiddleware.createState)
+      limiters <- Resource.eval(RateLimitMiddleware.createLimiters(RateLimitMiddleware.Config.from(config.production.rateLimit)))
     } yield {
       val public: HttpRoutes[IO] = Seq(
         Some(HealthRoutes.routes(ragService)),
         Some(AuthRoutes.publicRoutes(authService, config.security)),
         oidc.map(o => OAuthRoutes(o.service, o.config.session, o.config.stateTtl).routes),
         Some(StaticRoutes.routes),
-        Option.when(config.metrics.enabled)(MetricsRoutes.routes(ragService))
+        Option.when(config.metrics.enabled && !config.metrics.requireAuth)(MetricsRoutes.routes(ragService))
       ).flatten.reduce(_ <+> _)
 
       val permissionRoutes = (ragService.principals, ragService.collections) match {
@@ -198,11 +183,13 @@ object RagboxApp {
         ChatRoutes.routes(chatSessionRegistry, ragService, queryLogRegistry, Some(config)),
         AuthRoutes.routes(authService, userRegistry),
         TokenRoutes.routes(tokenRegistry)
-      ) ++ permissionRoutes).reduce(_ <+> _)
+      ) ++ permissionRoutes ++
+        Option.when(config.metrics.enabled && config.metrics.requireAuth)(MetricsRoutes.authedRoutes(ragService))
+      ).reduce(_ <+> _)
 
       new RagboxApp(
         config, ragService, authService, userRegistry, tokenRegistry, ingestionService, hub, oidc,
-        Routes(public, authed), rateLimitState, logger
+        Routes(public, authed), limiters, logger
       )
     }
 

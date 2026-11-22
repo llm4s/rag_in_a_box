@@ -35,18 +35,18 @@ import java.security.MessageDigest
  * Credentials are read from (first match wins):
  *  - `X-API-Key: <API_KEY>`
  *  - `Authorization: Bearer <API_KEY | rat_token | JWT>`
- *  - `?api_key=<API_KEY>` (legacy; prefer a header, query strings end up in access logs)
  *  - `?access_token=<API_KEY | rat_token | JWT>`, only on the WebSocket endpoint (`/ws`),
  *    because browsers cannot set headers on a WebSocket handshake
  *  - the OIDC session cookie (oauth mode)
  *
+ * (`?api_key=` is no longer accepted: query strings end up in access logs and browser history.)
+ *
  * A request that presents a credential which is not valid is rejected (401) even if another
  * credential would have been valid; credentials are never silently ignored.
  *
- * JWTs are only accepted in basic mode: in the other modes the bootstrap admin user may still
- * have its development password, so a password login must not grant access there.
+ * JWTs are only accepted in basic mode, the only mode with password login.
  *
- * Public routes (health, login, OAuth, admin UI assets, metrics) are not wrapped by this
+ * Public routes (health, login, OAuth, admin UI assets, public metrics) are not wrapped by this
  * middleware; `Main` mounts them in front of it.
  *
  * '''Trusted proxy headers.''' With `AUTH_TRUSTED_PROXY_HEADERS=true`, a request authenticated
@@ -136,7 +136,6 @@ final class Authenticator(
       case Credentials.Token(AuthScheme.Bearer, token) => Some(Credential.Bearer(token))
       case _ => None
     })
-    lazy val apiKeyParam = req.params.get("api_key").map(Credential.Key(_))
     lazy val wsToken =
       if (req.pathInfo.renderString == WebSocketPath) req.params.get("access_token").map(Credential.Bearer(_))
       else None
@@ -145,7 +144,7 @@ final class Authenticator(
         req.cookies.find(_.name == sessionCookieName).map(c => Credential.Session(c.content))
       else None
 
-    header.orElse(bearerHeader).orElse(apiKeyParam).orElse(wsToken).orElse(sessionCookie)
+    header.orElse(bearerHeader).orElse(wsToken).orElse(sessionCookie)
   }
 
   private def checkApiKey(key: String): Either[AuthFailure, Principal] =
