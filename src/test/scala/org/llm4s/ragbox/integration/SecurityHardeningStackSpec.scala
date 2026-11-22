@@ -345,6 +345,79 @@ class SecurityHardeningStackSpec extends AnyFlatSpec with Matchers with PgVector
     }
   }
 
+  // ---------------------------------------------------------------- WebSocket origin (#45)
+
+  private def ws(origin: Option[String], host: String = "localhost:8080", extra: Seq[Header.Raw] = Nil): Request[IO] =
+    get("/ws").putHeaders((Header.Raw(ci"Host", host) :: origin.map(Header.Raw(ci"Origin", _)).toList) ++ extra.toList)
+
+  "The /ws handshake" should "be refused for a cross-site Origin, even when authenticated" in withContainers { pg =>
+    withApp(freshDatabase(pg), openNoKey) { (http, _) =>
+      for {
+        evil <- http.run(ws(Some("https://evil.example")))
+        evilBody <- evil.as[Json]
+        nullOrigin <- status(http, ws(Some("null")))
+        lookalike <- status(http, ws(Some("http://localhost:8080.evil.example")))
+      } yield {
+        evil.status shouldBe Status.Forbidden
+        evilBody.hcursor.get[String]("error") shouldBe Right("forbidden")
+        nullOrigin shouldBe Status.Forbidden
+        lookalike shouldBe Status.Forbidden
+      }
+    }
+  }
+
+  it should "accept the server's own origin, also behind a TLS-terminating proxy" in withContainers { pg =>
+    withApp(freshDatabase(pg), openNoKey) { (http, _) =>
+      for {
+        same <- status(http, ws(Some("http://localhost:8080")))
+        caseInsensitive <- status(http, ws(Some("http://LocalHost:8080")))
+        tls <- status(http, ws(Some("https://rag.example.com"), host = "rag.example.com"))
+        tlsExplicitPort <- status(http, ws(Some("https://rag.example.com"), host = "rag.example.com:443"))
+        forwarded <- status(http, ws(
+          Some("https://rag.example.com"), host = "ragbox:8080",
+          extra = Seq(Header.Raw(ci"X-Forwarded-Host", "rag.example.com"))
+        ))
+        otherPort <- status(http, ws(Some("http://localhost:3000")))
+      } yield {
+        same should not be Status.Forbidden
+        caseInsensitive should not be Status.Forbidden
+        tls should not be Status.Forbidden
+        tlsExplicitPort should not be Status.Forbidden
+        forwarded should not be Status.Forbidden
+        otherPort shouldBe Status.Forbidden
+      }
+    }
+  }
+
+  it should "accept origins in ALLOWED_ORIGINS and only those" in withContainers { pg =>
+    val cors = CorsConfig(allowedOrigins = Seq("https://app.example.com"))
+    withApp(freshDatabase(pg), openNoKey, production(cors = cors)) { (http, _) =>
+      for {
+        allowed <- status(http, ws(Some("https://app.example.com")))
+        other <- status(http, ws(Some("https://evil.example")))
+      } yield {
+        allowed should not be Status.Forbidden
+        other shouldBe Status.Forbidden
+      }
+    }
+  }
+
+  it should "keep working for non-browser clients (no Origin) with token auth" in withContainers { pg =>
+    withApp(freshDatabase(pg), openWithKey) { (http, _) =>
+      for {
+        noCredential <- status(http, ws(None))
+        token <- status(http, ws(None).withUri(Uri.unsafeFromString(s"/ws?access_token=$ApiKey")))
+        header <- status(http, withKey(ws(None)))
+        crossSiteWithToken <- status(http, withKey(ws(Some("https://evil.example"))))
+      } yield {
+        noCredential shouldBe Status.Unauthorized
+        token should (not be Status.Unauthorized and not be Status.Forbidden)
+        header should (not be Status.Unauthorized and not be Status.Forbidden)
+        crossSiteWithToken shouldBe Status.Forbidden
+      }
+    }
+  }
+
   "Admin UI paths" should "reject encoded traversal segments" in withContainers { pg =>
     withApp(freshDatabase(pg), openNoKey) { (http, _) =>
       for {

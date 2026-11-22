@@ -397,6 +397,12 @@ development the Vite dev server (`npm run dev`, port 3000) proxies `/api`, `/hea
 to `localhost:8080`, so it is same-origin as well. An explicit `ALLOWED_ORIGINS` list takes
 precedence over `CORS_ALLOW_ALL_ORIGINS`.
 
+The same list guards the `/ws` WebSocket, which browsers open cross-site without CORS (and with
+the session cookie): a handshake whose `Origin` is neither the server's own origin (its `Host`, or
+`X-Forwarded-Host` from a reverse proxy) nor an allowed origin is refused with `403`. Clients that
+send no `Origin` (scripts, CLI tools) are unaffected and authenticate with a token as usual
+(`Authorization`, `X-API-Key` or `?access_token=`).
+
 ### Request Size
 
 | Variable | Default | Description |

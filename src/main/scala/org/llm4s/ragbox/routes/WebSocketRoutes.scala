@@ -11,7 +11,9 @@ import org.http4s.dsl.io._
 import org.http4s.server.websocket.WebSocketBuilder2
 import org.http4s.websocket.WebSocketFrame
 import org.llm4s.ragbox.auth.Principal
+import org.llm4s.ragbox.config.CorsConfig
 import org.llm4s.ragbox.ingestion.IngestionEvent
+import org.typelevel.ci.CIStringSyntax
 
 import scala.concurrent.duration._
 
@@ -21,6 +23,12 @@ import scala.concurrent.duration._
  * The endpoint is behind the authenticator like every other API route. Browsers cannot set
  * headers on a WebSocket handshake, so besides the OIDC session cookie the authenticator also
  * accepts `?access_token=<token>` on this path only.
+ *
+ * Browsers send the session cookie on a cross-site WebSocket handshake too, and WebSockets are
+ * not subject to CORS, so the handshake's `Origin` is checked here (cross-site WebSocket
+ * hijacking): it must be the server's own origin or one allowed by the CORS configuration
+ * (`ALLOWED_ORIGINS`), otherwise the handshake is refused with 403. Clients that send no
+ * `Origin` (non-browser clients) authenticate with a token like on any other route.
  *
  * Messages are server-to-client JSON `{"type", "payload", "timestamp"}`; client messages are
  * ignored.
@@ -71,7 +79,42 @@ object WebSocketRoutes {
       Ref.of[IO, Map[Unique.Token, Queue[IO, WebSocketFrame]]](Map.empty).map(new BroadcastHub(_))
   }
 
-  def routes(wsb: WebSocketBuilder2[IO], hub: BroadcastHub): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  /**
+   * Whether a handshake's `Origin` may open the WebSocket: no `Origin` (not a browser), the
+   * server's own origin (the `Origin` host and port equal the `Host`, or `X-Forwarded-Host` set
+   * by a reverse proxy; a page cannot set either on a handshake), or an origin `cors` allows.
+   * The scheme is not compared, so a TLS-terminating proxy in front of the server still counts as
+   * same-origin.
+   */
+  def originAllowed(req: Request[IO], cors: CorsConfig): Boolean =
+    req.headers.get(ci"Origin").map(_.head.value.trim) match {
+      case None => true
+      case Some(origin) =>
+        val originAuthority = Option.when(origin.contains("://"))(origin.split("://", 2)(1).stripSuffix("/"))
+        val requestAuthorities =
+          (req.headers.get(ci"X-Forwarded-Host").toList.flatMap(_.toList.flatMap(_.value.split(','))) ++
+            req.headers.get(ci"Host").toList.flatMap(_.toList.map(_.value))).map(_.trim).filter(_.nonEmpty)
+        val secure = origin.toLowerCase.startsWith("https://") || origin.toLowerCase.startsWith("wss://")
+        val sameOrigin = originAuthority.exists { o =>
+          val expected = normaliseAuthority(o, secure)
+          // The request side's scheme is unknown behind a TLS-terminating proxy: accept either default port
+          requestAuthorities.exists(h =>
+            normaliseAuthority(h, secure = false) == expected || normaliseAuthority(h, secure = true) == expected
+          )
+        }
+        sameOrigin || cors.allows(origin)
+    }
+
+  /** Lower-cased `host[:port]` without the scheme's default port. */
+  private def normaliseAuthority(authority: String, secure: Boolean): String = {
+    val a = authority.trim.toLowerCase
+    a.stripSuffix(if (secure) ":443" else ":80")
+  }
+
+  def routes(wsb: WebSocketBuilder2[IO], hub: BroadcastHub, cors: CorsConfig): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+    case authed @ GET -> Root / "ws" as _ if !originAllowed(authed.req, cors) =>
+      Authz.forbidden("WebSocket origin not allowed")
+
     case GET -> Root / "ws" as _ =>
       for {
         clientQueue <- Queue.bounded[IO, WebSocketFrame](ClientBufferSize)

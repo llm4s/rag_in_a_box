@@ -305,6 +305,10 @@ sessions and login states are removed periodically.
 authentication as the API: the session cookie works in oauth mode; otherwise pass the JWT, API
 key or access token as `?access_token=` (only accepted on `/ws`).
 
+Browsers send the cookie on cross-site WebSocket handshakes too, so a handshake from a browser
+page is only accepted from the server's own origin or an origin in `ALLOWED_ORIGINS`; others get
+`403`. Clients that send no `Origin` header are not affected.
+
 ```javascript
 const ws = new WebSocket(`wss://ragbox.example.com/ws?access_token=${encodeURIComponent(token)}`)
 ```
