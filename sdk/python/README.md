@@ -97,7 +97,7 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30)
 | `upsert_batch(docs)` | Upsert multiple documents |
 | `delete(document_id)` | Delete a document |
 | `list_documents()` | List all documents |
-| `clear_all()` | Delete all documents |
+| `clear_all()` | Delete all documents (`DELETE /api/v1/documents?all=true`) |
 
 #### Query Operations
 

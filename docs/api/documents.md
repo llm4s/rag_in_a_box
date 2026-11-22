@@ -186,18 +186,64 @@ Returns `204 No Content` on success.
 
 ---
 
-## Clear All Documents {#clear}
+## Batch Delete Documents {#batch-delete}
 
-Delete all documents from the system.
+Delete a specific set of documents by ID.
 
 ```
 DELETE /api/v1/documents
 ```
 
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `documentIds` | string[] | Yes | IDs to delete (1 to 1000 entries) |
+| `dryRun` | boolean | No | If true, report what would be deleted without deleting |
+
 ### Example
 
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/documents
+curl -X DELETE http://localhost:8080/api/v1/documents \
+  -H "Content-Type: application/json" \
+  -d '{"documentIds": ["doc-001", "doc-002"]}'
+```
+
+### Response
+
+```json
+{
+  "message": "Deleted 2 documents",
+  "deletedCount": 2,
+  "deletedIds": ["doc-001", "doc-002"],
+  "dryRun": false
+}
+```
+
+### Errors
+
+| Status | When |
+|--------|------|
+| `400` | The body is missing, is not valid JSON, or does not match the schema (e.g. a misspelled `documentIds`) |
+| `400` | `documentIds` is empty or has more than 1000 entries |
+
+A missing or malformed body **never** clears the index.
+
+---
+
+## Clear All Documents {#clear}
+
+Delete all documents from the system. This requires the explicit `all=true`
+query parameter and no request body.
+
+```
+DELETE /api/v1/documents?all=true
+```
+
+### Example
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/documents?all=true"
 ```
 
 ### Response
@@ -207,6 +253,12 @@ curl -X DELETE http://localhost:8080/api/v1/documents
   "message": "All documents cleared"
 }
 ```
+
+### Errors
+
+| Status | When |
+|--------|------|
+| `400` | `all` is not a boolean, or `all=true` is combined with a request body |
 
 **Warning:** This operation is irreversible.
 

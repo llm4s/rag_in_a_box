@@ -185,24 +185,127 @@ class DocumentRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEa
   }
 
   // ============================================================
-  // DELETE /api/v1/documents - Clear all
+  // DELETE /api/v1/documents - Batch delete / explicit clear all
   // ============================================================
 
-  "DELETE /api/v1/documents (no body)" should "clear all documents" in {
-    // Seed with documents
+  private def deleteDocuments(uri: Uri, body: Option[String] = None): Response[IO] = {
+    val base = Request[IO](Method.DELETE, uri)
+    val request = body match {
+      case Some(b) => base.withEntity(b).withContentType(`Content-Type`(MediaType.application.json))
+      case None => base
+    }
+    routes.orNotFound.run(request).unsafeRunSync()
+  }
+
+  "DELETE /api/v1/documents (no body)" should "return 400 and not clear anything" in {
     mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
 
-    val request = Request[IO](Method.DELETE, uri"/api/v1/documents")
+    val response = deleteDocuments(uri"/api/v1/documents")
 
-    val response = routes.orNotFound.run(request).unsafeRunSync()
+    response.status shouldBe Status.BadRequest
+    response.as[String].unsafeRunSync() should include("all=true")
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  it should "return 400 when all=false" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents?all=false")
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  it should "return 400 when the all parameter is not a boolean" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents?all=yes")
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  "DELETE /api/v1/documents (malformed body)" should "return 400 for a misspelled field and not clear anything" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some("""{"documentIDs": ["doc-1"]}"""))
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+    mockService.getDeleteCalls shouldBe empty
+  }
+
+  it should "return 400 for invalid JSON and not clear anything" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some("""{not json"""))
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  "DELETE /api/v1/documents?all=true" should "clear all documents" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents?all=true")
 
     response.status shouldBe Status.Ok
-
-    val body = response.as[String].unsafeRunSync()
-    body should include("cleared")
-
-    // Verify all documents cleared
+    response.as[String].unsafeRunSync() should include("cleared")
     mockService.documentRegistry.documentCount shouldBe 0
+  }
+
+  it should "return 400 when combined with a batch body" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents?all=true", Some("""{"documentIds": ["doc-1"]}"""))
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  "DELETE /api/v1/documents (batch body)" should "delete only the listed documents" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some("""{"documentIds": ["doc-1", "doc-2"]}"""))
+
+    response.status shouldBe Status.Ok
+    val body = response.as[String].unsafeRunSync()
+    body should include("\"deletedCount\":2")
+    mockService.documentRegistry.hasDocument("doc-1") shouldBe false
+    mockService.documentRegistry.hasDocument("doc-2") shouldBe false
+    mockService.documentRegistry.hasDocument("doc-3") shouldBe true
+  }
+
+  it should "not delete anything in dry run mode" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some("""{"documentIds": ["doc-1"], "dryRun": true}"""))
+
+    response.status shouldBe Status.Ok
+    response.as[String].unsafeRunSync() should include("\"dryRun\":true")
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  it should "return 400 for an empty documentIds list" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some("""{"documentIds": []}"""))
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  it should "return 400 when the batch exceeds the maximum batch size" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+    val ids = (1 to 1001).map(i => s"doc-$i")
+    val body = Map("documentIds" -> ids).asJson.noSpaces
+
+    val response = deleteDocuments(uri"/api/v1/documents", Some(body))
+
+    response.status shouldBe Status.BadRequest
+    response.as[String].unsafeRunSync() should include("Batch size too large")
+    mockService.documentRegistry.documentCount shouldBe 3
+    mockService.getDeleteCalls shouldBe empty
   }
 
   // ============================================================
@@ -296,6 +399,41 @@ class DocumentRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEa
     val body = response.as[String].unsafeRunSync()
     body should include("Sync completed")
     body should include("\"prunedCount\":0")
+  }
+
+  it should "mark sync complete with a whitespace-only body" in {
+    val request = Request[IO](Method.POST, uri"/api/v1/sync")
+      .withEntity("  \n")
+      .withContentType(`Content-Type`(MediaType.application.json))
+
+    val response = routes.orNotFound.run(request).unsafeRunSync()
+
+    response.status shouldBe Status.Ok
+    response.as[String].unsafeRunSync() should include("Sync completed")
+  }
+
+  it should "return 400 for a malformed body and not mark sync complete" in {
+    mockService.documentRegistry.seed(TestFixtures.sampleDocuments)
+    val request = Request[IO](Method.POST, uri"/api/v1/sync")
+      .withEntity("""{"keepDocumentIDs": ["doc-1"]}""")
+      .withContentType(`Content-Type`(MediaType.application.json))
+
+    val response = routes.orNotFound.run(request).unsafeRunSync()
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.getSyncInfo().unsafeRunSync().lastSyncTime shouldBe None
+    mockService.documentRegistry.documentCount shouldBe 3
+  }
+
+  it should "return 400 for invalid JSON" in {
+    val request = Request[IO](Method.POST, uri"/api/v1/sync")
+      .withEntity("""{not json""")
+      .withContentType(`Content-Type`(MediaType.application.json))
+
+    val response = routes.orNotFound.run(request).unsafeRunSync()
+
+    response.status shouldBe Status.BadRequest
+    mockService.documentRegistry.getSyncInfo().unsafeRunSync().lastSyncTime shouldBe None
   }
 
   it should "prune documents not in keep list" in {

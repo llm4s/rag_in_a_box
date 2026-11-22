@@ -283,8 +283,18 @@ paths:
       tags: [Documents]
       summary: Batch delete or clear all documents
       description: |
-        With request body: Delete specific documents by ID.
-        Without request body: Clear all documents.
+        With a BatchDeleteRequest body: delete the listed documents
+        (1 to 1000 IDs).
+        With `?all=true` and no body: clear all documents.
+        A missing or malformed body without `all=true` is rejected with 400
+        and never clears the index.
+      parameters:
+        - name: all
+          in: query
+          required: false
+          description: Set to true (with no request body) to delete every document.
+          schema:
+            type: boolean
       requestBody:
         content:
           application/json:
@@ -292,11 +302,25 @@ paths:
               $ref: '#/components/schemas/BatchDeleteRequest'
       responses:
         '200':
-          description: Documents deleted
+          description: Documents deleted (BatchDeleteResponse), or all documents cleared
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BatchDeleteResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/BatchDeleteResponse'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+                        example: All documents cleared
+        '400':
+          description: |
+            Missing or malformed body, empty or oversized documentIds,
+            invalid `all` value, or `all=true` combined with a body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /documents/{id}:
     get:
@@ -392,6 +416,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncPruneResponse'
+        '400':
+          description: Request body present but malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /sync/documents:
     get:

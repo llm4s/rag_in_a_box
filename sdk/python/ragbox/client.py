@@ -234,8 +234,12 @@ class RagBoxClient:
         return response.json()
 
     def clear_all(self) -> None:
-        """Delete all documents."""
-        self._request("DELETE", "/api/v1/documents")
+        """Delete all documents.
+
+        Uses the explicit ``?all=true`` opt-in; the server rejects a bare
+        ``DELETE /api/v1/documents`` with 400.
+        """
+        self._request("DELETE", "/api/v1/documents", params={"all": "true"})
         self._pushed_docs.clear()
 
     # ============================================================
