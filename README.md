@@ -1,913 +1,254 @@
 # RAG in a Box
 
-A turnkey RAG (Retrieval Augmented Generation) deployment powered by [llm4s](https://github.com/llm4s/llm4s).
+A self-hosted RAG (retrieval-augmented generation) server with an admin UI, built on
+[llm4s](https://github.com/llm4s/llm4s). Start it next to PostgreSQL + pgvector, point it at
+documents, and query them over a REST API, a chat UI or the Python SDK.
 
-**Features:**
-- REST API for document ingestion and querying
-- PostgreSQL + pgvector for scalable vector storage
-- **Persistent document registry** - survives restarts, tracks content changes
-- Built on [llm4s](https://github.com/llm4s/llm4s): every LLM and embedding provider is resolved through the llm4s provider registry (OpenAI, Anthropic, VoyageAI, Ollama, or any provider module on the classpath)
-- Hybrid search (pgvector + PostgreSQL full-text BM25) with RRF or weighted fusion
-- Optional reranking (Cohere or LLM) and LLM query rewriting, through llm4s
-- PDF, DOCX, HTML and text uploads (Apache Tika via llm4s)
-- Chat with conversation history
-- Per-query latency, token and cost accounting from llm4s tracing
-- Incremental ingestion with content hash change detection
-- Built-in connectors (directory, URL) with scheduled sync
-- **Visibility API** - inspect chunks, view config, understand RAG behavior
-- **Chunking Preview** - test chunking strategies before committing
-- **Runtime Configuration** - modify settings without server restart
-- **Per-Collection Chunking** - different chunking strategies per collection with file-type overrides
-- **A/B Experimentation** - test different RAG configurations with traffic splitting and statistical analysis
-- Python SDK for custom ingesters
-- Docker Compose for easy deployment
+RAG in a Box is also the reference application for llm4s: it uses the library the way a
+production service would, and the gaps it finds go back upstream as llm4s issues.
 
-## Quick Start
+Full documentation: **[docs/](docs/index.md)** (published with Jekyll). API reference: the
+OpenAPI spec at [`admin-ui/public/openapi.yaml`](admin-ui/public/openapi.yaml), browsable in the
+admin UI under **API Docs** (`/admin/api-docs`).
 
-### Prerequisites
-- Docker and Docker Compose
-- An API key for OpenAI (or Anthropic)
+## Features
 
-### Run with Docker Compose
+- **Ingestion**: JSON and file upload (PDF, DOCX, HTML, Markdown, text, ...), idempotent upserts
+  with content-hash change detection, and built-in sources (directory, URL, web crawler,
+  database, S3) with scheduled runs; each source syncs its own documents, so files deleted at the
+  source are removed from the index.
+- **Retrieval**: hybrid search (pgvector + PostgreSQL full-text) with RRF or weighted fusion,
+  optional Cohere or LLM reranking and LLM query rewriting, and answer generation with any llm4s
+  LLM provider.
+- **Chat**: multi-turn sessions with history, ratings and server-sent-event responses.
+- **Permissions**: users, groups and hierarchical collections with `queryableBy` /
+  `readableBy`; every query is filtered by what the caller may read.
+- **Authentication**: open, basic (username/password with JWTs) or OAuth2/OIDC (Google, Azure AD,
+  Okta, Keycloak, custom), plus a static API key and scoped `rat_` access tokens for ingesters.
+- **Tuning**: runtime settings without a restart (top-K, fusion, prompt, temperature, chunking),
+  per-collection chunking with file-type overrides, chunking preview/compare, and chunk
+  visibility.
+- **Evaluation**: a query log with per-stage latency, tokens and cost; feedback; optimization
+  suggestions; A/B experiments with significance tests (Welch's t-test, two-proportion z-test).
+- **Operations**: Flyway migrations, a shared HikariCP pool, health/readiness probes,
+  Prometheus metrics, rate limiting, request-size limits, CORS, structured logs, Docker image,
+  Helm chart and Kubernetes manifests.
+- **Clients**: Vue 3 + Vuetify admin UI at `/admin`, Python SDK, OpenAPI spec.
+
+### llm4s features showcased
+
+| llm4s feature | Where ragbox uses it |
+|---|---|
+| Provider registry (`ProviderRegistry`, ServiceLoader provider modules) | Every LLM and embedding client is resolved by provider id (`openai/gpt-4o`, `anthropic/...`, `voyage`, `ollama`, or any module on the classpath); nothing in ragbox matches on provider names (`Llm4sPipeline`). |
+| `RAG` pipeline (`RAG.queryWithAnswer`, `RAGConfig`) | Search and answer generation; pipelines are pooled by their settings (`PipelinePool`). |
+| PostgreSQL hybrid search (pgvector + full-text) and `FusionStrategy` | Default search mode with RRF or weighted fusion. |
+| Permission-aware `PgSearchIndex`, `PrincipalStore`, collections | Users, groups and collection permissions; permission-filtered retrieval. |
+| Rerankers (`CohereReranker`, LLM reranking) and `LLMQueryRewriter` | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM`. |
+| Chunkers (`ChunkerFactory`: simple, sentence, markdown, semantic) | Ingestion, per-collection chunking and the chunking preview. |
+| `TikaDocumentExtractor` | `POST /api/v1/documents/upload`. |
+| Loaders (`FileLoader`, `UrlLoader`, `WebCrawlerLoader`, `S3Loader`) | Built-in ingestion sources. |
+| `NetworkSecurity` | SSRF policy for URL and crawler ingestion. |
+| Tracing (`Tracing`, `TracingLLMClient`) and the bundled model metadata (`ModelRegistryService`) | Per-query token, latency and cost accounting in the query log. |
+| `Result` / typed errors, `Secret` | Error handling and secret handling throughout. |
+
+Where llm4s does not yet do what ragbox needs, ragbox works around it and links the upstream
+issue; see [ROADMAP.md](ROADMAP.md).
+
+## Quick start
+
+### Docker Compose
+
+Needs Docker and an OpenAI API key (or change the models; see below).
 
 ```bash
-# Clone the repository
-git clone https://github.com/llm4s/rag-in-a-box.git
-cd rag-in-a-box
+git clone https://github.com/llm4s/rag_in_a_box.git
+cd rag_in_a_box
 
-# Copy and configure environment
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+cp .env.example .env          # then set OPENAI_API_KEY in .env
+docker compose up -d --build  # builds the admin UI and the server into one image
 
-# Start all services
-docker-compose up -d
-
-# Check health
 curl http://localhost:8080/health
-```
-
-### Local Development
-
-```bash
-# Start PostgreSQL with pgvector
-docker run -d --name ragbox-postgres \
-  -e POSTGRES_USER=rag \
-  -e POSTGRES_PASSWORD=rag \
-  -e POSTGRES_DB=ragdb \
-  -v $(pwd)/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql \
-  -p 15432:5432 \
-  pgvector/pgvector:pg15
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-
-# Run the application
-./run.sh
-```
-
-### Access Points
-- **API**: http://localhost:8080
-- **Admin UI**: http://localhost:8080/admin
-- **PostgreSQL**: localhost:15432 (user: rag, password: rag)
-
-## Admin UI
-
-RAG in a Box includes a built-in web-based admin interface for managing documents, configuration, and monitoring.
-
-### Features
-
-- **Dashboard** - Overview of document counts, chunk statistics, and system health
-- **Documents** - Browse, search, upload, and delete documents
-- **Upload** - Add documents via text, file upload (PDF, DOCX, HTML, text, ...), or URL ingestion
-- **Configuration** - View and modify runtime settings
-- **Collections** - Manage per-collection chunking configurations
-- **Chunking Preview** - Test and compare chunking strategies before applying
-- **Visibility** - Inspect chunks and understand RAG behavior
-- **Ingestion** - Monitor and trigger ingestion jobs
-- **Analytics** - Query metrics, latency distribution, and feedback tracking
-- **Optimization** - AI-powered suggestions for improving RAG performance
-- **Experiments** - Create and manage A/B tests for RAG configurations
-
-### Accessing the Admin UI
-
-The Admin UI is bundled with the API server and available at `/admin`:
-
-```bash
-# Start the server
-docker-compose up -d
-
-# Open in browser
 open http://localhost:8080/admin
 ```
 
-### Development Mode
+Compose starts PostgreSQL + pgvector (host port 15432) and the server (port 8080) in **open
+mode**: no authentication, every request is an administrator. That is fine on your own machine,
+not anywhere else; see [Authentication](#authentication).
 
-For frontend development with hot reload:
+`docker-compose.yml` passes a fixed list of variables to the server (models, API keys, chunking
+and search settings, `API_KEY`, ingestion, logging, rate limits). To use others, such as
+`AUTH_MODE`, `JWT_SECRET`, `ADMIN_PASSWORD`, `COHERE_API_KEY` or the `OAUTH_*` settings, add them
+to the `api` service's `environment:` block. Files in `./data` (or `INGEST_HOST_DIR`) are
+mounted at `/data` for directory ingestion.
+
+### Local development
+
+Needs Java 21, sbt, Node.js 20+ and Docker.
 
 ```bash
-cd admin-ui
-npm install
-npm run dev
+# PostgreSQL with pgvector (the init script only creates the extension; Flyway creates the schema)
+docker run -d --name ragbox-postgres \
+  -e POSTGRES_USER=rag -e POSTGRES_PASSWORD=rag -e POSTGRES_DB=ragdb \
+  -v $(pwd)/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql \
+  -p 15432:5432 pgvector/pgvector:pg15
+
+cp .env.example .env   # set OPENAI_API_KEY
+
+# Build the admin UI once: sbt copies admin-ui/dist into the server's resources.
+# Without it the API works but /admin is empty (sbt warns "Admin UI dist not found").
+(cd admin-ui && npm ci && npm run build)
+
+./run.sh               # loads .env and runs `sbt run`
 ```
 
-This starts a development server at http://localhost:3000 that proxies API requests to the backend.
+For UI work, run `npm run dev` in `admin-ui/` instead: a Vite dev server on
+http://localhost:3000 that proxies API calls to the server on port 8080.
 
-## API Usage
-
-### Upload a Document
+### First requests
 
 ```bash
+# Add a document
 curl -X POST http://localhost:8080/api/v1/documents \
   -H "Content-Type: application/json" \
-  -d '{
-    "content": "PostgreSQL is a powerful open-source relational database...",
-    "filename": "postgres-intro.txt",
-    "metadata": {"source": "documentation"}
-  }'
-```
+  -d '{"content": "PostgreSQL is a powerful open-source relational database.", "filename": "pg.txt"}'
 
-### Query with Answer Generation
+# Upload a file
+curl -X POST http://localhost:8080/api/v1/documents/upload -F file=@handbook.pdf -F collection=docs
 
-```bash
+# Ask a question
 curl -X POST http://localhost:8080/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{
-    "question": "What is PostgreSQL?",
-    "topK": 5
-  }'
-```
+  -d '{"question": "What is PostgreSQL?"}'
 
-### Search Only (No LLM)
-
-```bash
+# Retrieve chunks without generating an answer
 curl -X POST http://localhost:8080/api/v1/search \
   -H "Content-Type: application/json" \
-  -d '{
-    "query": "database features",
-    "topK": 10
-  }'
+  -d '{"query": "relational database", "topK": 5}'
 ```
 
-### Get Statistics
+With authentication on, add `-H "Authorization: Bearer $TOKEN"` (an `API_KEY`, a `rat_` access
+token, or a JWT from `POST /api/v1/auth/login`).
 
-```bash
-curl http://localhost:8080/api/v1/stats
-```
+## Authentication
 
-## Incremental Ingestion (SDK Pattern)
+Set `AUTH_MODE`:
 
-RAG in a Box supports idempotent document ingestion for custom ingesters:
+| Mode | Who can call the API | Typical use |
+|---|---|---|
+| `open` (default) | Everyone, as administrator. With `API_KEY` set, only holders of that key or a `rat_` token. | Local development; a single trusted client |
+| `basic` | Users who log in with a password (`POST /api/v1/auth/login` returns a JWT, valid for `JWT_EXPIRATION`, default 24 h); the API key and `rat_` tokens. Needs `JWT_SECRET` (at least 32 characters) and `ADMIN_PASSWORD` (bootstrap admin `ADMIN_USERNAME`, default `admin`). | Small teams |
+| `oauth` | Users who sign in through an OIDC provider (session cookie); the API key and `rat_` tokens. Needs the PostgreSQL permission index. | Organisations with SSO |
 
-### Upsert a Document
+- **Access tokens** (`rat_...`, created by an admin with `POST /api/v1/tokens`) carry scopes
+  (`documents:read`, `documents:write`, `sync:read`, `sync:write`, `query`, `admin`) and can be
+  restricted to collections. Use them for ingesters and integrations.
+- **Admin-only** endpoints: users, tokens, principals, ingestion, visibility, analytics,
+  suggestions, experiments, runtime-config changes, collection writes, `/metrics` and deleting
+  every document.
+- **Trusted proxy**: with `AUTH_TRUSTED_PROXY_HEADERS=true`, an admin-authenticated gateway can
+  act for an end user with `X-User-Id` / `X-Group-Ids`. Otherwise those headers are stripped.
 
-```bash
-# First upsert - creates document
-curl -X PUT http://localhost:8080/api/v1/documents/my-doc-1 \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Document content here...", "metadata": {"source": "api"}}'
-# Returns: {"action": "created", "chunks": 3, ...}
+See the [authentication guide](docs/guide/authentication.md),
+[access tokens](docs/guide/access-tokens.md), [permissions](docs/guide/permissions.md) and
+[OAuth configuration](docs/oauth-configuration.md).
 
-# Same content - skips re-indexing
-curl -X PUT http://localhost:8080/api/v1/documents/my-doc-1 \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Document content here...", "metadata": {"source": "api"}}'
-# Returns: {"action": "unchanged", ...}
+## API overview
 
-# Updated content - re-indexes
-curl -X PUT http://localhost:8080/api/v1/documents/my-doc-1 \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Updated document content!", "metadata": {"source": "api"}}'
-# Returns: {"action": "updated", "chunks": 2, ...}
-```
+All endpoints are under `/api/v1` except health, metrics and the WebSocket. The authoritative
+reference, with request and response schemas and the auth rule of every operation, is
+[`openapi.yaml`](admin-ui/public/openapi.yaml) (a test fails when a route is missing from it).
+"Admin" means administrators only; "Auth" means any authenticated caller (access tokens need the
+named scope).
 
-### Sync and Prune
+| Area | Endpoints | Auth |
+|---|---|---|
+| Health | `GET /health`, `/health/ready`, `/health/live` | Public |
+| Metrics | `GET /metrics` (Prometheus; `METRICS_ENABLED=true`) | Admin, or public with `METRICS_REQUIRE_AUTH=false` |
+| Login | `GET /auth/mode`, `POST /auth/login` (basic mode) | Public |
+| OAuth | `GET /oauth/login`, `GET /oauth/callback`, `POST /oauth/logout`, `GET /oauth/userinfo` (oauth mode) | Public / session |
+| Current user | `GET /auth/me`, `PUT /auth/password` | Auth |
+| Users | `GET`, `POST /users`; `DELETE /users/{id}`; `PUT /users/{id}/password` | Admin |
+| Access tokens | `GET`, `POST /tokens`; `GET`, `DELETE /tokens/{id}` | Admin |
+| Documents | `GET`, `POST`, `DELETE /documents`; `POST /documents/upload`; `GET`, `PUT`, `DELETE /documents/{id}`; `GET /stats` | Auth (`documents:read` / `documents:write`); `DELETE /documents?all=true` is Admin |
+| Sync | `GET /sync/status`; `POST /sync`; `GET /sync/documents`, `/sync/documents/{id}`; `POST /sync/check` | Admin, or tokens with `sync:read` / `sync:write` |
+| Query | `POST /query`, `/query/stream` (SSE), `/search` | Auth (`query`) |
+| Chat | `GET`, `POST /chat/sessions`; `GET`, `PUT`, `DELETE /chat/sessions/{id}`; `POST /chat/sessions/{id}/messages`, `.../messages/stream`; `PUT /chat/messages/{id}/rate` | Auth (`query`), own sessions only |
+| Collections | `GET /collections`, `/collections/accessible`, `/collections/{path}`, `/collections/{path}/stats`; `POST /collections`; `PUT /collections/{path}/permissions`; `DELETE /collections/{path}` | Reads: Auth (filtered); writes: Admin |
+| Collection chunking | `GET /collections/configs`; `GET`, `PUT`, `DELETE /collections/{c}/config`; `POST /collections/{c}/config/preview` | Reads: Auth; writes and preview: Admin |
+| Principals | `GET`, `POST /principals/users`, `/principals/groups`; `GET /principals/lookup/{id}`; `DELETE /principals/{type}/{id}` | Admin |
+| Configuration | `GET /config`, `/config/providers`, `/config/runtime`, `/config/runtime/meta`; `PUT /config/runtime`; `POST /config/runtime/validate`; `GET /config/runtime/history` | Reads: Auth; changes and history: Admin |
+| Chunking | `POST /chunking/preview`, `/chunking/compare`; `GET /chunking/strategies`, `/chunking/presets` | Auth |
+| Ingestion | `POST /ingest/directory`, `/ingest/url`, `/ingest/run`, `/ingest/run/{source}`; `GET /ingest/status`, `/ingest/sources` | Admin |
+| Visibility | `GET /visibility/config`, `/visibility/stats`, `/visibility/collections`, `/visibility/chunks`, `/visibility/chunks/{docId}`, `/visibility/chunks/{docId}/{index}` | Admin |
+| Analytics | `GET /analytics/queries`, `/analytics/queries/summary`, `/analytics/queries/{id}`; `GET /analytics/suggestions`, `.../summary`, `.../collection/{name}` | Admin |
+| Feedback | `POST /feedback` | Auth |
+| Experiments | `GET`, `POST /experiments`; `GET /experiments/running`, `/experiments/{id}`, `/experiments/{id}/results`; `PUT /experiments/{id}/start`, `/stop`, `/archive`; `DELETE /experiments/{id}` | Admin |
+| WebSocket | `GET /ws` (ingestion progress, stats updates; `?access_token=` accepted) | Auth |
 
-After upserting documents, prune orphaned ones:
-
-```bash
-# Get sync status
-curl http://localhost:8080/api/v1/sync/status
-
-# List synced document IDs
-curl http://localhost:8080/api/v1/sync/documents
-
-# Complete sync and prune documents not in keep list
-curl -X POST http://localhost:8080/api/v1/sync \
-  -H "Content-Type: application/json" \
-  -d '{"keepDocumentIds": ["my-doc-1", "my-doc-2"]}'
-```
-
-### Health Checks
-
-```bash
-# Basic health
-curl http://localhost:8080/health
-
-# Readiness (includes database check)
-curl http://localhost:8080/health/ready
-```
+Errors are JSON: `{"error": "<code>", "message": "...", "details": "..."}` (`details` is
+optional).
 
 ## Configuration
 
-All settings can be configured via environment variables:
+Configuration comes from environment variables (read through
+[`application.conf`](src/main/resources/application.conf)). [`.env.example`](.env.example)
+lists every variable with its default; the
+[configuration guide](docs/guide/configuration.md) explains them. The most common:
 
-### Server Settings
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SERVER_HOST` | `0.0.0.0` | Server bind address |
-| `SERVER_PORT` | `8080` | Server port |
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `COHERE_API_KEY` | - | Provider API keys |
+| `LLM_MODEL` | `openai/gpt-4o` | Answer model, `<provider>/<model>` |
+| `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` | `openai` / `text-embedding-3-small` | Embeddings (changing them needs a re-index) |
+| `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` | `localhost`, `15432`, `ragdb`, `rag`, `rag` | Database; or `DATABASE_URL` |
+| `AUTH_MODE` | `open` | `open`, `basic` or `oauth` |
+| `API_KEY` | - | Static admin key (`X-API-Key` or `Authorization: Bearer`) |
+| `RAG_CHUNKING_STRATEGY`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` | `sentence`, `800`, `150` | Default chunking |
+| `RAG_TOP_K`, `RAG_FUSION_STRATEGY` | `5`, `rrf` | Retrieval |
+| `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM` | `none`, `none` | Reranking (`cohere`, `llm`) and query rewriting (`llm-rewrite`) |
+| `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source and its interval (`30m`, `6h`, `daily`) |
+| `ALLOWED_ORIGINS` | - | CORS origins (same-origin only when unset) |
 
-### Database Settings
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PG_HOST` | `localhost` | PostgreSQL host |
-| `PG_PORT` | `5432` | PostgreSQL port |
-| `PG_DATABASE` | `ragdb` | Database name |
-| `PG_USER` | `rag` | Database user |
-| `PG_PASSWORD` | `rag` | Database password |
-| `DATABASE_URL` | - | Alternative: full connection URL |
-
-### API Keys
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENAI_API_KEY` | For OpenAI | OpenAI API key |
-| `ANTHROPIC_API_KEY` | For Anthropic | Anthropic API key |
-| `VOYAGE_API_KEY` | For VoyageAI | VoyageAI API key |
-
-### Embedding Settings
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | `openai` | Provider: openai, voyage, ollama |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-
-### LLM Settings
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o` | Model for answer generation |
-| `LLM_TEMPERATURE` | `0.1` | Temperature for responses |
-
-### RAG Settings
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RAG_CHUNKING_STRATEGY` | `sentence` | Strategy: simple, sentence, markdown, semantic |
-| `RAG_CHUNK_SIZE` | `800` | Target chunk size (characters) |
-| `RAG_CHUNK_OVERLAP` | `150` | Overlap between chunks |
-| `RAG_TOP_K` | `5` | Number of context chunks |
-| `RAG_FUSION_STRATEGY` | `rrf` | Fusion: rrf, weighted, vector_only, keyword_only |
-
-## API Reference
-
-### Documents
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/documents` | Upload a document |
-| PUT | `/api/v1/documents/{id}` | Upsert a document (idempotent) |
-| GET | `/api/v1/documents` | List documents |
-| DELETE | `/api/v1/documents` | Batch delete by `documentIds` body, or clear all with `?all=true` |
-| DELETE | `/api/v1/documents/{id}` | Delete a document |
-
-### Sync
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/sync/status` | Get sync status |
-| GET | `/api/v1/sync/documents` | List synced document IDs |
-| POST | `/api/v1/sync` | Mark sync complete (optionally prune) |
-
-### Query
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/query` | Query with answer generation |
-| POST | `/api/v1/query/stream` | Query with SSE streaming response |
-| POST | `/api/v1/search` | Search without LLM |
-
-### Experiments
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/experiments` | Create an experiment |
-| GET | `/api/v1/experiments` | List experiments |
-| GET | `/api/v1/experiments/running` | Get currently running experiment |
-| GET | `/api/v1/experiments/{id}` | Get experiment by ID |
-| PUT | `/api/v1/experiments/{id}/start` | Start an experiment |
-| PUT | `/api/v1/experiments/{id}/stop` | Stop an experiment |
-| PUT | `/api/v1/experiments/{id}/archive` | Archive an experiment |
-| DELETE | `/api/v1/experiments/{id}` | Delete a draft experiment |
-| GET | `/api/v1/experiments/{id}/results` | Get experiment results |
-
-### Ingestion
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/ingest/directory` | Ingest from directory |
-| POST | `/api/v1/ingest/url` | Ingest from URLs |
-| POST | `/api/v1/ingest/run` | Run all configured sources |
-| POST | `/api/v1/ingest/run/{source}` | Run specific source |
-| GET | `/api/v1/ingest/status` | Get ingestion status |
-| GET | `/api/v1/ingest/sources` | List configured sources |
-
-### Configuration
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/config` | Get current configuration |
-| GET | `/api/v1/config/providers` | List available providers |
-| GET | `/api/v1/stats` | Get RAG statistics |
-
-### Visibility
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/visibility/config` | Detailed config with changeability annotations |
-| GET | `/api/v1/visibility/chunks` | List all chunks (paginated) |
-| GET | `/api/v1/visibility/chunks/{docId}` | Get all chunks for a document |
-| GET | `/api/v1/visibility/chunks/{docId}/{idx}` | Get specific chunk |
-| GET | `/api/v1/visibility/stats` | Detailed stats with chunk size distribution |
-| GET | `/api/v1/visibility/collections` | Collection details with chunking info |
-
-### Chunking Preview
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/chunking/preview` | Preview chunking on sample text |
-| POST | `/api/v1/chunking/compare` | Compare multiple strategies |
-| GET | `/api/v1/chunking/strategies` | List available strategies |
-| GET | `/api/v1/chunking/presets` | Get preset configurations |
-
-### Runtime Configuration
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/config/runtime` | Get current runtime settings |
-| PUT | `/api/v1/config/runtime` | Update runtime settings |
-| POST | `/api/v1/config/runtime/validate` | Validate proposed changes |
-| GET | `/api/v1/config/runtime/history` | Get config change history |
-
-### Collection Configuration
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/collections/{name}/config` | Get collection chunking config |
-| PUT | `/api/v1/collections/{name}/config` | Set collection chunking config |
-| DELETE | `/api/v1/collections/{name}/config` | Remove custom config (use defaults) |
-| GET | `/api/v1/collections/configs` | List all collection configs |
-| POST | `/api/v1/collections/{name}/config/preview` | Preview effective config for a file |
-
-### Health
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Basic health check |
-| GET | `/health/ready` | Readiness check |
-| GET | `/health/live` | Liveness check |
-
-## Built-in Ingestion (Tier 1)
-
-RAG in a Box includes built-in connectors for common data sources:
-
-### Directory Ingestion
-
-Ingest all documents from a directory:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/ingest/directory \
-  -H "Content-Type: application/json" \
-  -d '{
-    "path": "/data/docs",
-    "patterns": ["*.md", "*.txt", "*.pdf"],
-    "recursive": true
-  }'
-```
-
-The path must be under an allowed root (`INGEST_ALLOWED_ROOTS`, default `INGEST_DIR`); URLs must
-be public http(s) addresses. Refused requests get `400`. See
-[Ingestion policy](docs/guide/configuration.md#ingestion-policy-allowed-directories-and-urls).
-
-### URL Ingestion
-
-Ingest documents from URLs:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/ingest/url \
-  -H "Content-Type: application/json" \
-  -d '{"urls": ["https://example.com/doc1.html", "https://example.com/doc2.html"]}'
-```
-
-### Configure Automatic Ingestion
-
-Set environment variables for automatic directory ingestion:
-
-```bash
-export INGEST_DIR=/data/docs
-export INGEST_PATTERNS="*.md,*.txt,*.pdf"
-export INGEST_RECURSIVE=true
-export INGEST_ON_STARTUP=true
-export INGEST_SCHEDULE="6h"  # Run every 6 hours
-
-./run.sh
-```
-
-Or configure in `application.conf`:
-
-```hocon
-ingestion {
-  enabled = true
-  run-on-startup = true
-  schedule = "6h"  # Options: "5m", "1h", "6h", "daily", "hourly"
-
-  sources = [
-    {
-      type = "directory"
-      name = "docs"
-      path = "/data/docs"
-      patterns = ["*.md", "*.txt", "*.pdf"]
-      recursive = true
-    }
-  ]
-}
-```
-
-### Schedule Options
-
-| Format | Description |
-|--------|-------------|
-| `5m`, `30m` | Every N minutes |
-| `1h`, `6h`, `12h` | Every N hours |
-| `1d`, `7d` | Every N days |
-| `hourly` | Every hour |
-| `daily` | Once per day |
-| `weekly` | Once per week |
-| `0 * * * *` | Cron: every hour |
-| `0 */6 * * *` | Cron: every 6 hours |
-
-### Ingestion Status
-
-```bash
-# Check ingestion status
-curl http://localhost:8080/api/v1/ingest/status
-
-# List configured sources
-curl http://localhost:8080/api/v1/ingest/sources
-
-# Run all configured sources
-curl -X POST http://localhost:8080/api/v1/ingest/run
-```
+Runtime settings changed through the API or the admin UI are stored in the database and survive
+restarts.
 
 ## Python SDK
 
-A Python client is available for easy integration:
-
 ```bash
-cd sdk/python
-pip install -e .
+pip install ./sdk/python
 ```
-
-### Usage
 
 ```python
 from ragbox import RagBoxClient, Document
 
-client = RagBoxClient("http://localhost:8080")
-
-# Upsert documents (idempotent)
-docs = [
-    Document(id="doc-1", content="First document"),
-    Document(id="doc-2", content="Second document"),
-]
-
-for doc in docs:
-    result = client.upsert(doc)
-    print(f"{doc.id}: {result.action}")
-
-# Query with answer
-result = client.query("What is in the documents?")
-print(result.answer)
-
-# Prune deleted documents
-client.sync(keep_ids=[doc.id for doc in docs])
+client = RagBoxClient("http://localhost:8080", api_key="rat_...")  # or RAGBOX_API_KEY
+client.upsert(Document(id="doc-1", content="First document"))
+print(client.query("What is in the documents?").answer)
+client.sync(keep_ids=["doc-1"])  # prune documents no longer at the source
 ```
 
-See [sdk/python/README.md](sdk/python/README.md) for full documentation.
-
-## Runtime Configuration API
-
-The Runtime Configuration API allows you to modify settings without restarting the server. Settings are classified as:
-
-- **Hot**: Changes take effect immediately (topK, fusionStrategy, systemPrompt)
-- **Warm**: Changes affect new documents only (chunkingStrategy, chunkSize)
-
-### View Current Settings
-
-```bash
-curl http://localhost:8080/api/v1/config/runtime
-```
-
-### Update Settings
-
-```bash
-curl -X PUT http://localhost:8080/api/v1/config/runtime \
-  -H "Content-Type: application/json" \
-  -d '{"topK": 10, "fusionStrategy": "weighted"}'
-```
-
-### Validate Before Applying
-
-```bash
-curl -X POST http://localhost:8080/api/v1/config/runtime/validate \
-  -H "Content-Type: application/json" \
-  -d '{"topK": 10, "chunkSize": 500}'
-```
-
-### View Change History
-
-```bash
-curl http://localhost:8080/api/v1/config/runtime/history
-```
-
-## Per-Collection Chunking API
-
-The Per-Collection Chunking API allows different collections to use different chunking configurations. This is useful when you have documents with different characteristics in different collections.
-
-### Configuration Resolution Order
-
-When determining the effective configuration for a file:
-1. **File-type override** - If the collection config has a file-type strategy for the file extension
-2. **Collection config** - The collection's custom settings
-3. **Runtime defaults** - The global default settings
-
-### View Collection Config
-
-```bash
-curl http://localhost:8080/api/v1/collections/my-collection/config
-```
-
-Response shows both the custom config (if any) and the effective config:
-```json
-{
-  "collection": "my-collection",
-  "hasCustomConfig": true,
-  "config": {
-    "strategy": "markdown",
-    "targetSize": 1000,
-    "fileTypeStrategies": {".md": "markdown", ".txt": "sentence"}
-  },
-  "effectiveConfig": {
-    "strategy": "markdown",
-    "targetSize": 1000,
-    "maxSize": 1600,
-    "overlap": 150,
-    "source": "collection"
-  },
-  "documentCount": 25
-}
-```
-
-### Set Collection Config
-
-```bash
-curl -X PUT http://localhost:8080/api/v1/collections/my-collection/config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "strategy": "markdown",
-    "targetSize": 1000,
-    "fileTypeStrategies": {
-      ".md": "markdown",
-      ".txt": "sentence"
-    }
-  }'
-```
-
-### Preview Effective Config for a File
-
-Test which settings will apply for a specific file:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/collections/my-collection/config/preview \
-  -H "Content-Type: application/json" \
-  -d '{"collection": "my-collection", "filename": "README.md"}'
-```
-
-Response includes the resolution path showing how the config was determined:
-```json
-{
-  "collection": "my-collection",
-  "filename": "README.md",
-  "effectiveConfig": {
-    "strategy": "markdown",
-    "targetSize": 1000,
-    "source": "file-type",
-    "appliedFileTypeOverride": ".md"
-  },
-  "configResolutionPath": [
-    "Checked file extension: .md",
-    "Found file-type override in collection 'my-collection' config",
-    "Using strategy: markdown"
-  ]
-}
-```
-
-### List All Collection Configs
-
-```bash
-curl http://localhost:8080/api/v1/collections/configs
-```
-
-### Remove Custom Config
-
-```bash
-curl -X DELETE http://localhost:8080/api/v1/collections/my-collection/config
-```
-
-## Chunking Preview API
-
-The Chunking Preview API lets you test chunking strategies before committing to them. This is essential for tuning RAG performance.
-
-### Preview Chunking
-
-Test how content will be chunked with current or custom settings:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chunking/preview \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "# My Document\n\nThis is sample content to test chunking...",
-    "strategy": "markdown",
-    "targetSize": 500
-  }'
-```
-
-### Compare Strategies
-
-Compare multiple chunking strategies on the same content:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chunking/compare \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "Your sample content here...",
-    "strategies": ["simple", "sentence", "markdown"]
-  }'
-```
-
-The response includes a recommendation based on content analysis.
-
-### List Strategies
-
-View available strategies with their descriptions and trade-offs:
-
-```bash
-curl http://localhost:8080/api/v1/chunking/strategies
-```
-
-### View Presets
-
-Get preset configurations for different use cases:
-
-```bash
-curl http://localhost:8080/api/v1/chunking/presets
-```
-
-## Experimentation API
-
-The Experimentation API enables A/B testing of RAG configurations to find optimal settings. Create experiments to compare different parameter combinations and analyze results with statistical significance.
-
-### Configuration Temperature
-
-Parameters are categorized by how quickly changes take effect:
-
-| Temperature | Parameters | Re-indexing? |
-|-------------|-----------|--------------|
-| **Hot** | topK, fusionStrategy, systemPrompt, llmTemperature | No - instant |
-| **Warm** | chunkStrategy, chunkSize, overlap | Preview only |
-| **Cold** | embeddingModel, vectorDimensions | Yes - full re-index |
-
-### Create an Experiment
-
-```bash
-curl -X POST http://localhost:8080/api/v1/experiments \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Test higher topK",
-    "description": "Compare topK=5 vs topK=10 for retrieval quality",
-    "baselineConfig": {
-      "topK": 5,
-      "fusionStrategy": "rrf"
-    },
-    "variantConfig": {
-      "topK": 10,
-      "fusionStrategy": "rrf"
-    },
-    "trafficSplit": 0.5
-  }'
-```
-
-### Start an Experiment
-
-```bash
-curl -X PUT http://localhost:8080/api/v1/experiments/{id}/start
-```
-
-Once started, queries are automatically routed based on the traffic split. Query logs track which variant was used.
-
-### Query with Experiment
-
-When an experiment is running, queries are automatically assigned to baseline or variant:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is PostgreSQL?"}'
-```
-
-The response includes an `experimentId` and the query log tracks which configuration was used.
-
-### Manual Override (Testing)
-
-You can also manually specify configuration overrides for testing:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "What is PostgreSQL?",
-    "experimentId": "my-test",
-    "overrides": {
-      "topK": 10,
-      "fusionStrategy": "weighted",
-      "llmTemperature": 0.2
-    }
-  }'
-```
-
-### View Experiment Results
-
-```bash
-curl http://localhost:8080/api/v1/experiments/{id}/results
-```
-
-Response includes metrics comparison and statistical analysis:
-
-```json
-{
-  "experimentId": "exp-123",
-  "status": "running",
-  "duration": "3 days",
-  "baseline": {
-    "queryCount": 150,
-    "avgLatencyMs": 320,
-    "avgRating": 3.8,
-    "avgChunksUsed": 4.2
-  },
-  "variant": {
-    "queryCount": 148,
-    "avgLatencyMs": 285,
-    "avgRating": 4.1,
-    "avgChunksUsed": 3.8
-  },
-  "analysis": {
-    "latencyChange": "-10.9%",
-    "ratingChange": "+7.9%",
-    "statisticalSignificance": 0.92
-  }
-}
-```
-
-### Stop and Archive
-
-```bash
-# Stop the experiment
-curl -X PUT http://localhost:8080/api/v1/experiments/{id}/stop
-
-# Archive for historical reference
-curl -X PUT http://localhost:8080/api/v1/experiments/{id}/archive
-```
-
-### List Experiments
-
-```bash
-# List all experiments
-curl http://localhost:8080/api/v1/experiments
-
-# Get currently running experiment
-curl http://localhost:8080/api/v1/experiments/running
-```
-
-## Visibility API
-
-The Visibility API provides insight into how your RAG system is configured and how documents are being chunked. This is essential for understanding and tuning RAG performance.
-
-### Configuration Visibility
-
-View detailed configuration with changeability annotations:
-
-```bash
-curl http://localhost:8080/api/v1/visibility/config
-```
-
-Response includes changeability information for each setting:
-- **Hot**: Can change at runtime with immediate effect (topK, fusionStrategy)
-- **Warm**: Can change at runtime, affects new documents only (chunkSize, chunkingStrategy)
-- **Cold**: Requires restart and full re-indexing (embeddingProvider, embeddingModel)
-
-### Chunk Inspection
-
-View how documents are chunked:
-
-```bash
-# List all chunks (paginated)
-curl "http://localhost:8080/api/v1/visibility/chunks?page=1&pageSize=20"
-
-# Get all chunks for a specific document
-curl http://localhost:8080/api/v1/visibility/chunks/{documentId}
-
-# Get a specific chunk
-curl http://localhost:8080/api/v1/visibility/chunks/{documentId}/0
-```
-
-### Statistics
-
-Get detailed statistics including chunk size distribution:
-
-```bash
-curl http://localhost:8080/api/v1/visibility/stats
-```
-
-Response includes:
-- Document and chunk counts
-- Per-collection statistics
-- Chunk size distribution (min, max, avg, median, p90)
-- Histogram buckets for chunk sizes
-- Ingestion timestamps
-
-### Collection Details
-
-View collections with their chunking configuration:
-
-```bash
-curl http://localhost:8080/api/v1/visibility/collections
-```
-
-## Persistence
-
-RAG in a Box uses PostgreSQL-backed document registry for durability:
-
-- **Document tracking persists across restarts** - No re-indexing needed after restart
-- **Content hash detection** - Only changed documents are re-indexed
-- **Sync status preserved** - Last sync time and document list survive restarts
-
-The document registry stores:
-- Document IDs and content hashes (SHA-256)
-- Chunk counts and metadata
-- Indexed and updated timestamps
-
-This enables efficient incremental ingestion workflows where only new or modified documents are processed.
+See [sdk/python/README.md](sdk/python/README.md).
+
+## Deployment
+
+- **Docker**: the [Dockerfile](Dockerfile) builds the admin UI and the server into one image
+  (published as `ghcr.io/llm4s/rag_in_a_box` by CI).
+- **Kubernetes**: a [Helm chart](deploy/helm/ragbox) and plain [manifests](deploy/kubernetes);
+  see the [Helm guide](docs/guide/helm-deployment.md).
+- **Production checklist**: [docs/production-deployment.md](docs/production-deployment.md).
 
 ## Development
 
-### Build Fat JAR
-
 ```bash
-sbt assembly
-java -jar target/scala-3.7.1/ragbox-assembly.jar
+sbt test                 # unit tests; integration specs use Testcontainers (Docker)
+sbt assembly             # fat JAR in target/scala-3.7.1/
+cd admin-ui && npm run test:run   # admin UI unit tests (npm run test:e2e: Playwright)
+cd sdk/python && pip install '.[dev]' && pytest
 ```
 
-### Running Tests
-
-```bash
-sbt test
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Docker Compose                              │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────────┐  ┌────────────────────────────────────┐ │
-│  │    RAG API Service     │  │     PostgreSQL + pgvector          │ │
-│  │    (Scala + http4s)    │  │                                    │ │
-│  │                        │  │  ┌─────────────────────────────┐   │ │
-│  │  • Document upload     │◀─│  │ rag_embeddings (vectors)    │   │ │
-│  │  • Upsert (idempotent) │  │  │ document_registry (tracking)│   │ │
-│  │  • Query + Answer      │  │  │ chunk_registry (visibility) │   │ │
-│  │  • Visibility API      │  │  │ collection_configs (tuning) │   │ │
-│  │  • Runtime Config      │  │  │ config_history (audit)      │   │ │
-│  │  • Collection Config   │  │  │ sync_status (sync state)    │   │ │
-│  │      Port 8080         │  │  └─────────────────────────────┘   │ │
-│  └────────────────────────┘  └────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-          │                              │
-          ▼ External Services            ▼ Custom Ingesters
-   ┌──────┴──────┐                ┌──────┴──────┐
-   │   LLM API   │                │ Python SDK  │
-   │  (OpenAI,   │                │ REST API    │
-   │  Anthropic) │                │ Scheduled   │
-   └─────────────┘                └─────────────┘
-```
+[DESIGN.md](DESIGN.md) describes the architecture, [ROADMAP.md](ROADMAP.md) what is done and
+planned, and [CONTRIBUTING.md](CONTRIBUTING.md) how to contribute.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT; see [LICENSE](LICENSE).

@@ -1,639 +1,290 @@
-# RAG in a Box - Design Document
+# RAG in a Box: Design
 
-A turnkey RAG (Retrieval Augmented Generation) deployment that provides a complete, ready-to-run document Q&A system with web interfaces for document management and chat.
+How the server is put together today. For what it does, see the [README](README.md); for what
+is planned, the [ROADMAP](ROADMAP.md); for how to extend it, [docs/EXTENDING.md](docs/EXTENDING.md).
 
----
+## Goals
 
-## Overview
-
-### Vision
-RAG in a Box packages the production-grade RAG capabilities from [llm4s](https://github.com/llm4s/llm4s) into a deployable service with:
-- **REST API** for document ingestion and querying
-- **Admin UI** for document management and system configuration
-- **Chat UI** for interactive Q&A with source highlighting
-- **Docker Compose** deployment with bundled PostgreSQL/pgvector
-
-### Goals
-1. **Zero-config startup**: `docker-compose up` gives you a working RAG system
-2. **Production-ready**: Built on battle-tested llm4s RAG components
-3. **Extensible**: Configurable vector stores, embedding providers, and LLM backends
-4. **Developer-friendly**: Clear APIs, good documentation, easy local development
-
----
+1. **Turnkey**: one container next to PostgreSQL + pgvector gives a working RAG API and admin UI.
+2. **Good retrieval by default**: hybrid search, sensible chunking, tunable at runtime.
+3. **Safe to share**: real authentication and authorization, permission-filtered retrieval,
+   ingestion that cannot be turned against the host.
+4. **An llm4s showcase**: use llm4s idiomatically for everything RAG-related; where it falls
+   short, work around it in one place and raise an upstream issue.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Docker Compose                            │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Admin UI   │  │   Chat UI    │  │   RAG API Service    │  │
-│  │  (Vue.js +   │  │  (Vue.js +   │  │   (Scala + llm4s)    │  │
-│  │   Vuetify)   │  │   Vuetify)   │  │                      │  │
-│  │   Port 3000  │  │   Port 3001  │  │     Port 8080        │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
-│         │                 │                      │              │
-│         └─────────────────┴──────────────────────┘              │
-│                           │ REST API                            │
-│                           ▼                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    PostgreSQL + pgvector                  │  │
-│  │                       Port 5432                           │  │
-│  │                  (Data: ./data/postgres)                  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                           │
-                           ▼ External Services (configurable)
-              ┌────────────┴────────────┐
-              │                         │
-        ┌─────┴─────┐            ┌──────┴──────┐
-        │  LLM API  │            │  Embedding  │
-        │ (OpenAI,  │            │   Provider  │
-        │ Anthropic,│            │  (OpenAI,   │
-        │  Ollama)  │            │   Voyage,   │
-        └───────────┘            │   Ollama)   │
-                                 └─────────────┘
+                 ┌───────────────────────────── ragbox (one JVM, http4s Ember) ─────────────────────────────┐
+ Browser ──/admin──▶ StaticRoutes (Vue admin UI from the classpath)                                         │
+ Clients ──/api/v1─▶ RequestLogger ▶ CORS ▶ RequestSize ▶ RateLimit ▶ public routes                         │
+ Ingesters         │                                                 └▶ Authenticator ▶ Authz.tokenAllowlist │
+ /ws               │                                                       ▶ AuthedRoutes[Principal]        │
+                   │                                                                                         │
+                   │  Routes ──▶ RAGService ──▶ PipelinePool ──▶ llm4s RAG (Llm4sPipeline)                  │
+                   │         │               ├─▶ ChunkingService / CollectionConfigRegistry                  │
+                   │         │               ├─▶ DocumentRegistry, ChunkStore                                │
+                   │         │               └─▶ llm4s SearchIndex (permission mode)                         │
+                   │         ├─▶ IngestionService (+ IngestionScheduler, IngestionPolicy)                    │
+                   │         ├─▶ ExperimentService, SuggestionService, QueryLogRegistry                      │
+                   │         ├─▶ ChatSessionRegistry, RuntimeConfigManager                                   │
+                   │         └─▶ AuthService, UserRegistry, AccessTokenRegistry, OidcService                 │
+                   └──────────────────────────────── one HikariCP pool ──────────────────────────────────────┘
+                                                        │
+                                   PostgreSQL + pgvector (Flyway-managed ragbox tables,
+                                   llm4s-owned vector / keyword / permission tables)
+                                                        │
+                                   LLM, embedding and reranking providers (via llm4s)
 ```
 
----
+## Technology
 
-## Technology Stack
+| Layer | Choice |
+|---|---|
+| Language, runtime | Scala 3.7, Java 21 |
+| HTTP | http4s (Ember server and client), circe |
+| Effects | cats-effect 3 (`IO`, `Resource`, `Supervisor`) |
+| RAG | llm4s 0.6.0 (`llm4s-rag` plus the OpenAI, Anthropic, Voyage and Ollama provider modules) |
+| Database | PostgreSQL 15+ with pgvector; plain JDBC over HikariCP; Flyway migrations |
+| Admin UI | Vue 3, Vuetify 3, Pinia, Vite, Swagger UI (served at `/admin`) |
+| Tests | ScalaTest, Testcontainers (PostgreSQL, Keycloak), Vitest, Playwright |
+| Packaging | sbt-assembly fat JAR, multi-stage Docker image, Helm chart |
 
-### Backend (Scala)
-| Component | Technology | Notes |
-|-----------|------------|-------|
-| Framework | http4s + cats-effect | Functional, async HTTP |
-| RAG Engine | llm4s | Core RAG pipeline, embeddings, vector store |
-| JSON | circe | Type-safe JSON handling |
-| Database | Doobie + PostgreSQL | Connection pooling, transactions |
-| Build | sbt | Cross-compile support from llm4s |
+## Startup and wiring
 
-### Frontend (TypeScript)
-| Component | Technology | Notes |
-|-----------|------------|-------|
-| Framework | Vue.js 3 | Composition API |
-| UI Library | Vuetify 3 | Material Design components |
-| Build | Vite | Fast development builds |
-| HTTP Client | Axios | REST API communication |
-| State | Pinia | Vue state management |
+`Main` builds everything as a `Resource`, so shutdown releases it in reverse order:
 
-### Infrastructure
-| Component | Technology | Notes |
-|-----------|------------|-------|
-| Container | Docker + Docker Compose | Multi-service deployment |
-| Database | PostgreSQL 15 + pgvector | Vector similarity search |
-| Reverse Proxy | nginx (optional) | SSL termination, routing |
+1. Load and validate `AppConfig` (`application.conf` + environment). Invalid combinations
+   (basic mode without `JWT_SECRET`, placeholder secrets, Cohere reranking without a key, ...)
+   stop startup with a list of errors.
+2. Create the **connection pool** (`db/ConnectionPool`, HikariCP, `DB_POOL_SIZE`).
+3. Run **Flyway migrations** (`db/Migrations`) unless `DB_MIGRATE_ON_START=false`;
+   `--migrate-only` runs them and exits, for deploy jobs.
+4. Create the llm4s **`PgSearchIndex`** over the same pool (permission mode). If it cannot be
+   created, the server falls back to legacy mode with a warning, or fails when
+   `PERMISSIONS_REQUIRED=true`.
+5. Create `RuntimeConfigManager`, `PgCollectionConfigRegistry` and **`RAGService`**.
+6. `RagboxApp.resource` builds the rest (registries, services, OIDC components in oauth mode,
+   rate limiters) and assembles the routes; `RagboxApp.httpApp` is what Ember serves. Tests
+   build the same `RagboxApp` over a Testcontainers database, so they exercise the real stack.
+7. Background tasks under a `Supervisor`: the ingestion schedule and OAuth session cleanup.
+   Startup ingestion runs if configured.
 
----
+## HTTP stack
 
-## Components
+`RagboxApp.httpApp`, from the outside in:
 
-### 1. RAG API Service (Scala)
+1. **Identity-header stripping**: `X-User-Id`, `X-Group-Ids` and `X-Admin` are removed unless
+   `AUTH_TRUSTED_PROXY_HEADERS=true`.
+2. **Request logger**: method, path, status and latency; credentials are redacted;
+   `LOG_FORMAT=json` for structured logs.
+3. **CORS**: same-origin only unless `ALLOWED_ORIGINS` (or `CORS_ALLOW_ALL_ORIGINS`) is set.
+4. **Request size**: bodies over `MAX_BODY_SIZE_MB` are rejected with 413 while streaming.
+5. **Rate limiting**: an optional per-client limit, plus login throttling per IP and per
+   username; client IPs come from `X-Forwarded-For` only for `RATE_LIMIT_TRUSTED_PROXIES`.
+6. **Public routes**: health, `/api/v1/auth/login` and `/auth/mode`, OAuth endpoints (oauth
+   mode), admin UI assets, and `/metrics` when `METRICS_REQUIRE_AUTH=false`.
+7. **Authenticator** (`middleware/Authenticator`), in front of everything else.
+8. **`Authz.tokenAllowlist`**: access tokens without the `admin` scope only reach documents,
+   stats, sync, query/search, chat, `GET /api/v1/collections`, `/auth/me` and `/ws`.
+9. **Routes**: `AuthedRoutes[Principal, IO]`, one object per area in `routes/`.
 
-The core backend service exposing REST endpoints for all RAG operations.
+### Authentication
 
-#### Endpoints (Implemented)
+One `Authenticator` turns a request's credentials into a `Principal` (`auth/Principal`):
+
+| Credential | Where | Modes |
+|---|---|---|
+| none | - | open mode without `API_KEY`: every request is `Principal.OpenModeAdmin` |
+| static `API_KEY` | `X-API-Key`, or `Authorization: Bearer` | any mode where it is set |
+| `rat_` access token | `Authorization: Bearer` | all (validated against `access_tokens`, last use recorded) |
+| JWT | `Authorization: Bearer` | basic (HMAC-signed by `AuthService`; the user is re-read on every request, so deletions and demotions apply at once) |
+| OIDC session cookie | `ragbox_session` | oauth (`OidcService` + `SessionRegistry`, memory or PostgreSQL) |
+| `?access_token=` | query string, `/ws` only | as the bearer credential it carries |
+
+The first credential found is used, and an invalid one is a 401 even if another would have been
+valid. With `AUTH_TRUSTED_PROXY_HEADERS=true`, an *admin* principal (a gateway holding the API
+key) may act for an end user with `X-User-Id` / `X-Group-Ids`; `X-Admin: true` additionally
+needs `ALLOW_ADMIN_HEADER=true`.
+
+**OIDC** (`auth/Oidc*`, `routes/OAuthRoutes`): authorization-code flow with PKCE, a state bound
+to the browser by a pre-auth cookie, a nonce, ID-token validation against the provider's JWKS
+(cached), and identities keyed by `iss|sub` (or a verified email). `ClaimMapper` turns claims into
+llm4s principals (user and groups) so collection permissions apply; `OAUTH_ADMIN_GROUPS` makes
+group members administrators. Provider presets: Google, Azure AD, Okta, Keycloak, custom.
+
+### Authorization
+
+`routes/Authz` holds the combinators the routes use:
+
+- `requireAdmin`; `adminOnlyWhen(rule)` for whole groups (`/principals`, `/ingest`,
+  `/visibility`, `/analytics`, `/experiments`) or for every mutating request in a group
+  (`/collections`, `/config`, runtime-config history);
+- `requireScope` / `scopeForPaths` for access-token scopes (`documents:read`,
+  `documents:write`, `sync:read`, `sync:write`, `query`, `admin`);
+- `requireIngester` (sync: admin, or a token with the sync scope);
+- `requireCollection` / `requirePattern` for collection-restricted tokens.
+
+Reads are filtered rather than refused where it makes sense: non-admins see only the
+collections, documents and chat sessions they may see, and get 404 for the rest.
+
+**Retrieval permissions** come from llm4s: in permission mode every query runs with the caller's
+`UserAuthorization` (`auth/PermissionContext`), built from the principal's user and groups, so
+the search index only returns chunks from collections whose `queryableBy` admits them and
+documents whose `readableBy` does. Administrators query unrestricted.
+
+## RAG pipeline
+
+### `Llm4sPipeline`: building llm4s objects from configuration
+
+Every provider is resolved through llm4s's **`ProviderRegistry`** (provider modules are found
+with `ServiceLoader`): the LLM client from `LLM_MODEL` (`<provider>/<model>`), the embedding
+provider config from `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`, the Cohere reranker config, and the
+`RAGConfig` (hybrid PostgreSQL vector + keyword store, fusion strategy, system prompt, reranker,
+query transform, tracing). ragbox never matches on provider names; tests register an in-process
+embedder in the registry.
+
+### `PipelinePool`
+
+An llm4s `RAG` fixes some settings when it is built (fusion, system prompt, reranker, query
+transform). `PipelinePool` keeps one built pipeline per `PipelineSettings` value:
+
+- built on first use, builds serialised, failures not cached (retried after a cooldown, so a
+  provider that is down at startup does not break the server until restart);
+- every use holds a **lease**; a pipeline that is retired (settings moved on) or evicted (least
+  recently used beyond the limit) is closed only when its last lease is released.
+
+Experiments use the same pool: a variant with different settings gets its own pipeline.
+
+### `RAGService`
+
+The facade the routes use:
+
+- **Ingest**: chunk the document once, with the chunking its collection resolves to
+  (`CollectionConfigRegistry.getEffective`: file-type override → collection config → runtime
+  settings), embed the chunks, write them to llm4s (`SearchIndex.ingest` in permission mode, the
+  pipeline otherwise), record the document and its content hash in the **`DocumentRegistry`**
+  and its chunks in the **`ChunkStore`** (for visibility). Unchanged content is skipped.
+- **Query**: `RAG.queryWithAnswer` with the current runtime settings (top-K per call) through a
+  pooled pipeline, inside `QueryMetricsTracing.collect`, which attributes llm4s trace events
+  (embedding usage, completion usage, cost) to the request. The query log records latency per
+  stage, tokens, cost, the experiment variant and failures.
+- **Chat**: retrieval for the new message (permission-filtered), then the answer LLM is called
+  with a conversation ragbox builds itself: system prompt, the session's recent messages
+  (`RAG_CHAT_HISTORY_MESSAGES`), the retrieved context and the question (llm4s's
+  `queryWithAnswer` takes no history yet, llm4s/llm4s#2733).
+- **Uploads**: `TikaDocumentExtractor` extracts text from PDF, DOCX, HTML and other formats.
+- All llm4s calls are synchronous, so they run on the blocking pool (`IO.blocking`).
+
+In permission mode llm4s searches vector-only, so fusion, keyword search, reranking and query
+rewriting do not apply; `GET /api/v1/config` reports this (`searchMode`, `fusionApplies`,
+`limitations`). See the ROADMAP for this and the other llm4s workarounds.
+
+### Runtime configuration
+
+`RuntimeConfigManager` holds the settings that can change without a restart:
+
+- **hot** (next query): `topK`, `fusionStrategy`, `rrfK`, `systemPrompt`, `llmTemperature`;
+- **warm** (documents ingested afterwards): `chunkingStrategy`, `chunkSize`, `chunkOverlap`.
+
+Reads are lock-free (`AtomicReference`); updates are serialised, written to `runtime_config` and
+`config_history` in one transaction, then published. Stored values override the configuration
+file at startup. A change to a pipeline setting retires the old pipeline in the pool.
+
+## Ingestion
+
+- **`IngestionService`** runs the configured sources (directory, URL, web crawler, database, S3)
+  through llm4s loaders (`FileLoader`, `UrlLoader`, `WebCrawlerLoader`, `S3Loader`) and the
+  one-shot `POST /ingest/directory` and `/ingest/url` requests. Every document is recorded with
+  the **source that owns it**: a source's sync removes only its own documents that it no longer
+  lists, so sources never delete each other's documents, and because the registry is in
+  PostgreSQL this works across restarts. One run at a time (409 otherwise). Progress is
+  broadcast on `/ws`.
+- **`IngestionScheduler`** runs the sources on an interval (`INGEST_SCHEDULE`: `30m`, `6h`,
+  `daily`, ...).
+- **`IngestionPolicy`**: directories only under allowed roots (`INGEST_ALLOWED_ROOTS`, default the
+  configured directory sources), never following symlinks out; URLs only http(s), optionally only
+  allowed hosts (`INGEST_URL_ALLOWED_HOSTS`), and resolving to public addresses unless
+  `INGEST_URL_ALLOW_PRIVATE_NETWORKS=true` (checked with llm4s's `NetworkSecurity`). Violations
+  are 400s.
+- **External ingesters** use the document and sync APIs with `rat_` tokens (see the Python SDK).
+
+## Persistence
+
+- **One HikariCP pool** (`db/ConnectionPool`) is shared by every component, including the llm4s
+  search index (`PgSearchIndex.fromDataSource`). Nothing holds a connection between operations;
+  `withConnection` / `withTransaction` run on the blocking pool.
+- **Flyway** (`db/Migrations`, `src/main/resources/db/migration`) owns ragbox's schema.
+  Databases created before Flyway are baselined at version 0 and brought up to date by the
+  idempotent `V1__baseline`. Replicas starting together are serialised by Flyway's lock.
+- **llm4s owns** its tables: the vector table (`PG_TABLE_NAME`, default `rag_embeddings`), the
+  keyword table and the permission tables (`llm4s_collections`, `llm4s_principals`, ...). It
+  creates them after the migrations run.
+
+| Table | Owner component |
+|---|---|
+| `document_registry`, `sync_status` | `PgDocumentRegistry` (content hashes, owning source, sync time) |
+| `chunk_registry` | `PgChunkStore` |
+| `runtime_config`, `config_history` | `RuntimeConfigManager` |
+| `collection_configs` | `PgCollectionConfigRegistry` |
+| `query_logs` | `QueryLogRegistry` |
+| `users`, `access_tokens` | `UserRegistry`, `AccessTokenRegistry` |
+| `experiments` | `ExperimentRegistry` |
+| `chat_sessions`, `chat_messages` | `ChatSessionRegistry` |
+| `oauth_sessions`, `oauth_auth_state` | `PgSessionRegistry` (`OAUTH_SESSION_STORAGE=postgresql`) |
+
+## Evaluation
+
+- **Query log** (`QueryLogRegistry`): every query and chat answer, with latency per stage,
+  chunks, tokens, cost, rating, experiment and variant.
+- **Analytics** (`AnalyticsRoutes`): filtered log, summary with p50/p95/p99 latency and cost.
+- **Suggestions** (`SuggestionService`): rules over the log (latency, ratings, chunk use) that
+  suggest chunking and search changes.
+- **Experiments** (`ExperimentService`, `Statistics`): one running experiment at a time; each
+  `/query` is assigned at random to baseline or variant by the traffic split, and runs with that
+  variant's full configuration. Results compare latency (Welch's t-test), error rate and the
+  share of positive ratings (two-proportion z-tests) at α = 0.05.
+
+## Admin UI
+
+A Vue 3 + Vuetify single-page app in `admin-ui/`, built by Vite into `admin-ui/dist`, copied
+into the server's resources by sbt and served at `/admin` by `StaticRoutes`. It reads
+`GET /api/v1/auth/mode` to choose its login (none, password, SSO or API key), and covers every
+API area: dashboard, documents, upload, chat, collections and permissions, users, groups,
+tokens, configuration, chunking preview, visibility, ingestion, analytics, suggestions,
+experiments and the API docs (Swagger UI over `public/openapi.yaml`). A contract check in CI
+keeps the UI's API calls in line with the backend; Playwright tests run it against a real
+server.
+
+## API contract
+
+- Routes live in `routes/*.scala`; request and response types in `model/` (circe codecs).
+- `admin-ui/public/openapi.yaml` documents every route; `OpenApiCoverageSpec` scans the route
+  patterns in `routes/` and fails when a route is missing from the spec or the spec lists one
+  that does not exist.
+- Errors are JSON `ErrorResponse {error, message, details?}`; #22 is unifying how errors are
+  produced.
+
+## Project layout
 
 ```
-Document Management:
-  POST   /api/v1/documents              - Upload document
-  PUT    /api/v1/documents/{id}         - Upsert document (idempotent)
-  GET    /api/v1/documents              - List documents
-  DELETE /api/v1/documents/{id}         - Delete document
-  DELETE /api/v1/documents              - Clear all documents
-  GET    /api/v1/collections            - List collections
-
-Sync (for custom ingesters):
-  GET    /api/v1/sync/status            - Get sync status
-  GET    /api/v1/sync/documents         - List synced document IDs
-  POST   /api/v1/sync                   - Mark sync complete (prune)
-
-Query:
-  POST   /api/v1/query                  - Search + answer generation
-  POST   /api/v1/search                 - Search only (no LLM)
-
-Ingestion:
-  POST   /api/v1/ingest/directory       - Ingest from directory
-  POST   /api/v1/ingest/url             - Ingest from URLs
-  POST   /api/v1/ingest/run             - Run all configured sources
-  GET    /api/v1/ingest/status          - Get ingestion status
-  GET    /api/v1/ingest/sources         - List configured sources
-
-Configuration:
-  GET    /api/v1/config                 - Get current config
-  GET    /api/v1/config/providers       - List available providers
-  GET    /api/v1/stats                  - Get RAG statistics
-
-Runtime Configuration:
-  GET    /api/v1/config/runtime         - Get runtime settings
-  PUT    /api/v1/config/runtime         - Update runtime settings
-  POST   /api/v1/config/runtime/validate - Validate proposed changes
-  GET    /api/v1/config/runtime/history - Get config change history
-
-Collection Configuration:
-  GET    /api/v1/collections/{name}/config     - Get collection config
-  PUT    /api/v1/collections/{name}/config     - Set collection config
-  DELETE /api/v1/collections/{name}/config     - Remove custom config
-  GET    /api/v1/collections/configs           - List all collection configs
-  POST   /api/v1/collections/{name}/config/preview - Preview effective config
-
-Visibility:
-  GET    /api/v1/visibility/config      - Detailed config with annotations
-  GET    /api/v1/visibility/chunks      - List all chunks (paginated)
-  GET    /api/v1/visibility/chunks/{docId} - Get document chunks
-  GET    /api/v1/visibility/chunks/{docId}/{idx} - Get specific chunk
-  GET    /api/v1/visibility/stats       - Detailed stats
-  GET    /api/v1/visibility/collections - Collection details
-
-Chunking Preview:
-  POST   /api/v1/chunking/preview       - Preview chunking on sample
-  POST   /api/v1/chunking/compare       - Compare strategies
-  GET    /api/v1/chunking/strategies    - List strategies
-  GET    /api/v1/chunking/presets       - Get preset configs
-
-Health:
-  GET    /health                        - Health check
-  GET    /health/ready                  - Readiness check
-  GET    /health/live                   - Liveness check
+src/main/scala/org/llm4s/ragbox/
+  Main.scala, RagboxApp.scala   startup, wiring and the HTTP stack
+  auth/                         principals, password/JWT auth, access tokens, OIDC, sessions
+  config/                       AppConfig, DATABASE_URL parsing, runtime settings
+  db/                           connection pool, Flyway migrations
+  ingestion/                    sources, scheduler, ingestion policy
+  middleware/                   authenticator, rate limit, request size, request logger
+  model/                        API models and codecs
+  registry/                     PostgreSQL registries (documents, query log, chat, experiments, ...)
+  routes/                       HTTP routes and Authz
+  service/                      RAGService, Llm4sPipeline, PipelinePool, tracing, chunking,
+                                experiments, suggestions, statistics
+  store/                        chunk store
+  validation/                   input validation
+src/main/resources/             application.conf, logback.xml, db/migration
+admin-ui/                       Vue admin UI (and public/openapi.yaml)
+sdk/python/                     Python SDK
+deploy/                         Helm chart, Kubernetes manifests
+docs/                           documentation site
 ```
-
-#### Key Request/Response Types
-
-```typescript
-// Document Upload
-POST /api/v1/documents
-{
-  "content": "string",           // Raw text content
-  "filename": "string",          // Original filename
-  "metadata": {                  // Optional metadata
-    "source": "string",
-    "author": "string",
-    "tags": ["string"]
-  },
-  "collection": "default"        // Target collection
-}
-
-// Query with Answer
-POST /api/v1/query
-{
-  "question": "string",
-  "collection": "default",       // Optional: filter by collection
-  "topK": 5,                     // Number of context chunks
-  "includeMetadata": true        // Include source info
-}
-
-Response:
-{
-  "answer": "string",
-  "contexts": [
-    {
-      "content": "string",
-      "score": 0.95,
-      "metadata": {
-        "documentId": "uuid",
-        "filename": "string",
-        "chunkIndex": 0
-      }
-    }
-  ],
-  "usage": {
-    "promptTokens": 150,
-    "completionTokens": 200,
-    "embeddingTokens": 50
-  }
-}
-```
-
-#### llm4s Integration
-
-The API service wraps llm4s RAG components:
-
-```scala
-// Pseudo-code showing llm4s integration
-import org.llm4s.rag._
-import org.llm4s.vectorstore._
-import org.llm4s.llmconnect._
-
-class RAGService(config: RAGServiceConfig) {
-
-  // Initialize from llm4s
-  private val rag = RAGConfig()
-    .withEmbeddingProvider(config.embeddingProvider)
-    .withVectorStore(VectorStoreFactory.pgvector(config.pgConfig))
-    .withChunkingStrategy(ChunkerFactory.Strategy.Sentence)
-    .withLLM(LLMConnect.fromConfig(config.llmConfig))
-    .build()
-
-  def ingest(doc: DocumentRequest): Result[IngestResponse] =
-    rag.ingestRaw(doc.content, doc.metadata)
-
-  def query(req: QueryRequest): Result[QueryResponse] =
-    rag.queryWithAnswer(req.question, Some(req.topK))
-}
-```
-
-### 2. Admin UI (Vue.js + Vuetify)
-
-Web interface for system administration.
-
-#### Features
-- **Dashboard**: Document counts, storage usage, query statistics
-- **Document Browser**: List, search, preview, delete documents
-- **Upload**: Drag-and-drop file upload, URL ingestion, bulk import
-- **Collections**: Create/manage logical document groupings
-- **Configuration**:
-  - LLM provider settings (API keys, model selection)
-  - Embedding provider settings
-  - Chunking strategy configuration
-  - Search parameters (topK, fusion strategy)
-- **Logs**: View recent queries, errors, performance metrics
-
-#### Screens
-```
-/admin
-  ├── /dashboard         - Overview statistics
-  ├── /documents         - Document management
-  │   ├── /upload        - Upload interface
-  │   └── /:id           - Document detail
-  ├── /collections       - Collection management
-  ├── /config            - System configuration
-  │   ├── /llm           - LLM provider settings
-  │   ├── /embeddings    - Embedding settings
-  │   └── /search        - Search parameters
-  └── /logs              - Activity logs
-```
-
-### 3. Chat UI (Vue.js + Vuetify)
-
-Interactive Q&A interface for end users.
-
-#### Features
-- **Conversation**: Chat-style interface with message history
-- **Source Highlighting**: Expandable source citations with document links
-- **Context Preview**: Show relevant chunks used to generate answer
-- **Collections**: Filter queries to specific document collections
-- **Export**: Download conversation history
-
-#### Screens
-```
-/chat
-  ├── /                  - Main chat interface
-  ├── /history           - Conversation history
-  └── /collections       - Collection selector
-```
-
----
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# Required
-OPENAI_API_KEY=sk-...              # Or ANTHROPIC_API_KEY
-LLM_MODEL=openai/gpt-4o            # Model for answer generation
-
-# Database (defaults work with bundled postgres)
-DATABASE_URL=postgresql://rag:rag@postgres:5432/ragdb
-
-# Embedding (defaults to OpenAI)
-EMBEDDING_PROVIDER=openai          # openai, voyage, ollama
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-
-# Optional
-RAG_CHUNK_SIZE=500                 # Target chunk size in tokens
-RAG_CHUNK_OVERLAP=50               # Overlap between chunks
-RAG_TOP_K=5                        # Default number of context chunks
-RAG_FUSION_STRATEGY=rrf            # rrf, weighted, vector_only
-LOG_LEVEL=info                     # debug, info, warn, error
-```
-
-### Configuration File (config.yaml)
-
-```yaml
-server:
-  host: 0.0.0.0
-  port: 8080
-
-database:
-  url: ${DATABASE_URL}
-  pool_size: 10
-
-rag:
-  chunking:
-    strategy: sentence        # simple, sentence, markdown, semantic
-    target_size: 500
-    overlap: 50
-
-  search:
-    top_k: 5
-    fusion_strategy: rrf      # rrf, weighted, vector_only, keyword_only
-    use_reranker: false
-
-  embeddings:
-    provider: openai
-    model: text-embedding-3-small
-
-llm:
-  provider: openai
-  model: gpt-4o
-  temperature: 0.1
-  max_tokens: 1024
-```
-
----
-
-## Docker Compose Setup
-
-### docker-compose.yml
-
-```yaml
-version: '3.8'
-
-services:
-  # PostgreSQL with pgvector
-  postgres:
-    image: pgvector/pgvector:pg15
-    environment:
-      POSTGRES_USER: rag
-      POSTGRES_PASSWORD: rag
-      POSTGRES_DB: ragdb
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  # RAG API Service
-  api:
-    build: ./api
-    environment:
-      DATABASE_URL: postgresql://rag:rag@postgres:5432/ragdb
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o}
-    ports:
-      - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  # Admin UI
-  admin:
-    build: ./admin-ui
-    environment:
-      VITE_API_URL: http://localhost:8080
-    ports:
-      - "3000:80"
-    depends_on:
-      - api
-
-  # Chat UI
-  chat:
-    build: ./chat-ui
-    environment:
-      VITE_API_URL: http://localhost:8080
-    ports:
-      - "3001:80"
-    depends_on:
-      - api
-```
-
-### Quick Start
-
-```bash
-# Clone and start
-git clone https://github.com/llm4s/rag-in-a-box.git
-cd rag-in-a-box
-
-# Set your API key
-export OPENAI_API_KEY=sk-...
-
-# Start all services
-docker-compose up -d
-
-# Access:
-# - Admin UI: http://localhost:3000
-# - Chat UI:  http://localhost:3001
-# - API:      http://localhost:8080
-```
-
----
-
-## Project Structure
-
-```
-rag-in-a-box/
-├── docker-compose.yml
-├── README.md
-├── DESIGN.md                    # This document
-│
-├── api/                         # Scala backend
-│   ├── build.sbt
-│   ├── project/
-│   │   └── plugins.sbt
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── scala/
-│   │   │   │   └── ragbox/
-│   │   │   │       ├── Main.scala
-│   │   │   │       ├── config/
-│   │   │   │       │   └── AppConfig.scala
-│   │   │   │       ├── routes/
-│   │   │   │       │   ├── DocumentRoutes.scala
-│   │   │   │       │   ├── QueryRoutes.scala
-│   │   │   │       │   └── ConfigRoutes.scala
-│   │   │   │       ├── service/
-│   │   │   │       │   ├── RAGService.scala
-│   │   │   │       │   └── DocumentService.scala
-│   │   │   │       └── model/
-│   │   │   │           ├── ApiModels.scala
-│   │   │   │           └── Codecs.scala
-│   │   │   └── resources/
-│   │   │       ├── application.conf
-│   │   │       └── logback.xml
-│   │   └── test/
-│   │       └── scala/
-│   └── Dockerfile
-│
-├── admin-ui/                    # Vue.js Admin UI
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   ├── src/
-│   │   ├── main.ts
-│   │   ├── App.vue
-│   │   ├── router/
-│   │   │   └── index.ts
-│   │   ├── views/
-│   │   │   ├── Dashboard.vue
-│   │   │   ├── Documents.vue
-│   │   │   ├── Upload.vue
-│   │   │   └── Config.vue
-│   │   ├── components/
-│   │   │   ├── DocumentList.vue
-│   │   │   ├── DocumentUploader.vue
-│   │   │   └── ConfigPanel.vue
-│   │   ├── stores/
-│   │   │   ├── documents.ts
-│   │   │   └── config.ts
-│   │   └── api/
-│   │       └── client.ts
-│   └── public/                  # built into the backend JAR (see root Dockerfile)
-│
-├── chat-ui/                     # Vue.js Chat UI
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   ├── src/
-│   │   ├── main.ts
-│   │   ├── App.vue
-│   │   ├── views/
-│   │   │   └── Chat.vue
-│   │   ├── components/
-│   │   │   ├── ChatMessage.vue
-│   │   │   ├── ChatInput.vue
-│   │   │   ├── SourceCard.vue
-│   │   │   └── ConversationList.vue
-│   │   ├── stores/
-│   │   │   └── chat.ts
-│   │   └── api/
-│   │       └── client.ts
-│   ├── public/
-│   └── Dockerfile
-│
-├── data/                        # Persistent data (gitignored)
-│   └── postgres/
-│
-└── scripts/
-    ├── init-db.sql              # Creates the pgvector extension (schema: db/migration)
-    └── dev.sh                   # Development helper scripts
-```
-
----
-
-## llm4s Integration Points
-
-RAG in a Box leverages these llm4s components:
-
-### From `/modules/core/src/main/scala/org/llm4s/`
-
-| Component | Path | Usage |
-|-----------|------|-------|
-| RAG Pipeline | `rag/RAG.scala` | Main orchestration - ingest, query, answer |
-| RAG Config | `rag/RAGConfig.scala` | Fluent builder for pipeline configuration |
-| Document Loaders | `rag/loader/*.scala` | File, URL, text ingestion |
-| Chunking | `chunking/*.scala` | Document splitting strategies |
-| Vector Store | `vectorstore/PgVectorStore.scala` | PostgreSQL pgvector backend |
-| Hybrid Search | `vectorstore/HybridSearcher.scala` | Vector + keyword fusion |
-| Embeddings | `llmconnect/EmbeddingClient.scala` | Embedding API abstraction |
-| LLM Client | `llmconnect/LLMConnect.scala` | Multi-provider LLM interface |
-| Result Types | `types/package.scala` | `Result[A] = Either[LLMError, A]` |
-| Configuration | `config/ConfigReader.scala` | Type-safe configuration |
-
-### Key Patterns to Follow
-
-From llm4s CLAUDE.md:
-
-```scala
-// Always use Result[A] for error handling
-def processDocument(doc: Document): Result[ProcessedDoc] =
-  for {
-    chunks <- chunker.chunk(doc.content)
-    embeddings <- embeddingClient.embed(chunks.map(_.content))
-    _ <- vectorStore.upsert(chunks.zip(embeddings))
-  } yield ProcessedDoc(doc.id, chunks.length)
-
-// Use ConfigReader, never sys.env directly
-val config: Result[AppConfig] = ConfigReader.load[AppConfig]()
-
-// Type-safe newtypes for domain concepts
-final case class DocumentId(value: String) extends AnyVal
-final case class CollectionId(value: String) extends AnyVal
-```
-
----
-
-## Development Phases
-
-### Phase 1: Core API ✅ COMPLETE
-- [x] Set up Scala project with sbt, http4s, llm4s dependency
-- [x] Implement document ingestion endpoints (POST, PUT, DELETE, GET)
-- [x] Implement query/search endpoints
-- [x] Add PostgreSQL/pgvector integration
-- [x] Docker build for API service
-- [x] Basic health checks and logging
-- [x] Sync endpoints for custom ingesters
-- [x] Built-in directory/URL ingestion with scheduling
-- [x] Python SDK for custom ingesters
-
-### Phase 1.5: RAG Tuning & Visibility ✅ COMPLETE
-- [x] Visibility API - inspect chunks, view config, stats
-- [x] Chunking Preview API - test strategies before committing
-- [x] Runtime Configuration API - modify settings without restart
-- [x] Per-Collection Chunking - different chunking per collection/file type
-
-### Phase 2: Admin UI ✅ COMPLETE
-- [x] Vue.js + Vuetify project setup
-- [x] Dashboard with statistics
-- [x] Document list and detail views
-- [x] Upload interface (drag-and-drop, URL)
-- [x] Configuration management screens
-- [x] Docker build for Admin UI
-
-### Phase 3: Chat UI (Future)
-- [ ] Vue.js + Vuetify project setup
-- [ ] Chat interface with message history
-- [ ] Source citation display
-- [ ] Context preview expansion
-- [ ] Collection filtering
-- [ ] Docker build for Chat UI
-
-### Phase 4: Integration & Polish
-- [x] Docker Compose orchestration
-- [x] Database initialization scripts
-- [x] Environment variable configuration
-- [x] README and documentation
-- [ ] Example datasets for demo
-- [ ] End-to-end testing
-
----
-
-## Future Enhancements
-
-### Phase 5 (Post-MVP)
-- **Multi-tenancy**: Organization isolation, API keys, quotas
-- **Authentication**: OAuth2/OIDC integration, user management
-- **Additional Vector Stores**: SQLite (embedded), Qdrant
-- **Helm Charts**: Kubernetes deployment
-- **Metrics Dashboard**: Grafana integration
-- **Streaming Responses**: SSE for real-time answer generation
-- **Document Versioning**: Track document changes over time
-- **Scheduled Sync**: Automatic re-ingestion from URLs
-
----
-
-## References
-
-### llm4s Documentation
-- [RAG Evaluation Guide](https://github.com/llm4s/llm4s/blob/main/docs/guide/rag-evaluation.md)
-- [Vector Store Guide](https://github.com/llm4s/llm4s/blob/main/docs/guide/vector-store.md)
-- [RAG Benchmark Results](https://github.com/llm4s/llm4s/blob/main/docs/rag-benchmark-results.md)
-- [Roadmap - Phase 5](https://github.com/llm4s/llm4s/blob/main/docs/reference/roadmap.md)
-
-### llm4s Source Files
-- RAG Core: `/modules/core/src/main/scala/org/llm4s/rag/`
-- Vector Stores: `/modules/core/src/main/scala/org/llm4s/vectorstore/`
-- Chunking: `/modules/core/src/main/scala/org/llm4s/chunking/`
-- Embeddings: `/modules/core/src/main/scala/org/llm4s/llmconnect/`
-- Samples: `/modules/samples/src/main/scala/org/llm4s/samples/rag/`
-
-### External References
-- [pgvector Documentation](https://github.com/pgvector/pgvector)
-- [Vue.js 3 Documentation](https://vuejs.org/)
-- [Vuetify 3 Documentation](https://vuetifyjs.com/)
-- [http4s Documentation](https://http4s.org/)
