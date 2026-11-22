@@ -40,10 +40,9 @@ final case class InvalidExperimentError(errors: Seq[String]) extends RuntimeExce
  */
 class ExperimentService(
   experimentRegistry: ExperimentRegistry,
-  dataSource: DataSource
+  dataSource: DataSource,
+  random: Random = new Random()
 ) {
-
-  private val random = new Random()
 
   /**
    * Create a new experiment, after validating it (see [[ExperimentService.validate]]).
@@ -182,7 +181,8 @@ class ExperimentService(
 
   /**
    * Route a query to baseline or variant based on traffic split.
-   * Returns the experiment ID, the group ("baseline" or "variant") and its config.
+   * Returns the experiment ID, the group ("baseline" or "variant") and its config. A query goes
+   * to the variant with probability `trafficSplit`: never at 0, always at 1.
    */
   def routeQuery(experiment: Experiment): (String, String, ExperimentConfigSnapshot) = {
     val roll = random.nextDouble()
@@ -418,8 +418,8 @@ object ExperimentService {
   }
 
   /**
-   * Create an experiment service.
+   * Create an experiment service. Pass a seeded `random` for reproducible group assignment.
    */
-  def apply(experimentRegistry: ExperimentRegistry, dataSource: DataSource): ExperimentService =
-    new ExperimentService(experimentRegistry, dataSource)
+  def apply(experimentRegistry: ExperimentRegistry, dataSource: DataSource, random: Random = new Random()): ExperimentService =
+    new ExperimentService(experimentRegistry, dataSource, random)
 }
