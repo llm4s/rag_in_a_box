@@ -126,7 +126,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     Class.forName("org.postgresql.Driver")
     val props = new Properties()
     props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword)
+    props.setProperty("password", dbConfig.effectivePassword.reveal)
     legacyConnection = DriverManager.getConnection(dbConfig.connectionString, props)
     dbConfigForLegacy = dbConfig
   }

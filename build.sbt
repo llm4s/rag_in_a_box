@@ -1,5 +1,7 @@
 import sbt._
 
+val llm4sVersion = "0.6.0"
+
 // Code coverage settings (ThisBuild scope for scoverage)
 ThisBuild / coverageEnabled := false
 ThisBuild / coverageMinimumStmtTotal := 20  // Minimum 20% statement coverage (baseline)
@@ -24,8 +26,12 @@ lazy val root = (project in file("."))
 
     // Dependencies
     libraryDependencies ++= Seq(
-      // LLM4s - RAG framework (0.2.9 adds S3Loader with multi-format document support)
-      "org.llm4s" %% "core" % "0.2.9",
+      // LLM4s - RAG framework plus the LLM / embedding providers ragbox can be configured with
+      "org.llm4s" %% "llm4s-rag" % llm4sVersion,
+      "org.llm4s" %% "llm4s-openai" % llm4sVersion,
+      "org.llm4s" %% "llm4s-anthropic" % llm4sVersion,
+      "org.llm4s" %% "llm4s-voyage" % llm4sVersion,
+      "org.llm4s" %% "llm4s-ollama" % llm4sVersion,
 
       // HTTP server
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
@@ -64,7 +70,7 @@ lazy val root = (project in file("."))
       "org.typelevel" %% "cats-effect-testing-scalatest" % "1.5.0" % Test,
       // Testcontainers for Docker-based integration tests
       "com.dimafeng" %% "testcontainers-scala-scalatest" % "0.41.8" % Test,
-      "org.testcontainers" % "testcontainers" % "1.20.4" % Test
+      "org.testcontainers" % "testcontainers" % "1.21.4" % Test
     ),
 
     // Assembly settings for fat JAR
@@ -75,6 +81,9 @@ lazy val root = (project in file("."))
       case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".SF")) => MergeStrategy.discard
       case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".DSA")) => MergeStrategy.discard
       case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".RSA")) => MergeStrategy.discard
+      // ServiceLoader registrations: each llm4s provider module ships its own
+      // META-INF/services/org.llm4s.llmconnect.spi.Llm4sProviderModule, so these must be merged
+      case PathList("META-INF", "services", _ @ _*) => MergeStrategy.filterDistinctLines
       case PathList("META-INF", xs @ _*) => MergeStrategy.first
       case PathList("reference.conf") => MergeStrategy.concat
       case PathList("module-info.class") => MergeStrategy.discard

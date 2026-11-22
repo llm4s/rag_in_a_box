@@ -44,7 +44,7 @@ object ConnectionPool {
       // Connection settings
       config.setJdbcUrl(dbConfig.connectionString)
       config.setUsername(dbConfig.effectiveUser)
-      config.setPassword(dbConfig.effectivePassword)
+      config.setPassword(dbConfig.effectivePassword.reveal)
       config.setDriverClassName("org.postgresql.Driver")
 
       // Pool settings

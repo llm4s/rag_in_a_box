@@ -13,6 +13,7 @@ import java.sql.{Connection, DriverManager, ResultSet}
 import java.time.Instant
 import java.util.{Properties, UUID}
 import java.util.concurrent.atomic.AtomicReference
+import scala.concurrent.duration._
 import scala.util.Using
 
 /**
@@ -366,8 +367,8 @@ class IngestionService(
         followPatterns = config.followPatterns,
         excludePatterns = config.excludePatterns,
         respectRobotsTxt = config.respectRobotsTxt,
-        delayMs = config.delayMs,
-        timeoutMs = config.timeoutMs,
+        delay = config.delayMs.millis,
+        timeout = config.timeoutMs.millis,
         sameDomainOnly = config.sameDomainOnly
       )
 
