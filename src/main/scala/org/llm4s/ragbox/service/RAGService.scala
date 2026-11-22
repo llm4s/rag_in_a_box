@@ -742,7 +742,11 @@ class RAGService(
           ingest("updated")
 
       case (_, None) =>
-        ingest("created")
+        // Not registered, but it may still have vectors written outside the registry - by an
+        // ingestion source before permission mode routed sources through collections - that
+        // startup migrated into the default collection. Remove them so it is not indexed twice.
+        deleteVectorsFromCollection(DefaultCollection, documentId) *>
+          ingest("created")
     }
   }
 

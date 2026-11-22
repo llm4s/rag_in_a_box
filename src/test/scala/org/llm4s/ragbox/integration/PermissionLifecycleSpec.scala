@@ -109,6 +109,25 @@ class PermissionLifecycleSpec extends AnyFlatSpec with Matchers with PgVectorFix
     }.unsafeRunSync()
   }
 
+  it should "not index a document twice when it was ingested outside the registry before migration" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    // An ingestion source used to write vectors with RAG.sync: no collection, no registry entry
+    plainService(db).use(_.rag.flatMap(r => IO(r.ingestText(solarText, "synced-doc")))).unsafeRunSync()
+
+    permissionService(db).use { service =>
+      IO {
+        service.getDocumentEntries(Seq("synced-doc")).unsafeRunSync() shouldBe empty
+        storedVectors(db, "synced-doc") should not be empty
+
+        service.upsertDocument("synced-doc", solarText, Map.empty, None).unsafeRunSync().action shouldBe "created"
+
+        val chunks = service.getDocumentEntries(Seq("synced-doc")).unsafeRunSync().map(_.chunkCount).sum
+        storedVectors(db, "synced-doc") should have size chunks.toLong
+        searchIds(service).count(_ == "synced-doc") shouldBe chunks
+      }
+    }.unsafeRunSync()
+  }
+
   it should "remove a deleted document's vectors from search results" in withContainers { pg =>
     val db = freshDatabase(pg)
     permissionService(db).use { service =>
