@@ -349,7 +349,7 @@ export METRICS_ENABLED=true
 ```yaml
 services:
   ragbox:
-    image: ghcr.io/llm4s/rag-in-a-box:latest
+    image: ghcr.io/llm4s/rag_in_a_box:9e5427d
     environment:
       - DATABASE_URL=postgresql://rag:rag@postgres:5432/ragdb
       - OPENAI_API_KEY=${OPENAI_API_KEY}

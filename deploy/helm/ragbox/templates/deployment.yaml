@@ -54,7 +54,7 @@ spec:
           env:
             # Database credentials
             {{- if .Values.postgresql.enabled }}
-            # Bundled PostgreSQL - username from values, password from Bitnami secret
+            # Bundled PostgreSQL - username from values, password from the chart-generated secret
             - name: PG_USER
               value: {{ include "ragbox.postgresql.username" . | quote }}
             - name: PG_PASSWORD
@@ -115,6 +115,11 @@ spec:
             {{- toYaml .Values.startupProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # Writable scratch space for the JVM (e.g. Netty native libraries);
+            # the root filesystem is read-only by default
+            - name: tmp
+              mountPath: /tmp
           lifecycle:
             preStop:
               exec:
@@ -122,6 +127,9 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -2,11 +2,13 @@ apiVersion: v2
 name: ragbox
 description: A Helm chart for RAG in a Box - a turnkey RAG solution powered by LLM4S
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
-home: https://github.com/llm4s/rag-in-a-box
+version: 0.2.0
+# Default image tag (image.tag overrides it). CI publishes images tagged with the
+# short commit SHA on every push to main, and semver tags on releases.
+appVersion: "9e5427d"
+home: https://github.com/llm4s/rag_in_a_box
 sources:
-  - https://github.com/llm4s/rag-in-a-box
+  - https://github.com/llm4s/rag_in_a_box
 keywords:
   - rag
   - llm
@@ -17,8 +19,3 @@ keywords:
 maintainers:
   - name: LLM4S Team
     url: https://llm4s.org
-dependencies:
-  - name: postgresql
-    version: "15.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: postgresql.enabled

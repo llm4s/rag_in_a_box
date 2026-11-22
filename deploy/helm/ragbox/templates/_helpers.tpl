@@ -82,7 +82,7 @@ PostgreSQL host
 */}}
 {{- define "ragbox.postgresql.host" -}}
 {{- if .Values.postgresql.enabled }}
-{{- include "ragbox.fullname" . }}-postgresql
+{{- include "ragbox.postgresql.fullname" . }}
 {{- else }}
 {{- .Values.externalDatabase.host }}
 {{- end }}
@@ -111,8 +111,23 @@ PostgreSQL database
 {{- end }}
 
 {{/*
+Bundled PostgreSQL resource name (StatefulSet, Service and generated Secret)
+*/}}
+{{- define "ragbox.postgresql.fullname" -}}
+{{- include "ragbox.fullname" . }}-postgresql
+{{- end }}
+
+{{/*
+Bundled PostgreSQL selector labels
+*/}}
+{{- define "ragbox.postgresql.selectorLabels" -}}
+{{ include "ragbox.selectorLabels" . }}
+app.kubernetes.io/component: postgresql
+{{- end }}
+
+{{/*
 PostgreSQL secret name - returns the appropriate secret for DB credentials
-When using bundled PostgreSQL: use Bitnami-generated secret
+When using bundled PostgreSQL: the chart-generated <fullname>-postgresql secret (or auth.existingSecret)
 When using external database: use ragbox secret or existingSecret
 */}}
 {{- define "ragbox.postgresql.secretName" -}}
@@ -120,8 +135,7 @@ When using external database: use ragbox secret or existingSecret
 {{- if .Values.postgresql.auth.existingSecret }}
 {{- .Values.postgresql.auth.existingSecret }}
 {{- else }}
-{{- /* Bitnami PostgreSQL generates secret named <release>-postgresql */}}
-{{- include "ragbox.fullname" . }}-postgresql
+{{- include "ragbox.postgresql.fullname" . }}
 {{- end }}
 {{- else }}
 {{- /* External database - use ragbox secret or existingSecret */}}
@@ -134,8 +148,30 @@ When using external database: use ragbox secret or existingSecret
 {{- end }}
 
 {{/*
+Resolve a secret value so that it is stable across upgrades:
+  1. the explicitly configured value, if set
+  2. otherwise the value already stored in the in-cluster Secret (helm upgrade)
+  3. otherwise a new random 32-character string (first install)
+Usage: include "ragbox.secretValue" (dict "ctx" $ "secretName" "<name>" "key" "<key>" "value" .Values.x)
+Note: `helm template` and client-side dry runs cannot look up the cluster, so set
+values explicitly when rendering manifests outside of `helm install/upgrade` (e.g. GitOps).
+*/}}
+{{- define "ragbox.secretValue" -}}
+{{- if .value -}}
+{{- .value -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .ctx.Release.Namespace .secretName -}}
+{{- if and $existing $existing.data (hasKey $existing.data .key) -}}
+{{- index $existing.data .key | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 32 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 PostgreSQL password key - returns the correct secret key for the password
-Bitnami uses 'password' for custom user, ragbox secret uses 'pg-password'
+The bundled PostgreSQL secret uses 'password', the ragbox secret uses 'pg-password'
 */}}
 {{- define "ragbox.postgresql.passwordKey" -}}
 {{- if .Values.postgresql.enabled -}}

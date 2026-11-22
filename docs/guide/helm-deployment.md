@@ -135,7 +135,7 @@ autoscaling:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of API replicas | `2` |
-| `image.repository` | Container image | `ghcr.io/llm4s/rag-in-a-box` |
+| `image.repository` | Container image | `ghcr.io/llm4s/rag_in_a_box` |
 | `image.tag` | Image tag | `Chart.AppVersion` |
 | `config.auth.mode` | Auth mode (open/basic/oauth) | `basic` |
 | `config.llm.model` | LLM model | `openai/gpt-4o` |
@@ -143,8 +143,8 @@ autoscaling:
 | `config.embedding.model` | Embedding model | `text-embedding-3-small` |
 | `config.rag.chunkingStrategy` | Chunking strategy | `sentence` |
 | `config.rag.topK` | Chunks to retrieve | `5` |
-| `postgresql.enabled` | Deploy bundled PostgreSQL | `true` |
-| `postgresql.primary.persistence.size` | PVC size | `10Gi` |
+| `postgresql.enabled` | Deploy bundled PostgreSQL + pgvector StatefulSet | `true` |
+| `postgresql.persistence.size` | PVC size | `10Gi` |
 | `ingress.enabled` | Enable ingress | `false` |
 
 See the [values.yaml](https://github.com/llm4s/rag-in-a-box/blob/main/deploy/helm/ragbox/values.yaml) for all configuration options.
@@ -182,7 +182,7 @@ kubectl logs -l app.kubernetes.io/name=ragbox
 Verify the PostgreSQL service is running:
 
 ```bash
-kubectl get pods -l app.kubernetes.io/name=postgresql
+kubectl get pods -l app.kubernetes.io/component=postgresql
 ```
 
 ### Health check failures
