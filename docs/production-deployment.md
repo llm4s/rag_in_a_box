@@ -81,21 +81,28 @@ curl http://localhost:8080/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_MODE` | `open` | Authentication mode (open, basic) |
+| `AUTH_MODE` | `open` | Authentication mode (open, basic, oauth) |
 | `ADMIN_USERNAME` | `admin` | Admin username (when AUTH_MODE=basic) |
-| `ADMIN_PASSWORD` | - | Admin password (required when AUTH_MODE=basic) |
-| `JWT_SECRET` | - | JWT signing secret (required for multi-instance) |
+| `ADMIN_PASSWORD` | - | Admin password (required when AUTH_MODE=basic; 12+ characters, not `admin` or a placeholder) |
+| `JWT_SECRET` | - | JWT signing secret (required when AUTH_MODE=basic; 32+ characters, not a placeholder) |
 | `JWT_EXPIRATION` | `86400` | JWT expiration in seconds |
-| `API_KEY` | - | Legacy API key authentication |
-| `ALLOWED_ORIGINS` | `*` | CORS allowed origins (comma-separated) |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | `rag-in-a-box` | `iss` / `aud` claims of JWTs |
+| `PASSWORD_MIN_LENGTH` | `12` | Minimum password length |
+| `API_KEY` | - | Static administrator key (`X-API-Key` or `Authorization: Bearer`) |
+| `ALLOWED_ORIGINS` | - (same-origin only) | CORS allowed origins (comma-separated), or `*` |
+| `CORS_ALLOW_ALL_ORIGINS` | `false` | Allow every origin when `ALLOWED_ORIGINS` is unset |
 
 ### Production Hardening
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_ENABLED` | `false` | Enable rate limiting |
+| `RATE_LIMIT_ENABLED` | `false` | Enable the per-client rate limit |
 | `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window duration |
+| `RATE_LIMIT_TRUSTED_PROXIES` | - | IPs / CIDRs of reverse proxies whose `X-Forwarded-For` is believed |
+| `RATE_LIMIT_MAX_CLIENTS` | `10000` | Most clients tracked at once |
+| `RATE_LIMIT_LOGIN_MAX_ATTEMPTS` | `10` | Failed logins per IP and per username per window (`0` disables) |
+| `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `300` | Login throttling window |
 | `REQUEST_SIZE_ENABLED` | `true` | Enable request size limits |
 | `MAX_BODY_SIZE_MB` | `10` | Maximum request body size |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `30` | Graceful shutdown timeout |
@@ -106,6 +113,7 @@ curl http://localhost:8080/health
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `METRICS_ENABLED` | `false` | Enable Prometheus metrics at /metrics |
+| `METRICS_REQUIRE_AUTH` | `true` | `/metrics` for administrators only; `false` makes it public |
 | `LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
 | `LOG_FORMAT` | `console` | Log format (console, json) |
 
@@ -113,10 +121,11 @@ curl http://localhost:8080/health
 
 ### Security Checklist
 
-- [ ] Set `JWT_SECRET` to a strong random value (32+ characters)
-- [ ] Enable `AUTH_MODE=basic` with strong `ADMIN_PASSWORD`
-- [ ] Configure `ALLOWED_ORIGINS` to restrict CORS
-- [ ] Enable `RATE_LIMIT_ENABLED=true`
+- [ ] Set `JWT_SECRET` to a strong random value (32+ characters; template placeholders are rejected)
+- [ ] Enable `AUTH_MODE=basic` with a strong `ADMIN_PASSWORD` (or use `AUTH_MODE=oauth`)
+- [ ] Leave `ALLOWED_ORIGINS` unset (same-origin only) unless a browser app on another origin needs the API
+- [ ] Enable `RATE_LIMIT_ENABLED=true` and set `RATE_LIMIT_TRUSTED_PROXIES` to your proxies' addresses
+- [ ] Keep `METRICS_REQUIRE_AUTH=true` (scrape with a bearer credential), or keep `/metrics` off untrusted networks
 - [ ] Use TLS termination (nginx, traefik, or cloud load balancer)
 - [ ] Restrict database access to application only
 - [ ] Use secrets management (Vault, AWS Secrets Manager, etc.)
@@ -208,13 +217,14 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       AUTH_MODE: basic
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # ALLOWED_ORIGINS: https://app.example.com   # only for browser apps on another origin
 
       # API Keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
 
       # Production settings
       RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}   # your reverse proxy
       METRICS_ENABLED: "true"
       LOG_FORMAT: json
     ports:
@@ -297,7 +307,22 @@ readinessProbe:
 
 ### Prometheus Metrics
 
-Enable with `METRICS_ENABLED=true`. Metrics available at `/metrics`:
+Enable with `METRICS_ENABLED=true`. Metrics are available at `/metrics`, by default to
+administrators only (`METRICS_REQUIRE_AUTH=true`). Give Prometheus a credential:
+
+```yaml
+scrape_configs:
+  - job_name: ragbox
+    authorization:
+      credentials_file: /etc/prometheus/ragbox-api-key   # API_KEY or an admin-scoped rat_ token
+    static_configs:
+      - targets: ["ragbox:8080"]
+```
+
+Set `METRICS_REQUIRE_AUTH=false` only if `/metrics` cannot be reached from untrusted networks
+(collection names appear in its labels).
+
+Metrics:
 
 ```
 # Document and chunk counts

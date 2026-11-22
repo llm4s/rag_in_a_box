@@ -124,6 +124,9 @@ kubectl logs -l app.kubernetes.io/component=api -n ragbox
    ```
    Solution: Set the required environment variable.
 
+   Placeholder values from the templates (`CHANGE_ME...`, `REPLACE-ME`) are rejected as well, as
+   are an `ADMIN_PASSWORD` of `admin` or one shorter than `PASSWORD_MIN_LENGTH` (12).
+
 2. **Database not ready:**
    ```
    Connection refused
@@ -399,6 +402,9 @@ curl -X POST http://localhost:8080/api/v1/documents \
 - Browser console shows CORS errors
 - Preflight requests fail
 
+By default ragbox sends no CORS headers: only pages served from its own origin (such as the
+admin UI at `/admin`) can read API responses.
+
 **Solutions:**
 
 1. Configure allowed origins:
@@ -406,7 +412,10 @@ curl -X POST http://localhost:8080/api/v1/documents \
    ALLOWED_ORIGINS="https://app.example.com,https://admin.example.com"
    ```
 
-2. For development, allow all origins:
+2. For admin UI development, use the Vite dev server (`cd admin-ui && npm run dev`): it proxies
+   `/api`, `/health` and `/ws` to `localhost:8080`, so no CORS is needed. To call the API from
+   another local origin, allow it explicitly (`ALLOWED_ORIGINS="http://localhost:5173"`), or
+   allow all origins in development only:
    ```bash
    ALLOWED_ORIGINS="*"
    ```

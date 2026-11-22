@@ -54,10 +54,13 @@ The authenticator reads the first credential it finds, in this order:
 
 1. `X-API-Key: <API_KEY>`
 2. `Authorization: Bearer <API_KEY | rat_token | JWT>`
-3. `?api_key=<API_KEY>` (legacy; prefer a header, query strings end up in access logs)
-4. `?access_token=<API_KEY | rat_token | JWT>` on the WebSocket endpoint `/ws` only, because
+3. `?access_token=<API_KEY | rat_token | JWT>` on the WebSocket endpoint `/ws` only, because
    browsers cannot set headers on a WebSocket handshake
-5. The OIDC session cookie (oauth mode)
+4. The OIDC session cookie (oauth mode)
+
+`?api_key=` is no longer accepted (it was removed because query strings end up in access logs
+and browser history); send the key in a header. The request log redacts credential-like query
+parameters (`access_token`, `api_key`, `token`, `code`, `state`, ...) in any case.
 
 A credential that is present but invalid (wrong key, expired or revoked token, bad signature,
 deleted user) is rejected with `401`, even if another credential would have been valid.
@@ -67,7 +70,8 @@ deleted user) is rejected with `401`, even if another credential would have been
 These never require authentication:
 
 - `GET /health`, `/health/ready`, `/health/live`
-- `GET /metrics` (when `METRICS_ENABLED=true`)
+- `GET /metrics`, only with `METRICS_ENABLED=true` and `METRICS_REQUIRE_AUTH=false` (by default
+  `/metrics` is for administrators, e.g. a scraper sending `Authorization: Bearer <API_KEY>`)
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/mode`
 - `/api/v1/oauth/*` (login, callback, logout, userinfo; oauth mode)
 - `/admin/*` (the admin UI's static files; the UI itself then logs in)
@@ -186,7 +190,29 @@ export ADMIN_PASSWORD=your-secure-password
 export JWT_SECRET=$(openssl rand -base64 32)
 ```
 
-On first start an `admin` user is created with `ADMIN_PASSWORD`.
+On first start (no users yet) an `admin` user (`ADMIN_USERNAME`) is created with
+`ADMIN_PASSWORD`. No account is ever created with a default password, and none is created in
+open or oauth mode. Basic mode refuses to start unless `ADMIN_PASSWORD` is set, is at least
+`PASSWORD_MIN_LENGTH` (12) characters, and is not `admin` or a template placeholder
+(`CHANGE_ME`, `REPLACE-ME`, ...); `JWT_SECRET` must be 32+ characters and not a placeholder.
+
+Earlier versions created `admin`/`admin` in open mode. If the `ADMIN_USERNAME` account still has
+that password when basic mode starts, its password is reset to `ADMIN_PASSWORD` (a warning is
+logged), so the well-known password never works in basic mode.
+
+### Passwords
+
+- Hashed with PBKDF2-HMAC-SHA256 (`SecretKeyFactory`, 600,000 iterations by default,
+  `PASSWORD_HASH_ITERATIONS`) and a random salt. Hashes from earlier versions (an iterated HMAC)
+  still verify and are replaced with a PBKDF2 hash on the user's next successful login, as are
+  hashes with fewer iterations than configured.
+- Creating a user, resetting or changing a password needs at least `PASSWORD_MIN_LENGTH`
+  (default 12) characters; an empty or short password answers `400`.
+- Logins for unknown users and wrong passwords answer the same `401` and take as long.
+- Failed logins are throttled per client IP and per username (see
+  [rate limiting](configuration.md#rate-limiting)): after `RATE_LIMIT_LOGIN_MAX_ATTEMPTS` (10)
+  failures within `RATE_LIMIT_LOGIN_WINDOW_SECONDS` (300) further attempts answer `429`, even with
+  the right password, until the window ends.
 
 ### Login
 
@@ -244,8 +270,16 @@ Non-administrators get `403 Forbidden`.
 
 ### JWT Details
 
-JWTs are HS256-signed with `JWT_SECRET` and contain `sub` (user id), `username`, `role`, `iat`
-and `exp`. Signatures are compared in constant time.
+JWTs are HS256-signed with `JWT_SECRET` and contain `sub` (user id), `username`, `role`, `iat`,
+`exp`, `iss` (`JWT_ISSUER`, default `rag-in-a-box`) and `aud` (`JWT_AUDIENCE`, default
+`rag-in-a-box`). A token is accepted only if its header names `HS256`, its signature matches
+(compared in constant time), it has not expired and its `iss` and `aud` match. Give deployments
+that share a `JWT_SECRET` different audiences so their tokens are not interchangeable.
+
+On every request the user is re-loaded, so a deleted user's token stops working and a demoted
+administrator loses administrator rights immediately.
+
+Tokens issued before `iss`/`aud` were added are rejected: users log in again after upgrading.
 
 ## OAuth Mode
 
@@ -289,7 +323,9 @@ without an API key there is no login.
   manager.
 - Prefer scoped, collection-restricted [access tokens](access-tokens.md) over `API_KEY` for
   integrations; `API_KEY` is a master key.
-- Passwords are hashed with PBKDF2-HMAC-SHA256 and a random salt.
+- Passwords are hashed with PBKDF2-HMAC-SHA256 and a random salt (see [Passwords](#passwords)).
+- Restrict cross-origin access with `ALLOWED_ORIGINS` only if a browser app on another origin
+  needs the API; by default no cross-origin access is allowed.
 
 ## Troubleshooting
 
@@ -306,11 +342,23 @@ not accepted outside basic mode.
 
 Log in again, or raise `JWT_EXPIRATION`.
 
+### `401 Invalid token` right after upgrading
+
+JWTs now carry and require `iss`/`aud` claims; tokens issued by an older version are rejected.
+Log in again.
+
+### `429 Too many failed login attempts`
+
+Login throttling: too many failed logins for this username or from this address. Wait for
+`Retry-After` seconds. Behind a reverse proxy, set `RATE_LIMIT_TRUSTED_PROXIES` so clients are
+told apart by their own address rather than the proxy's.
+
 ### `400 Password login is only available when AUTH_MODE=basic`
 
 `POST /api/v1/auth/login` is disabled in open and oauth mode.
 
 ### Admin password not working
 
-`ADMIN_PASSWORD` is only used to create the admin user on first start. Reset it with
+`ADMIN_PASSWORD` is only used to create the admin user on first start (and to replace the old
+default password `admin`). Reset it with
 `PUT /api/v1/users/{id}/password` as another administrator, or in the database.

@@ -77,7 +77,7 @@ RAG in a Box includes pre-configured settings for major identity providers:
 | `OAUTH_STATE_TTL` | `300` | Auth state and pre-auth cookie lifetime in seconds (5 minutes) |
 | `OAUTH_SESSION_STORAGE` | `memory` | Session storage: `memory` (single instance) or `postgres` |
 | `OAUTH_ADMIN_GROUPS` | (none) | Comma-separated groups (from the groups claim) whose members are ragbox administrators. With none, no SSO user is an administrator |
-| `OAUTH_SCOPES` | `openid profile email` | OAuth scopes to request |
+| `OAUTH_SCOPES` | the provider preset's (e.g. `openid profile email`) | Scopes to request, space- or comma-separated; must include `openid` |
 
 ---
 
