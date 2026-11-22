@@ -250,7 +250,7 @@ jobs:
             > /tmp/ragbox-rendered.yaml
           echo "Rendered $(grep -c '^kind:' /tmp/ragbox-rendered.yaml) manifests"
 
-  # Check the Python SDK installs and imports (it has no test suite yet)
+  # Install the Python SDK and run its tests (HTTP mocked with `responses`)
   python-sdk:
     name: Python SDK
     runs-on: ubuntu-latest
@@ -267,12 +267,15 @@ jobs:
           python-version: '3.12'
 
       - name: Install SDK
-        run: pip install .
+        run: pip install ".[dev]"
 
       - name: Byte-compile and import
         run: |
           python -m compileall -q ragbox examples
           python -c "import ragbox; print('ragbox SDK imported OK')"
+
+      - name: Run tests
+        run: pytest -q
 
   # Build and push Docker image
   docker:
