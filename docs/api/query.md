@@ -78,9 +78,30 @@ curl -X POST http://localhost:8080/api/v1/query \
     "promptTokens": 450,
     "completionTokens": 120,
     "totalTokens": 570
+  },
+  "metrics": {
+    "embeddingLatencyMs": 41,
+    "searchLatencyMs": 12,
+    "llmLatencyMs": 1830,
+    "chunksRetrieved": 5,
+    "chunksUsed": 5,
+    "embeddingTokens": 9,
+    "promptTokens": 450,
+    "completionTokens": 120,
+    "costUsd": 0.0023
   }
 }
 ```
+
+`usage` is the answer completion's token usage. `metrics` comes from llm4s tracing: the
+query's embedding, search and answer-generation latencies, tokens over every completion it
+made (including query rewriting and LLM reranking, when enabled), and an estimated cost for
+models whose pricing llm4s knows. `embeddingLatencyMs` and `searchLatencyMs` are present
+when the embedding provider reports usage. The same figures are stored in the query log.
+
+Streaming (`POST /api/v1/query/stream`) sends the contexts and then the whole answer as one
+`answer` event: llm4s 0.6.0 has no streaming RAG answer API
+([llm4s/llm4s#2717](https://github.com/llm4s/llm4s/issues/2717), added upstream for the next release).
 
 ---
 

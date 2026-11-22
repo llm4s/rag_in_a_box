@@ -2,7 +2,7 @@ package org.llm4s.ragbox.testkit
 
 import org.llm4s.error.ConfigurationError
 import org.llm4s.llmconnect.config.EmbeddingProviderConfig
-import org.llm4s.llmconnect.model.{EmbeddingRequest, EmbeddingResponse}
+import org.llm4s.llmconnect.model.{EmbeddingRequest, EmbeddingResponse, EmbeddingUsage}
 import org.llm4s.llmconnect.provider.EmbeddingProvider
 import org.llm4s.llmconnect.spi.{EmbeddingProviderDescriptor, EmbeddingProviderSection, ProviderRegistry}
 import org.llm4s.security.Secret
@@ -38,7 +38,13 @@ final class FakeEmbeddings(failFirstBuilds: Int = 0) {
   private final class Provider extends EmbeddingProvider {
     override def embed(request: EmbeddingRequest): Result[EmbeddingResponse] = {
       embedded.addAndGet(request.input.size)
-      Right(EmbeddingResponse(embeddings = request.input.map(vectorFor), dim = Some(Dimensions)))
+      // Reports token usage as a real provider does, so llm4s traces the call (with its duration)
+      val tokens = request.input.map(_.split("\\s+").count(_.nonEmpty)).sum
+      Right(EmbeddingResponse(
+        embeddings = request.input.map(vectorFor),
+        dim = Some(Dimensions),
+        usage = Some(EmbeddingUsage(promptTokens = tokens, totalTokens = tokens))
+      ))
     }
   }
 

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '@/stores/documents'
 import * as ingestionApi from '@/api/ingestion'
+import * as documentsApi from '@/api/documents'
 import { useNotification } from '@/composables/useNotification'
 import { type AppError, isAppError, getErrorMessage } from '@/composables/useApiError'
 import ErrorAlert from '@/components/ErrorAlert.vue'
@@ -66,22 +67,12 @@ function onFileSelect(e: Event) {
   }
 }
 
+// Files are uploaded as-is and their text is extracted on the server (Apache Tika via llm4s),
+// so binary formats such as PDF and DOCX work too. Unsupported content is reported per file.
+const acceptedExtensions = '.pdf,.docx,.doc,.txt,.md,.markdown,.json,.yaml,.yml,.xml,.csv,.html,.htm,.rtf,.odt,.pptx,.xlsx'
+
 function addFiles(newFiles: File[]) {
-  // Filter for text-based files
-  const textFiles = newFiles.filter(f =>
-    f.type.startsWith('text/') ||
-    f.name.endsWith('.md') ||
-    f.name.endsWith('.txt') ||
-    f.name.endsWith('.json') ||
-    f.name.endsWith('.yaml') ||
-    f.name.endsWith('.yml') ||
-    f.name.endsWith('.xml') ||
-    f.name.endsWith('.csv') ||
-    f.name.endsWith('.html') ||
-    f.name.endsWith('.htm') ||
-    f.type === ''  // Unknown type, try anyway
-  )
-  files.value = [...files.value, ...textFiles]
+  files.value = [...files.value, ...newFiles]
 }
 
 function removeFile(index: number) {
@@ -90,15 +81,6 @@ function removeFile(index: number) {
 
 function triggerFileInput() {
   fileInputRef.value?.click()
-}
-
-async function readFileContent(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`))
-    reader.readAsText(file)
-  })
 }
 
 function setError(e: unknown, defaultMsg: string) {
@@ -164,13 +146,19 @@ async function submitFiles() {
     }, {} as Record<string, string>)
 
     for (const file of files.value) {
-      const fileContent = await readFileContent(file)
-      await documentsStore.createDocument({
-        content: fileContent,
-        filename: file.name,
-        collection: collection.value || undefined,
-        metadata: Object.keys(metadataObj).length > 0 ? metadataObj : undefined
-      })
+      try {
+        await documentsApi.uploadDocumentFile(file, {
+          collection: collection.value || undefined,
+          metadata: Object.keys(metadataObj).length > 0 ? metadataObj : undefined
+        })
+      } catch (e) {
+        // Name the file that failed; earlier files in the batch are already ingested
+        const failure: AppError = isAppError(e)
+          ? { ...e, message: `${file.name}: ${e.message}` }
+          : { code: 'VALIDATION_ERROR', message: `${file.name}: ${getErrorMessage(e) || 'upload failed'}`, retryable: false }
+        error.value = failure
+        return
+      }
     }
 
     success.value = true
@@ -309,7 +297,7 @@ function formatFileSize(bytes: number): string {
               ref="fileInputRef"
               type="file"
               multiple
-              accept=".txt,.md,.json,.yaml,.yml,.xml,.csv,.html,.htm"
+              :accept="acceptedExtensions"
               style="display: none"
               @change="onFileSelect"
             />
@@ -327,7 +315,7 @@ function formatFileSize(bytes: number): string {
               <p class="text-h6 mt-4">Drag & drop files here</p>
               <p class="text-body-2 text-grey">or click to browse</p>
               <p class="text-caption text-grey mt-2">
-                Supported: .txt, .md, .json, .yaml, .yml, .xml, .csv, .html
+                PDF, Word (.docx), HTML, Markdown, plain text and other formats Apache Tika can read
               </p>
             </div>
 

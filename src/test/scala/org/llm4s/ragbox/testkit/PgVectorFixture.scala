@@ -8,6 +8,7 @@ import com.zaxxer.hikari.HikariDataSource
 import org.llm4s.ragbox.config.{ApiKeysConfig, AppConfig, DatabaseConfig, EmbeddingConfig}
 import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.service.RAGService
+import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.security.Secret
 import org.scalatest.TestSuite
 import org.testcontainers.containers.wait.strategy.Wait
@@ -59,6 +60,9 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     val host = container.container.getHost
     val port = container.container.getMappedPort(5432).intValue
     val name = s"test_${databaseCounter.incrementAndGet()}"
+    // DriverManager only sees drivers its caller's class loader has loaded; a suite whose first
+    // database access is this one would otherwise find no driver under a layered sbt class loader
+    Class.forName("org.postgresql.Driver")
     Using.resource(DriverManager.getConnection(s"jdbc:postgresql://$host:$port/postgres", User, Password)) { conn =>
       Using.resource(conn.createStatement())(_.execute(s"CREATE DATABASE $name"))
     }
@@ -92,14 +96,22 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     )
 
   /**
-   * An app config over `db` that embeds with [[FakeEmbeddings]] and has no LLM configured.
+   * An app config over `db` that embeds with [[FakeEmbeddings]]. With `llm`, answers come from
+   * that [[FakeLLM]] (`fake/fake-model`); without one, no LLM is available.
    */
-  def testConfig(db: DatabaseConfig): AppConfig =
-    TestFixtures.testAppConfig.copy(
+  def testConfig(db: DatabaseConfig, llm: Option[FakeLLM] = None): AppConfig = {
+    val base = TestFixtures.testAppConfig
+    base.copy(
       database = db,
       embedding = EmbeddingConfig(provider = "openai", model = FakeEmbeddings.Model, dimensions = Some(FakeEmbeddings.Dimensions)),
+      llm = llm.fold(base.llm)(_ => base.llm.copy(model = s"${FakeLLM.Id.asString}/${FakeLLM.Model}")),
       apiKeys = ApiKeysConfig(openai = None, anthropic = None, voyage = None)
     )
+  }
+
+  /** The fake embedding provider's registry, with the fake LLM provider when there is one. */
+  def registryFor(embeddings: FakeEmbeddings, llm: Option[FakeLLM]): ProviderRegistry =
+    llm.fold(embeddings.registry)(l => embeddings.registry.withProvider(l.descriptor))
 
   /**
    * A permission-mode RAGService over `db`, built the way `Main` builds one: a connection pool,
@@ -108,7 +120,12 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
    *
    * Pass the same `embeddings` to several services to count embedding work across them.
    */
-  def permissionService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
+  def permissionService(
+    db: DatabaseConfig,
+    embeddings: FakeEmbeddings = FakeEmbeddings(),
+    llm: Option[FakeLLM] = None,
+    configure: AppConfig => AppConfig = identity
+  ): Resource[IO, RAGService] =
     for {
       ds <- pool(db)
       index <- Resource.make(
@@ -121,11 +138,18 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
         }
       )(si => IO.blocking(si.close()))
       service <- Resource.make(
-        RAGService.createWithPermissions(testConfig(db), ds, index, embeddings.registry)
+        RAGService.createWithPermissions(configure(testConfig(db, llm)), ds, index, registryFor(embeddings, llm))
       )(_.close())
     } yield service
 
   /** A RAGService over `db` without permissions (no `SearchIndex`), as `Main` falls back to. */
-  def plainService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
-    pool(db).flatMap(ds => Resource.make(RAGService.create(testConfig(db), ds, embeddings.registry))(_.close()))
+  def plainService(
+    db: DatabaseConfig,
+    embeddings: FakeEmbeddings = FakeEmbeddings(),
+    llm: Option[FakeLLM] = None,
+    configure: AppConfig => AppConfig = identity
+  ): Resource[IO, RAGService] =
+    pool(db).flatMap(ds =>
+      Resource.make(RAGService.create(configure(testConfig(db, llm)), ds, registryFor(embeddings, llm)))(_.close())
+    )
 }

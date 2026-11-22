@@ -4,7 +4,8 @@ import { useConfigStore } from '@/stores/config'
 import { useNotification } from '@/composables/useNotification'
 import { type AppError, toAppError } from '@/composables/useApiError'
 import ErrorAlert from '@/components/ErrorAlert.vue'
-import type { RuntimeConfig, RuntimeConfigUpdate, SettingValidation } from '@/types/api'
+import type { PipelineConfigResponse, RuntimeConfig, RuntimeConfigUpdate, SettingValidation } from '@/types/api'
+import { getPipelineConfig } from '@/api/config'
 
 const configStore = useConfigStore()
 const notification = useNotification()
@@ -22,7 +23,13 @@ const strategyNames = computed(() => configStore.chunkingStrategies.map(s => s.n
 type ConfigKey = keyof RuntimeConfig
 const configKeys = computed(() => (config.value ? (Object.keys(config.value) as ConfigKey[]) : []))
 
+// How the pipeline searches, and which settings do not take effect (e.g. fusion in permission mode)
+const pipeline = ref<PipelineConfigResponse | null>(null)
+
 onMounted(() => {
+  getPipelineConfig()
+    .then(p => { pipeline.value = p })
+    .catch(() => { pipeline.value = null })
   configStore.fetchRuntimeConfig()
   configStore.fetchConfigMeta()
   configStore.fetchConfigHistory()
@@ -128,6 +135,23 @@ function getTypeColor(type: string): string {
         Last modified {{ new Date(configStore.lastModified).toLocaleString() }}.
       </span>
     </p>
+
+    <v-alert
+      v-if="pipeline"
+      :type="pipeline.rag.fusionApplies ? 'info' : 'warning'"
+      variant="tonal"
+      class="mb-4"
+      data-testid="pipeline-limitations"
+    >
+      <div class="font-weight-medium mb-1">
+        Search mode: {{ pipeline.rag.searchMode }}
+        <span v-if="!pipeline.rag.fusionApplies">(fusionStrategy and rrfK have no effect)</span>
+        &middot; reranking: {{ pipeline.rag.reranking }} &middot; query transform: {{ pipeline.rag.queryTransform }}
+      </div>
+      <ul class="ml-4">
+        <li v-for="note in pipeline.rag.limitations" :key="note">{{ note }}</li>
+      </ul>
+    </v-alert>
 
     <ErrorAlert
       :error="saveError || configStore.error"

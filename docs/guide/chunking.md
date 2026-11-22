@@ -80,6 +80,29 @@ Uses embeddings to detect topic boundaries. Highest quality but requires more pr
 RAG_CHUNKING_STRATEGY=semantic
 ```
 
+When indexing, ragbox builds llm4s's semantic chunker over the configured embedding
+provider - the same chunker the llm4s pipeline uses. The preview and compare APIs have no
+embedding provider, so they do **not** preview semantic chunking: a semantic preview shows
+the sentence chunking llm4s falls back to, labelled `sentence` (config source
+`semantic-fallback`) with an info warning, and a comparison reports `semantic` with no
+chunks and a warning. To see real semantic chunks, index a document and open it under
+Visibility.
+
+---
+
+## How Documents Are Chunked
+
+Each document is chunked **once**, with the chunker and chunk size/overlap the llm4s
+pipeline is configured with, and those exact chunks are both indexed (llm4s
+`RAG.ingestChunks`) and kept in the chunk store. Chunk store ids are the ids llm4s
+indexed the chunks under - `<documentId>-chunk-<n>`, or `coll-<collectionId>-<documentId>-chunk-<n>`
+in permission mode - so a search result's id matches a chunk in the chunk store.
+
+In permission mode llm4s 0.6.0 has no pre-chunked ingest ([llm4s/llm4s#2732](https://github.com/llm4s/llm4s/issues/2732); `RAG.ingestWithPermissions` chunks the
+text itself), so it chunks with the same chunker and config, which gives the same chunks. Only
+the semantic chunker could disagree (its boundaries depend on embeddings); ragbox logs a
+warning if the chunk counts differ.
+
 ---
 
 ## Configuration
@@ -141,7 +164,10 @@ curl -X POST http://localhost:8080/api/v1/chunking/compare \
   }'
 ```
 
-Returns results for each strategy with a recommendation.
+Returns results for each strategy with a recommendation. Content that llm4s's
+`ChunkerFactory.auto` detects as markdown (headings, lists, links, images or code fences)
+gets a `markdown` recommendation; otherwise the strategy with the fewest warnings and chunk
+sizes nearest the target is recommended.
 
 ### List Available Strategies
 

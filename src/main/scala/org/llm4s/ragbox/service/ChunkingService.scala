@@ -1,16 +1,20 @@
 package org.llm4s.ragbox.service
 
 import cats.effect.IO
-import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk}
+import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk, MarkdownChunker}
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
 
 /**
  * Service for chunking preview and comparison.
  *
- * Allows users to test chunking strategies without persisting any data.
+ * Allows users to test chunking strategies without persisting any data. Previews use llm4s's
+ * `ChunkerFactory`, which has no embedding provider: semantic chunking (which embeds every
+ * sentence) is not previewed, and is never labelled as such - a semantic preview shows the
+ * sentence chunking `ChunkerFactory.create("semantic")` falls back to, labelled `sentence`.
  */
 class ChunkingService(config: AppConfig) {
+  import ChunkingService._
 
   // Token estimation: ~4 chars per token on average
   private val CharsPerToken = 4
@@ -19,8 +23,10 @@ class ChunkingService(config: AppConfig) {
    * Preview chunking on sample content.
    */
   def preview(request: ChunkingPreviewRequest): IO[ChunkingPreviewResponse] = IO {
-    // Determine strategy to use
-    val (strategy, strategySource) = resolveStrategy(request.strategy, request.filename)
+    // Determine strategy to use. Semantic needs embeddings, so its preview is the sentence fallback.
+    val (requested, requestedSource) = resolveStrategy(request.strategy, request.filename)
+    val semanticFallback = requested == SemanticStrategy
+    val (strategy, strategySource) = if (semanticFallback) (SentenceStrategy, "semantic-fallback") else (requested, requestedSource)
 
     // Build chunking config
     val chunkingConfig = ChunkingConfig(
@@ -41,7 +47,8 @@ class ChunkingService(config: AppConfig) {
     // Build response
     val previewChunks = docChunks.map(toPreviewChunk)
     val stats = calculateStats(previewChunks)
-    val warnings = generateWarnings(previewChunks, chunkingConfig, strategy)
+    val warnings = generateWarnings(previewChunks, chunkingConfig, strategy) ++
+      Option.when(semanticFallback)(SemanticNotPreviewed)
 
     val configUsed = ChunkingConfigUsed(
       strategy = strategy,
@@ -77,7 +84,15 @@ class ChunkingService(config: AppConfig) {
     )
 
     val results = strategies.flatMap { strategyName =>
-      ChunkerFactory.create(strategyName).map { chunker =>
+      if (strategyName.trim.toLowerCase == SemanticStrategy) {
+        // Not previewed: the sentence fallback must not be shown as semantic output
+        Some(StrategyResult(
+          strategy = SemanticStrategy,
+          chunks = Seq.empty,
+          stats = calculateStats(Seq.empty),
+          warnings = Seq(SemanticNotPreviewed)
+        ))
+      } else ChunkerFactory.create(strategyName).map { chunker =>
         val docChunks = chunker.chunk(request.content, chunkingConfig)
         val previewChunks = docChunks.map(toPreviewChunk)
         val stats = calculateStats(previewChunks)
@@ -133,9 +148,10 @@ class ChunkingService(config: AppConfig) {
         StrategyInfo(
           name = "semantic",
           displayName = "Semantic",
-          description = "Uses embeddings to detect topic boundaries. Highest quality but slowest.",
+          description = "Uses embeddings to detect topic boundaries. Highest quality but slowest. " +
+            "Used when indexing if configured; not available in previews, which have no embedding provider.",
           bestFor = Seq("Mixed-topic documents", "Research papers", "Long-form content"),
-          tradeoffs = Seq("Requires embedding API calls", "Slower processing", "Higher cost"),
+          tradeoffs = Seq("Requires embedding API calls", "Slower processing", "Higher cost", "Not previewed"),
           requiresEmbeddings = true
         )
       ),
@@ -288,18 +304,19 @@ class ChunkingService(config: AppConfig) {
   private def generateRecommendation(results: Seq[StrategyResult], content: String): Option[StrategyRecommendation] = {
     if (results.isEmpty) return None
 
-    // Simple heuristics for recommendation
-    val isMarkdown = content.contains("```") || content.matches("(?m)^#{1,6}\\s+\\S.*")
+    // llm4s's own content detection: ChunkerFactory.auto picks the markdown chunker for
+    // headings, lists, links, images or code fences
+    val isMarkdown = ChunkerFactory.auto(content).isInstanceOf[MarkdownChunker]
     val hasCodeBlocks = content.contains("```")
 
     if (isMarkdown && results.exists(_.strategy == "markdown")) {
       Some(StrategyRecommendation(
         strategy = "markdown",
-        reason = "Content appears to be markdown with " + (if (hasCodeBlocks) "code blocks" else "headings")
+        reason = "Content appears to be markdown" + (if (hasCodeBlocks) " with code blocks" else "")
       ))
     } else {
       // Find strategy with fewest warnings and reasonable chunk distribution
-      val scored = results.map { r =>
+      val scored = results.filter(_.chunks.nonEmpty).map { r =>
         val warningPenalty = r.warnings.count(_.level == "warning") * 10
         val sizeVariance = if (r.stats.chunkCount > 1) {
           math.abs(r.stats.avgChunkSize - 800) / 100  // Prefer chunks near 800 chars
@@ -318,4 +335,14 @@ class ChunkingService(config: AppConfig) {
 
 object ChunkingService {
   def apply(config: AppConfig): ChunkingService = new ChunkingService(config)
+
+  private val SemanticStrategy = "semantic"
+  private val SentenceStrategy = "sentence"
+
+  private val SemanticNotPreviewed = ChunkingWarning(
+    level = "info",
+    message = "Semantic chunking embeds every sentence, so it is not previewed: llm4s falls back to sentence " +
+      "chunking without an embedding provider, and that is what is shown here, labelled 'sentence'",
+    suggestion = Some("Index a document with RAG_CHUNKING_STRATEGY=semantic and view its chunks under Visibility")
+  )
 }

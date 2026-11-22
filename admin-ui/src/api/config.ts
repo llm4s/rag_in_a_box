@@ -10,8 +10,15 @@ import type {
   CollectionConfigResponse,
   CollectionConfigUpdateRequest,
   CollectionConfigUpdateResponse,
-  EffectiveConfigPreviewResponse
+  EffectiveConfigPreviewResponse,
+  PipelineConfigResponse
 } from '@/types/api'
+
+/** The pipeline as configured, including which settings do not take effect (GET /config). */
+export async function getPipelineConfig(): Promise<PipelineConfigResponse> {
+  const response = await client.get<PipelineConfigResponse>('/config')
+  return response.data
+}
 
 // Runtime Config
 

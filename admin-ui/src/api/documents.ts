@@ -43,6 +43,30 @@ export async function createDocument(data: {
   return response.data
 }
 
+/**
+ * Upload a file as multipart/form-data to POST /documents/upload. The backend extracts its text
+ * with Apache Tika (via llm4s), so PDF and DOCX work as well as text formats.
+ */
+export async function uploadDocumentFile(
+  file: File,
+  options?: { collection?: string; metadata?: Record<string, string> }
+): Promise<DocumentUploadResponse> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  if (options?.collection) form.append('collection', options.collection)
+  if (options?.metadata && Object.keys(options.metadata).length > 0) {
+    form.append('metadata', JSON.stringify(options.metadata))
+  }
+  // Overrides the client's JSON default (which would serialise the form as JSON); axios then
+  // leaves the header to the browser, which adds the multipart boundary
+  const response = await client.post<DocumentUploadResponse>('/documents/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    // Extraction plus embedding a long PDF takes longer than the client's default timeout
+    timeout: 120000
+  })
+  return response.data
+}
+
 export async function deleteDocument(id: string): Promise<void> {
   await client.delete(`/documents/${encodeURIComponent(id)}`)
 }

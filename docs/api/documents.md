@@ -65,6 +65,46 @@ curl -X POST http://localhost:8080/api/v1/documents \
 
 ---
 
+## Upload File {#upload-file}
+
+```
+POST /api/v1/documents/upload
+```
+
+Upload a file as `multipart/form-data`. Its text is extracted with llm4s's
+`TikaDocumentExtractor` (Apache Tika), so PDF, DOCX, HTML, Markdown, plain text and other
+formats Tika reads are supported; the document is then ingested exactly like
+[Upload Document](#upload).
+
+### Form Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `file` | Yes | The file; its name is the document's `filename` |
+| `collection` | No | Collection to ingest into |
+| `metadata` | No | A JSON object of string values |
+| `readableBy` | No | Comma-separated principals (permission mode), e.g. `user:alice@example.com,group:hr` |
+
+The document's metadata also records the detected `format` and, when the file has them,
+its `title` and `creator`.
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/documents/upload \
+  -F "file=@handbook.pdf" \
+  -F "collection=hr" \
+  -F 'metadata={"team":"people"}'
+```
+
+### Response
+
+`201 Created` with the same body as [Upload Document](#upload). `400 Bad Request` when the
+`file` part is missing, the metadata is not a JSON object of strings, or the file has no
+extractable text.
+
+---
+
 ## Upsert Document {#upsert}
 
 Create or update a document by ID (idempotent).

@@ -80,6 +80,10 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
           |    END IF;
           |END $$;""".stripMargin
       )
+      // Token and cost accounting from llm4s tracing
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER")
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS embedding_tokens INTEGER")
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION")
     } finally {
       stmt.close()
     }
@@ -100,15 +104,19 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     chunksUsed: Int,
     answerTokens: Option[Int],
     experimentId: Option[String] = None,
-    configSnapshot: Option[QueryConfigSnapshot] = None
+    configSnapshot: Option[QueryConfigSnapshot] = None,
+    promptTokens: Option[Int] = None,
+    embeddingTokens: Option[Int] = None,
+    costUsd: Option[Double] = None
   ): IO[String] = ConnectionPool.withConnection(dataSource) { conn =>
     val id = UUID.randomUUID().toString
     val sql =
       """INSERT INTO query_logs
         |    (id, query_text, collection_pattern, user_id,
         |     embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
-        |     chunks_retrieved, chunks_used, answer_tokens, experiment_id, config_snapshot)
-        |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)""".stripMargin
+        |     chunks_retrieved, chunks_used, answer_tokens, experiment_id, config_snapshot,
+        |     prompt_tokens, embedding_tokens, cost_usd)
+        |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
       stmt.setQueryTimeout(30)
@@ -132,6 +140,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         case Some(snapshot) => stmt.setString(13, snapshot.asJson.noSpaces)
         case None => stmt.setNull(13, java.sql.Types.VARCHAR)
       }
+      promptTokens.fold(stmt.setNull(14, java.sql.Types.INTEGER))(stmt.setInt(14, _))
+      embeddingTokens.fold(stmt.setNull(15, java.sql.Types.INTEGER))(stmt.setInt(15, _))
+      costUsd.fold(stmt.setNull(16, java.sql.Types.DOUBLE))(stmt.setDouble(16, _))
       stmt.executeUpdate()
       id
     } finally {
@@ -181,7 +192,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       """SELECT id, query_text, collection_pattern, user_id,
         |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
         |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
-        |       experiment_id, config_snapshot, created_at
+        |       experiment_id, config_snapshot, created_at,
+        |       prompt_tokens, embedding_tokens, cost_usd
         |FROM query_logs WHERE id = ?::uuid""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
@@ -239,7 +251,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         s"""SELECT id, query_text, collection_pattern, user_id,
            |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
            |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
-           |       experiment_id, config_snapshot, created_at
+           |       experiment_id, config_snapshot, created_at,
+        |       prompt_tokens, embedding_tokens, cost_usd
            |FROM query_logs $whereClause
            |ORDER BY created_at DESC
            |LIMIT ? OFFSET ?""".stripMargin
@@ -287,6 +300,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         |    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_latency_ms) as p50,
         |    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_latency_ms) as p95,
         |    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY total_latency_ms) as p99,
+        |    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_latency_ms - llm_latency_ms)
+        |        FILTER (WHERE llm_latency_ms IS NOT NULL) as p95_retrieval,
+        |    SUM(cost_usd) as total_cost,
         |    AVG(chunks_retrieved) as avg_chunks_retrieved,
         |    AVG(chunks_used) as avg_chunks_used,
         |    AVG(user_rating) as avg_rating,
@@ -306,6 +322,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         val p50 = Option(rs.getInt("p50")).filterNot(_ => rs.wasNull()).getOrElse(0)
         val p95 = Option(rs.getInt("p95")).filterNot(_ => rs.wasNull()).getOrElse(0)
         val p99 = Option(rs.getInt("p99")).filterNot(_ => rs.wasNull()).getOrElse(0)
+        val p95Retrieval = Option(rs.getInt("p95_retrieval")).filterNot(_ => rs.wasNull())
+        val totalCost = Option(rs.getDouble("total_cost")).filterNot(_ => rs.wasNull())
         val avgChunksRetrieved = Option(rs.getDouble("avg_chunks_retrieved")).filterNot(_ => rs.wasNull()).getOrElse(0.0)
         val avgChunksUsed = Option(rs.getDouble("avg_chunks_used")).filterNot(_ => rs.wasNull()).getOrElse(0.0)
         val avgRating = Option(rs.getDouble("avg_rating")).filterNot(_ => rs.wasNull())
@@ -327,7 +345,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
           queriesWithFeedback = ratedCount,
           topCollections = topCollections,
           periodStart = from,
-          periodEnd = to
+          periodEnd = to,
+          p95RetrievalLatencyMs = p95Retrieval,
+          totalCostUsd = totalCost
         )
       } else {
         QueryAnalyticsSummary(
@@ -410,7 +430,10 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       userRating = Option(rs.getInt("user_rating")).filterNot(_ => rs.wasNull()),
       experimentId = Option(rs.getString("experiment_id")),
       configSnapshot = configSnapshot,
-      createdAt = rs.getTimestamp("created_at").toInstant
+      createdAt = rs.getTimestamp("created_at").toInstant,
+      promptTokens = Option(rs.getInt("prompt_tokens")).filterNot(_ => rs.wasNull()),
+      embeddingTokens = Option(rs.getInt("embedding_tokens")).filterNot(_ => rs.wasNull()),
+      costUsd = Option(rs.getDouble("cost_usd")).filterNot(_ => rs.wasNull())
     )
   }
 }

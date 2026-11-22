@@ -399,6 +399,32 @@
     "language" : "scala",
     "length" : 12
   },
+  "QueryMetrics" : {
+    "chunksRetrieved" : 5,
+    "chunksUsed" : 5,
+    "completionTokens" : 80,
+    "costUsd" : 0.0042,
+    "embeddingLatencyMs" : 12,
+    "embeddingTokens" : 7,
+    "llmLatencyMs" : 900,
+    "promptTokens" : 1200,
+    "searchLatencyMs" : 8
+  },
+  "RAGConfigInfo" : {
+    "chunkOverlap" : 150,
+    "chunkSize" : 800,
+    "chunkingStrategy" : "sentence",
+    "fusionApplies" : false,
+    "fusionStrategy" : "rrf",
+    "limitations" : [
+      "fusionStrategy and rrfK have no effect (llm4s/llm4s#2716)."
+    ],
+    "queryTransform" : "none",
+    "reranking" : "none",
+    "rrfK" : 60,
+    "searchMode" : "vector",
+    "topK" : 5
+  },
   "RuntimeConfig" : {
     "chunkOverlap" : 150,
     "chunkSize" : 800,

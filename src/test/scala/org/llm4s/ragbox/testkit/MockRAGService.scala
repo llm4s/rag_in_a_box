@@ -98,6 +98,25 @@ class MockRAGService(
     }
   }
 
+  /** Chat answers: recorded with their history, answered with the configured query response. */
+  override def chatAnswer(
+    question: String,
+    history: Seq[org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn],
+    permissions: Option[(org.llm4s.rag.permissions.UserAuthorization, String)],
+    topK: Option[Int]
+  ): IO[QueryResponse] = {
+    chatCalls = chatCalls :+ (question -> history)
+    errorToThrow match {
+      case Some(e) => IO.raiseError(e)
+      case None => IO.pure(queryResponse)
+    }
+  }
+
+  private var chatCalls: Seq[(String, Seq[org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn])] = Seq.empty
+
+  /** Chat answers requested so far: the question and the history sent with it. */
+  def getChatCalls: Seq[(String, Seq[org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn])] = chatCalls
+
   override def getStats: IO[StatsResponse] = {
     errorToThrow match {
       case Some(e) => IO.raiseError(e)

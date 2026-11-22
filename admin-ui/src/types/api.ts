@@ -433,6 +433,9 @@ export interface QueryLogEntry {
   answerTokens?: number
   userRating?: number
   createdAt: string
+  promptTokens?: number | null
+  embeddingTokens?: number | null
+  costUsd?: number | null
 }
 
 export interface QueryLogListResponse {
@@ -499,10 +502,50 @@ export interface UsageInfo {
   totalTokens: number
 }
 
+/** Scala `QueryMetrics`: per-query latencies, tokens and cost traced by llm4s. */
+export interface QueryMetrics {
+  embeddingLatencyMs?: number | null
+  searchLatencyMs?: number | null
+  llmLatencyMs?: number | null
+  chunksRetrieved: number
+  chunksUsed: number
+  embeddingTokens?: number | null
+  promptTokens?: number | null
+  completionTokens?: number | null
+  costUsd?: number | null
+}
+
 export interface QueryResponse {
   answer: string
   contexts: ContextItem[]
   usage?: UsageInfo
+  metrics?: QueryMetrics | null
+}
+
+/** Scala `RAGConfigInfo` (part of GET /config). */
+export interface RAGConfigInfo {
+  chunkingStrategy: string
+  chunkSize: number
+  chunkOverlap: number
+  topK: number
+  fusionStrategy: string
+  rrfK: number
+  /** `hybrid`, or `vector` in permission mode (llm4s/llm4s#2716) */
+  searchMode: string
+  /** Whether fusionStrategy and rrfK affect search */
+  fusionApplies: boolean
+  reranking: string
+  queryTransform: string
+  /** Settings that do not take effect, and why */
+  limitations: string[]
+}
+
+/** Scala `ConfigResponse` (GET /config). */
+export interface PipelineConfigResponse {
+  embedding: { provider: string; model: string; dimensions?: number | null }
+  llm: { model: string; temperature: number }
+  rag: RAGConfigInfo
+  database: { host: string; port: number; database: string; tableName: string; connected: boolean }
 }
 
 // Chat types (frontend-only)
