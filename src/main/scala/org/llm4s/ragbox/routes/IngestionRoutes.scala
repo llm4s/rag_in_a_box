@@ -18,14 +18,13 @@ import org.llm4s.ragbox.model.Codecs._
  * roots, URL rules; see [[org.llm4s.ragbox.ingestion.PathPolicy]] and
  * [[org.llm4s.ragbox.ingestion.UrlPolicy]]); a refused request gets 400 Bad Request.
  *
- * TODO(#13): every route here is an admin operation (it reads server files, fetches URLs, or
- * runs configured sources) and must require the admin role once the authorization rework in
- * #12/#13 lands. Until then they are only as protected as the API key / auth mode in front of
- * them. Wrap [[routes]] with the admin check at that point, e.g. `adminOnly(routes(...))`.
+ * Every route here is an administrator operation (it reads server files, fetches URLs, or runs
+ * configured sources), so non-admin principals get 403 (#13).
  */
 object IngestionRoutes {
 
-  def routes(ingestionService: IngestionService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Every ingestion endpoint is admin-only: they read server files, fetch URLs or run the configured sources.
+  def routes(ingestionService: IngestionService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/ingest"))(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/ingest/directory - One-shot directory ingestion
     case (req @ POST -> Root / "api" / "v1" / "ingest" / "directory") as principal =>
@@ -130,7 +129,7 @@ object IngestionRoutes {
         sources <- ingestionService.listSources
         response <- Ok(sources.map(toSourceInfo).asJson)
       } yield response
-  }
+  })
 
   private def toIngestResponse(result: org.llm4s.ragbox.ingestion.IngestionResult): IngestResponse =
     IngestResponse(

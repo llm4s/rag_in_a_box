@@ -272,7 +272,8 @@ See [Authentication Guide](/guide/authentication) for detailed setup.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | - | Simple API key authentication |
-| `ALLOW_ADMIN_HEADER` | `false` | Allow X-Admin header bypass |
+| `ALLOW_ADMIN_HEADER` | `false` | With trusted proxy headers: `X-Admin: true` keeps admin rights for a proxied user |
+| `AUTH_TRUSTED_PROXY_HEADERS` | `false` | Let administrator credentials act for an end user via `X-User-Id` / `X-Group-Ids` (headers are stripped otherwise) |
 
 ---
 

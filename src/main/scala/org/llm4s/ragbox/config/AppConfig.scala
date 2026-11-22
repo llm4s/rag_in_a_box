@@ -346,7 +346,8 @@ final case class AuthConfig(
   oauth: Option[OAuthConfig],  // OAuth config when mode = oauth
   jwtSecret: String,
   jwtSecretExplicitlySet: Boolean,  // True if JWT_SECRET was explicitly configured
-  jwtExpiration: Long  // Expiration in seconds (default: 24 hours)
+  jwtExpiration: Long,  // Expiration in seconds (default: 24 hours)
+  trustedProxyHeaders: Boolean = false  // honour X-User-Id / X-Group-Ids from admin credentials
 )
 
 /**
@@ -381,9 +382,8 @@ final case class SecurityConfig(
   def validateKey(key: String): Boolean = apiKey.contains(key)
 
   /**
-   * Check if X-Admin header is allowed for admin bypass.
-   * Disabled by default for security. Enable only in development
-   * or when API key authentication is also enabled.
+   * Whether `X-Admin: true` keeps administrator rights for a trusted-proxy request that names
+   * an end user (`X-User-Id`). Only meaningful with `auth.trustedProxyHeaders`.
    */
   def isAdminHeaderAllowed: Boolean = allowAdminHeader
 }
@@ -557,7 +557,9 @@ object AppConfig {
             }
           },
           jwtSecretExplicitlySet = Try(config.getString("security.auth.jwt-secret")).toOption.exists(_.nonEmpty),
-          jwtExpiration = Try(config.getLong("security.auth.jwt-expiration")).getOrElse(86400L)  // 24 hours
+          jwtExpiration = Try(config.getLong("security.auth.jwt-expiration")).getOrElse(86400L),  // 24 hours
+          trustedProxyHeaders = config.hasPath("security.auth.trusted-proxy-headers") &&
+            config.getBoolean("security.auth.trusted-proxy-headers")
         )
       ),
       metrics = MetricsConfig(

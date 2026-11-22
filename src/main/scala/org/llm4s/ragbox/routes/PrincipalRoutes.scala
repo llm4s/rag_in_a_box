@@ -36,7 +36,8 @@ object PrincipalRoutes {
   implicit val principalResponseEncoder: Encoder[PrincipalResponse] = deriveEncoder
   implicit val principalListResponseEncoder: Encoder[PrincipalListResponse] = deriveEncoder
 
-  def routes(principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Principal management is admin-only (#13).
+  def routes(principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/principals"))(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/principals/users - Create or get user principal
     case (req @ POST -> Root / "api" / "v1" / "principals" / "users") as principal =>
@@ -237,5 +238,5 @@ object PrincipalRoutes {
             ).asJson)
         }
       } yield response
-  }
+  })
 }

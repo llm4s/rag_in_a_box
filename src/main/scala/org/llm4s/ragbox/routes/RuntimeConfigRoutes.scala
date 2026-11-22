@@ -22,7 +22,8 @@ object RuntimeConfigRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(configManager: RuntimeConfigManager): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Changing the runtime configuration (including the system prompt) and its change history are admin-only.
+  def routes(configManager: RuntimeConfigManager): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.under("/api/v1/config/runtime")(req) && (Authz.mutating(req) || req.pathInfo.renderString.endsWith("/history")))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/config/runtime - Get current runtime-modifiable settings
     case GET -> Root / "api" / "v1" / "config" / "runtime" as principal =>
@@ -89,7 +90,7 @@ object RuntimeConfigRoutes {
         )
         response <- Ok(meta.asJson)
       } yield response
-  }
+  })
 }
 
 /**

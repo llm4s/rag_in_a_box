@@ -49,6 +49,14 @@ import java.security.MessageDigest
  * Public routes (health, login, OAuth, admin UI assets, metrics) are not wrapped by this
  * middleware; `Main` mounts them in front of it.
  *
+ * '''Trusted proxy headers.''' With `AUTH_TRUSTED_PROXY_HEADERS=true`, a request authenticated
+ * as an administrator (typically a gateway holding the `API_KEY`) may act for an end user by
+ * sending `X-User-Id` and `X-Group-Ids`: the principal becomes that (non-admin) user, so queries
+ * are filtered by their collection permissions and chat sessions are theirs. `X-Admin: true`
+ * keeps administrator rights as well, if `ALLOW_ADMIN_HEADER=true`. Non-admin credentials can
+ * never assert another identity. Without the setting these headers are ignored
+ * ([[stripIdentityHeaders]] removes them from every request).
+ *
  * @param validateAccessToken validates a `rat_` token (and records its last use)
  * @param validateJwt         checks a JWT's signature and expiry
  * @param lookupUser          loads the current user record for a JWT subject, so a deleted
@@ -80,14 +88,39 @@ final class Authenticator(
    *
    * @return the principal, or why the request is not authenticated
    */
-  def authenticate(req: Request[IO]): IO[Either[AuthFailure, Principal]] =
-    if (!authRequired) IO.pure(Right(Principal.OpenModeAdmin))
+  def authenticate(req: Request[IO]): IO[Either[AuthFailure, Principal]] = {
+    val authenticated =
+      if (!authRequired) IO.pure(Right(Principal.OpenModeAdmin))
+      else
+        credentialOf(req) match {
+          case Some(Credential.Key(key))       => IO.pure(checkApiKey(key))
+          case Some(Credential.Bearer(token))  => bearer(token)
+          case Some(Credential.Session(id))    => session(id)
+          case None                            => IO.pure(Left(AuthFailure.Missing))
+        }
+    authenticated.map(_.map(asProxiedUser(req, _)))
+  }
+
+  /** In trusted-proxy mode, the end user an administrator credential acts for (see above). */
+  private def asProxiedUser(req: Request[IO], principal: Principal): Principal =
+    if (!security.auth.trustedProxyHeaders || !principal.isAdmin) principal
     else
-      credentialOf(req) match {
-        case Some(Credential.Key(key))       => IO.pure(checkApiKey(key))
-        case Some(Credential.Bearer(token))  => bearer(token)
-        case Some(Credential.Session(id))    => session(id)
-        case None                            => IO.pure(Left(AuthFailure.Missing))
+      req.headers.get(UserIdHeader).map(_.head.value.trim).filter(_.nonEmpty) match {
+        case None => principal
+        case Some(userId) =>
+          val groups = req.headers.get(GroupIdsHeader)
+            .map(_.head.value.split(",").map(_.trim).filter(_.nonEmpty).toSet)
+            .getOrElse(Set.empty[String])
+          val keepAdmin = security.allowAdminHeader &&
+            req.headers.get(AdminHeader).exists(_.head.value.trim.equalsIgnoreCase("true"))
+          Principal(
+            id = s"user:$userId",
+            name = userId,
+            method = principal.method,
+            isAdmin = keepAdmin,
+            externalId = Some(userId),
+            groups = groups
+          )
       }
 
   /** The http4s middleware that runs [[authenticate]] in front of `AuthedRoutes[Principal, IO]`. */
@@ -159,6 +192,18 @@ final class Authenticator(
 }
 
 object Authenticator {
+
+  val UserIdHeader = ci"X-User-Id"
+  val GroupIdsHeader = ci"X-Group-Ids"
+  val AdminHeader = ci"X-Admin"
+
+  /**
+   * Remove the identity headers (`X-User-Id`, `X-Group-Ids`, `X-Admin`) from every request
+   * unless trusted-proxy mode is on, so nothing downstream can be influenced by them.
+   */
+  def stripIdentityHeaders(trusted: Boolean)(app: HttpApp[IO]): HttpApp[IO] =
+    if (trusted) app
+    else Kleisli((req: Request[IO]) => app(req.removeHeader(UserIdHeader).removeHeader(GroupIdsHeader).removeHeader(AdminHeader)))
 
   /** The WebSocket endpoint, the only path that accepts `?access_token=`. */
   val WebSocketPath = "/ws"

@@ -35,15 +35,11 @@ POST /api/v1/query
 | `parent/*` | Direct children of parent |
 | `parent/**` | All descendants of parent |
 
-### Permission Headers
+### Permissions
 
-When permissions are enabled, include user context:
-
-| Header | Description |
-|--------|-------------|
-| `X-User-Id` | User identifier for permission filtering |
-| `X-Group-Ids` | Comma-separated group names |
-| `X-Admin` | Set to `true` for admin access (if enabled) |
+When permissions are enabled, results are filtered by the authenticated caller's permissions
+(see [Permissions](../guide/permissions.md#who-the-query-runs-as)). `X-User-Id` / `X-Group-Ids`
+are only honoured from an administrator credential with `AUTH_TRUSTED_PROXY_HEADERS=true`.
 
 ### Example Request
 

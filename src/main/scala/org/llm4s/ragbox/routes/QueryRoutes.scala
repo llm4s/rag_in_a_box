@@ -4,14 +4,13 @@ import cats.effect.IO
 import fs2.Stream
 import io.circe.syntax._
 import org.http4s._
-import org.llm4s.ragbox.auth.{Principal, TokenScope}
+import org.llm4s.ragbox.auth.{PermissionContext, Principal, TokenScope}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.http4s.headers.`Content-Type`
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.config.AppConfig
-import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{QueryLogRegistryBase, QueryLogging}
@@ -23,12 +22,9 @@ import java.util.UUID
 /**
  * HTTP routes for query operations.
  *
- * Supports permission-aware queries when SearchIndex is available.
- * User authorization is extracted from headers:
- * - X-User-Id: External user identifier
- * - X-Group-Ids: Comma-separated group names
- * - X-Admin: Set to "true" for admin access (bypasses permissions)
- *   NOTE: X-Admin is only honored if allowAdminHeader is true in security config
+ * Supports permission-aware queries when SearchIndex is available. The permission identity is
+ * the authenticated [[Principal]] (see [[PermissionContext]]); request headers are never
+ * trusted for it.
  *
  * Collection patterns are supported in requests:
  * - "*" - All collections (default)
@@ -38,7 +34,7 @@ import java.util.UUID
  */
 object QueryRoutes {
 
-  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, allowAdminHeader: Boolean = false, config: Option[AppConfig] = None, experimentService: Option[ExperimentService] = None): AuthedRoutes[Principal, IO] =
+  def routes(ragService: RAGService, queryLogRegistry: QueryLogRegistryBase, config: Option[AppConfig] = None, experimentService: Option[ExperimentService] = None): AuthedRoutes[Principal, IO] =
     // Access tokens need the `query` scope, and may only query collections they are restricted to
     Authz.scopeForPaths(TokenScope.Query, "/api/v1/query", "/api/v1/search")(AuthedRoutes.of[Principal, IO] {
 
@@ -56,9 +52,7 @@ object QueryRoutes {
             for {
               startTime <- IO.realTimeInstant
               collectionPattern = body.collection.getOrElse("*")
-              // Extract user ID from headers if available
-              userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
-                .map(_.head.value)
+              userId: Option[String] = Some(PermissionContext.userId(principal))
 
               // Assign this query to a baseline/variant group if an experiment is running
               routing <- resolveExperimentRouting(experimentService, body.experimentId, body.collection)
@@ -77,7 +71,7 @@ object QueryRoutes {
                 // Permission-aware query when SearchIndex is available
                 case (true, Some(principals)) =>
                   for {
-                    auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                    auth <- PermissionContext.authorization(principal, principals)
                     response <- ragService.queryWithPermissionsAndAnswer(
                       question = body.question,
                       auth = auth,
@@ -140,7 +134,7 @@ object QueryRoutes {
               // Permission-aware search when SearchIndex is available
               case (true, Some(principals)) =>
                 for {
-                  auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                  auth <- PermissionContext.authorization(principal, principals)
                   collectionPattern = body.collection.getOrElse("*")
                   response <- ragService.searchWithPermissions(
                     query = body.query,
@@ -182,8 +176,7 @@ object QueryRoutes {
           case None =>
             val queryId = UUID.randomUUID().toString
             val collectionPattern = body.collection.getOrElse("*")
-            val userId: Option[String] = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
-              .map(_.head.value)
+            val userId: Option[String] = Some(PermissionContext.userId(principal))
 
             // Create the SSE stream. Experiment routing is resolved first so the
             // query is assigned to a baseline/variant group before execution.
@@ -206,7 +199,7 @@ object QueryRoutes {
                 ((ragService.hasPermissions, ragService.principals) match {
                   case (true, Some(principals)) =>
                     for {
-                      auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                      auth <- PermissionContext.authorization(principal, principals)
                       response <- ragService.queryWithPermissionsAndAnswer(
                         question = body.question,
                         auth = auth,

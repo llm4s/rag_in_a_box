@@ -15,7 +15,8 @@ import org.llm4s.ragbox.service.RAGService
  */
 object ConfigRoutes {
 
-  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Changing the configuration is admin-only.
+  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/config")(req))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/config - Get current configuration
     case GET -> Root / "api" / "v1" / "config" as principal =>
@@ -38,5 +39,5 @@ object ConfigRoutes {
         providers <- ragService.getProviders
         response <- Ok(providers.asJson)
       } yield response
-  }
+  })
 }

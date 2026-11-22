@@ -27,7 +27,8 @@ final case class ChatSession(
   messageCount: Int = 0,
   createdAt: Instant,
   updatedAt: Instant,
-  isArchived: Boolean = false
+  isArchived: Boolean = false,
+  ownerId: Option[String] = None
 )
 
 /**

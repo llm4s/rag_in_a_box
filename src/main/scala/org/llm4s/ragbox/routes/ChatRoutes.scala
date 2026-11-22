@@ -1,17 +1,18 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import fs2.Stream
 import io.circe.Json
 import io.circe.syntax._
 import org.http4s._
-import org.llm4s.ragbox.auth.{Principal, TokenScope}
+import org.llm4s.ragbox.auth.{PermissionContext, Principal, TokenScope}
+import org.llm4s.ragbox.validation.InputValidation
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.http4s.headers.`Content-Type`
 import org.llm4s.ragbox.config.AppConfig
-import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase, QueryLogging}
@@ -34,11 +35,26 @@ object ChatRoutes {
   private def clamp(value: Option[Int], default: Int, max: Int): Int =
     math.min(math.max(value.getOrElse(default), 0), max)
 
+  /**
+   * The session, if `principal` may see it: its owner, or any administrator. Sessions created
+   * before owners existed have none and are visible to administrators only. Other principals
+   * get None (404), so session ids are not confirmed to exist.
+   */
+  private def visibleSession(chatRegistry: ChatSessionRegistry, principal: Principal, id: String): IO[Option[ChatSession]] =
+    chatRegistry.getSession(id).map(_.filter(s => principal.isAdmin || s.ownerId.contains(principal.id)))
+
+  /** Session listings: administrators see every session, others only their own. */
+  private def ownerFilter(principal: Principal): Option[String] =
+    if (principal.isAdmin) None else Some(principal.id)
+
+  /**
+   * Chat sessions and messages. Every session belongs to the principal that created it; only
+   * that principal and administrators can list, read, change, delete or post to it.
+   */
   def routes(
     chatRegistry: ChatSessionRegistry,
     ragService: RAGService,
     queryLogRegistry: QueryLogRegistryBase,
-    allowAdminHeader: Boolean = false,
     config: Option[AppConfig] = None
   ): AuthedRoutes[Principal, IO] =
     // Access tokens need the `query` scope for chat, and may only chat over their collections
@@ -53,7 +69,7 @@ object ChatRoutes {
       for {
         body <- req.as[CreateChatSessionRequest]
         response <- Authz.requirePattern(principal, body.collectionPattern.getOrElse("*")) {
-          chatRegistry.createSession(body).flatMap(session =>
+          chatRegistry.createSession(body, Some(principal.id)).flatMap(session =>
             Created(CreateChatSessionResponse(session, "Session created").asJson))
         }
       } yield response
@@ -66,16 +82,17 @@ object ChatRoutes {
         sessions <- chatRegistry.listSessions(
           archived,
           clamp(limit, ChatSessionRegistry.DefaultSessionLimit, ChatSessionRegistry.MaxSessionLimit),
-          math.max(offset.getOrElse(0), 0)
+          math.max(offset.getOrElse(0), 0),
+          ownerFilter(principal)
         )
-        total <- chatRegistry.countSessions(archived)
+        total <- chatRegistry.countSessions(archived, ownerFilter(principal))
         response <- Ok(ChatSessionListResponse(sessions, total).asJson)
       } yield response
 
     // GET /api/v1/chat/sessions/:id?limit=&offset= - Get session with its latest messages
     case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? LimitParam(limit) +& OffsetParam(offset) as principal =>
       for {
-        sessionOpt <- chatRegistry.getSession(id)
+        sessionOpt <- visibleSession(chatRegistry, principal, id)
         response <- sessionOpt match {
           case Some(session) =>
             for {
@@ -95,17 +112,23 @@ object ChatRoutes {
     case (req @ PUT -> Root / "api" / "v1" / "chat" / "sessions" / id) as principal =>
       for {
         body <- req.as[UpdateChatSessionRequest]
-        updated <- chatRegistry.updateSession(id, body)
-        response <- updated match {
-          case Some(session) => Ok(session.asJson)
+        visible <- visibleSession(chatRegistry, principal, id)
+        response <- visible match {
           case None => NotFound(ErrorResponse.notFound(s"Session '$id' not found").asJson)
+          case Some(_) =>
+            val update = chatRegistry.updateSession(id, body).flatMap {
+              case Some(session) => Ok(session.asJson)
+              case None => NotFound(ErrorResponse.notFound(s"Session '$id' not found").asJson)
+            }
+            body.collectionPattern.fold(update)(p => Authz.requirePattern(principal, p)(update))
         }
       } yield response
 
     // DELETE /api/v1/chat/sessions/:id - Delete session
     case DELETE -> Root / "api" / "v1" / "chat" / "sessions" / id as principal =>
       for {
-        deleted <- chatRegistry.deleteSession(id)
+        visible <- visibleSession(chatRegistry, principal, id)
+        deleted <- visible.fold(IO.pure(false))(_ => chatRegistry.deleteSession(id))
         response <- if (deleted) {
           Ok(ChatOperationResponse(success = true, message = "Session deleted").asJson)
         } else {
@@ -120,15 +143,15 @@ object ChatRoutes {
     // POST /api/v1/chat/sessions/:id/messages - Send message (non-streaming)
     case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages") as principal =>
       for {
-        sessionOpt <- chatRegistry.getSession(sessionId)
+        sessionOpt <- visibleSession(chatRegistry, principal, sessionId)
         response <- sessionOpt match {
           case None =>
             NotFound(ErrorResponse.notFound(s"Session '$sessionId' not found").asJson)
           case Some(session) if !principal.canAccessPattern(session.collectionPattern) =>
             Authz.requirePattern(principal, session.collectionPattern)(IO.never)
           case Some(session) =>
-            for {
-              body <- req.as[SendChatMessageRequest]
+            req.as[SendChatMessageRequest].flatMap { body =>
+            InputValidation.toResponse(InputValidation.validateQuery(body.content)).getOrElse(for {
 
               // Earlier messages, sent to the LLM as conversation history
 
@@ -149,9 +172,7 @@ object ChatRoutes {
                 IO.unit
               }
 
-              // Extract user ID from headers if available
-              userId = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
-                .map(_.head.value)
+              userId = Some(PermissionContext.userId(principal))
 
               startTime <- IO.realTimeInstant
 
@@ -159,7 +180,7 @@ object ChatRoutes {
               queryResult <- ((ragService.hasPermissions, ragService.principals) match {
                 case (true, Some(principals)) =>
                   for {
-                    auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                    auth <- PermissionContext.authorization(principal, principals)
                     response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
                   } yield response
                 case _ =>
@@ -214,7 +235,8 @@ object ChatRoutes {
                     ))
                   } yield result
               }
-            } yield resp
+            } yield resp)
+            }
         }
       } yield response
 
@@ -222,15 +244,15 @@ object ChatRoutes {
     // arrives as one event once complete: llm4s has no streaming RAG answer API (llm4s/llm4s#2717).
     case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" / "stream") as principal =>
       for {
-        sessionOpt <- chatRegistry.getSession(sessionId)
+        sessionOpt <- visibleSession(chatRegistry, principal, sessionId)
         response <- sessionOpt match {
           case None =>
             NotFound(ErrorResponse.notFound(s"Session '$sessionId' not found").asJson)
           case Some(session) if !principal.canAccessPattern(session.collectionPattern) =>
             Authz.requirePattern(principal, session.collectionPattern)(IO.never)
           case Some(session) =>
-            for {
-              body <- req.as[SendChatMessageRequest]
+            req.as[SendChatMessageRequest].flatMap { body =>
+            InputValidation.toResponse(InputValidation.validateQuery(body.content)).getOrElse(for {
 
               // Earlier messages, sent to the LLM as conversation history
 
@@ -254,8 +276,7 @@ object ChatRoutes {
               // Generate a unique ID for this stream
               queryId = UUID.randomUUID().toString
 
-              userId = req.headers.get(org.typelevel.ci.CIString("X-User-Id"))
-                .map(_.head.value)
+              userId = Some(PermissionContext.userId(principal))
 
               // Create SSE stream
               sseStream: Stream[IO, String] = Stream.eval(IO.realTimeInstant).flatMap { startTime =>
@@ -270,7 +291,7 @@ object ChatRoutes {
                   ((ragService.hasPermissions, ragService.principals) match {
                     case (true, Some(principals)) =>
                       for {
-                        auth <- UserContextMiddleware.extractAuthWithAdmin(req, principals, allowAdminHeader)
+                        auth <- PermissionContext.authorization(principal, principals)
                         response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
                       } yield response
                     case _ =>
@@ -341,7 +362,8 @@ object ChatRoutes {
               }
 
               resp <- Ok(sseStream).map(_.withContentType(`Content-Type`(MediaType.`text/event-stream`)))
-            } yield resp
+            } yield resp)
+            }
         }
       } yield response
 
@@ -355,7 +377,9 @@ object ChatRoutes {
         } else {
           for {
             // Get message to find queryLogId
-            messageOpt <- chatRegistry.getMessage(messageId)
+            // Only messages in a session the principal may see
+            message <- chatRegistry.getMessage(messageId)
+            messageOpt <- message.flatTraverse(m => visibleSession(chatRegistry, principal, m.sessionId).map(_.as(m)))
             result <- messageOpt match {
               case None =>
                 NotFound(ErrorResponse.notFound(s"Message '$messageId' not found").asJson)

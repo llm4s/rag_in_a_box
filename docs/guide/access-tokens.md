@@ -84,6 +84,12 @@ sub-collections** (`confluence/ENG` also allows `confluence/ENG/api`):
 - `POST /api/v1/sync` with `keepDocumentIds` only prunes documents inside the allowed
   collections
 
+### Data visibility
+
+Collection permissions (`queryableBy`) apply to people. An access token is limited by its scopes
+and its `collections` restriction instead: within them it sees every document. Give query tokens
+a collection restriction if they must not see everything.
+
 ### Common Scope Combinations
 
 | Use Case | Scopes |

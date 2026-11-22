@@ -22,7 +22,8 @@ object VisibilityRoutes {
   object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
   object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
 
-  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = AuthedRoutes.of[Principal, IO] {
+  // Visibility exposes raw chunk text of every document regardless of permissions: admin-only.
+  def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/visibility"))(AuthedRoutes.of[Principal, IO] {
 
     // GET /api/v1/visibility/config - Get detailed configuration with changeability annotations
     case GET -> Root / "api" / "v1" / "visibility" / "config" as principal =>
@@ -72,5 +73,5 @@ object VisibilityRoutes {
         collections <- ragService.getCollectionDetails
         response <- Ok(collections.asJson)
       } yield response
-  }
+  })
 }

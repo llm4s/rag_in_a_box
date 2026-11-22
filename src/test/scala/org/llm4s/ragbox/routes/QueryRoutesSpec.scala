@@ -26,7 +26,7 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
   override def beforeEach(): Unit = {
     mockService = MockRAGService()
     queryLogRegistry = InMemoryQueryLogRegistry()
-    routes = QueryRoutes.routes(mockService, queryLogRegistry, allowAdminHeader = false).asAdmin
+    routes = QueryRoutes.routes(mockService, queryLogRegistry).asAdmin
   }
 
   // ============================================================
