@@ -91,12 +91,15 @@ final class RagboxApp private (
    * until `supervisor` is released. (The rate limiters bound and expire their own entries.)
    */
   def startBackgroundTasks(supervisor: Supervisor[IO]): IO[Unit] = {
-    val scheduler = IngestionScheduler(ingestionService, config.ingestion)
-    val startScheduler =
-      if (config.ingestion.enabled && config.ingestion.schedule.isDefined)
-        logger.info(s"Starting ingestion scheduler (schedule: ${config.ingestion.schedule.get})...") *>
-          scheduler.start(supervisor)
-      else IO.unit
+    // The schedule applies to every configured source. AppConfig.validate has rejected an invalid one.
+    val startScheduler = config.ingestion.parsedSchedule match {
+      case Some(Right(schedule)) if config.ingestion.activeSources.nonEmpty =>
+        IngestionScheduler(ingestionService, schedule).start(supervisor)
+      case Some(Right(schedule)) =>
+        logger.warn(s"Ingestion schedule (${schedule.describe}) ignored: no ingestion sources are configured and enabled")
+      case Some(Left(error)) => IO.raiseError(new IllegalArgumentException(error))
+      case None => IO.unit
+    }
 
     val sessionCleanup = oidc.traverse_ { o =>
       val interval = math.max(60, o.config.stateTtl).seconds

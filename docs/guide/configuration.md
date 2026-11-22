@@ -488,7 +488,7 @@ INGEST_DIR=/data/docs
 INGEST_PATTERNS=*.md,*.txt,*.pdf
 INGEST_RECURSIVE=true
 INGEST_ON_STARTUP=true
-INGEST_SCHEDULE=daily        # every 24 hours, see below
+INGEST_SCHEDULE="0 2 * * *"  # every day at 02:00, see below
 # Directories the API may ingest from (defaults to INGEST_DIR)
 INGEST_ALLOWED_ROOTS=/data/docs
 ```
@@ -498,26 +498,26 @@ INGEST_ALLOWED_ROOTS=/data/docs
 | `INGEST_DIR` | - | Directory to ingest (a source named `env-directory`) |
 | `INGEST_PATTERNS` | `*.md,*.txt,*.pdf` | Comma-separated file patterns |
 | `INGEST_RECURSIVE` | `true` | Descend into subdirectories |
-| `INGEST_ON_STARTUP` | `false` | Run the ingestion once at startup |
-| `INGEST_SCHEDULE` | - | Interval between scheduled runs (see [Schedules](#schedules)) |
+| `INGEST_ON_STARTUP` | `false` | Run every configured source once at startup |
+| `INGEST_SCHEDULE` | - | When to run every configured source (see [Schedules](#schedules)) |
 
-When `INGEST_DIR` is set these variables replace any `ingestion` sources in the HOCON
-configuration; without `INGEST_DIR`, `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` are ignored (set
-`run-on-startup` / `schedule` in HOCON instead).
+`INGEST_DIR` adds a directory source named `env-directory` to the sources configured in HOCON
+(and enables ingestion). `INGEST_ON_STARTUP` and `INGEST_SCHEDULE` set `run-on-startup` and
+`schedule`, which apply to **every** configured source, with or without `INGEST_DIR`.
 
 ### Schedules
 
-`schedule` / `INGEST_SCHEDULE` is an **interval**, counted from server start (it is not a
-calendar schedule):
+`schedule` / `INGEST_SCHEDULE` is one of:
 
-- `hourly`, `daily`, `weekly`
-- a duration: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
-- a few cron-like patterns, read as intervals: `0 * * * *` (every hour), `0 */2 * * *`,
-  `0 */4 * * *`, `0 */6 * * *`, `0 */12 * * *` (every 2/4/6/12 hours) and `0 0 * * *` (every 24
-  hours, not at midnight)
+- a standard five-field **cron expression** (minute, hour, day of month, month, day of week;
+  Sunday is `0` or `7`), evaluated in the server's time zone (set `TZ` to change it), e.g.
+  `0 2 * * *` (02:00 every day), `*/30 * * * *`, `0 6,18 * * 1-5`
+- `hourly`, `daily`, `weekly`: `0 * * * *`, `0 0 * * *` (midnight), `0 0 * * 0` (Sunday midnight)
+- an **interval** between runs, counted from server start: `30m`, `6h`, `1d` (units `s`, `m`, `h`, `d`)
 
-Any other value is ignored: no scheduled runs happen (check the startup log). Runs can always
-be started with `POST /api/v1/ingest/run`.
+An invalid schedule fails startup. A run that is still going when the next one is due delays
+nothing: the missed slot is skipped. `GET /api/v1/ingest/status` reports `nextScheduledRun`.
+Runs can always be started with `POST /api/v1/ingest/run`.
 
 ### Advanced Configuration (HOCON)
 

@@ -66,6 +66,9 @@ lazy val root = (project in file("."))
       "org.flywaydb" % "flyway-core" % "13.12.2",
       "org.flywaydb" % "flyway-database-postgresql" % "13.12.2",
 
+      // Cron expressions for the ingestion schedule (UNIX cron semantics, Sunday = 0)
+      "com.cronutils" % "cron-utils" % "9.2.1",
+
       // OAuth2/OIDC - JWT validation and JWKS
       "com.auth0" % "java-jwt" % "4.4.0",
       "com.auth0" % "jwks-rsa" % "0.22.1",
@@ -73,6 +76,8 @@ lazy val root = (project in file("."))
       // Testing
       "org.scalatest" %% "scalatest" % "3.2.18" % Test,
       "org.typelevel" %% "cats-effect-testing-scalatest" % "1.5.0" % Test,
+      // TestControl: a virtual clock for the ingestion scheduler tests
+      "org.typelevel" %% "cats-effect-testkit" % "3.5.7" % Test,
       // Testcontainers for Docker-based integration tests
       "com.dimafeng" %% "testcontainers-scala-scalatest" % "0.41.8" % Test,
       "org.testcontainers" % "testcontainers" % "1.21.4" % Test

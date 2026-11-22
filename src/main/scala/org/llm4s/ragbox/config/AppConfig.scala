@@ -134,6 +134,9 @@ final case class AppConfig(
     if (rag.reranking.candidates < 1) {
       errors += s"RAG_RERANKING_CANDIDATES must be at least 1 (got ${rag.reranking.candidates})"
     }
+    // An invalid schedule fails startup instead of silently never running
+    ingestion.parsedSchedule.flatMap(_.left.toOption).foreach(errors += _)
+
     if (rag.chat.historyMessages < 0) {
       errors += s"RAG_CHAT_HISTORY_MESSAGES must be non-negative (got ${rag.chat.historyMessages})"
     }
@@ -719,14 +722,9 @@ object AppConfig {
         )
       ),
       apiKeys = ApiKeysConfig.load(config),
-      ingestion = {
-        // Load from config file first, then merge with environment variables
-        val configIngestion = IngestionConfig.fromConfig(config)
-        val envIngestion = IngestionConfig.fromEnv()
-        // Env takes precedence if configured; the policy (allowed roots, URL rules) applies either way
-        (if (envIngestion.enabled) envIngestion else configIngestion)
-          .copy(policy = IngestionConfig.policyFromConfig(config))
-      },
+      // The HOCON section, with INGEST_* environment variables applied over it
+      ingestion = IngestionConfig.withEnv(IngestionConfig.fromConfig(config))
+        .copy(policy = IngestionConfig.policyFromConfig(config)),
       security = SecurityConfig(
         apiKey = getOptionalString(config, "security.api-key"),
         allowAdminHeader = Try(config.getBoolean("security.allow-admin-header")).getOrElse(false),

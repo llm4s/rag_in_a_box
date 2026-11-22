@@ -130,66 +130,9 @@ class IngestionService(
     )
   )
 
-  /**
-   * Calculate the next scheduled run time based on the schedule configuration.
-   * Returns None if no schedule is configured.
-   */
-  private def calculateNextRun(): Option[Instant] = {
-    config.schedule.flatMap(parseScheduleToMillis).map { millis =>
-      Instant.now().plusMillis(millis)
-    }
-  }
-
-  /**
-   * Parse a schedule string to milliseconds.
-   * Supports: "hourly", "daily", "weekly", simple durations like "5m", "1h", "6h", "1d",
-   * and basic cron patterns.
-   */
-  private def parseScheduleToMillis(schedule: String): Option[Long] = {
-    val trimmed = schedule.trim.toLowerCase
-    trimmed match {
-      case "hourly" => Some(60L * 60 * 1000)
-      case "daily" => Some(24L * 60 * 60 * 1000)
-      case "weekly" => Some(7L * 24 * 60 * 60 * 1000)
-      case _ =>
-        // Try parsing as duration (e.g., "5m", "1h", "6h", "1d")
-        val pattern = """(\d+)\s*(s|m|h|d)""".r
-        trimmed match {
-          case pattern(num, unit) =>
-            val n = num.toLong
-            unit match {
-              case "s" => Some(n * 1000)
-              case "m" => Some(n * 60 * 1000)
-              case "h" => Some(n * 60 * 60 * 1000)
-              case "d" => Some(n * 24 * 60 * 60 * 1000)
-              case _ => None
-            }
-          case _ =>
-            // Try basic cron patterns
-            parseCronToMillis(schedule)
-        }
-    }
-  }
-
-  /**
-   * Parse simple cron expressions to milliseconds.
-   */
-  private def parseCronToMillis(cron: String): Option[Long] = {
-    val parts = cron.split("\\s+")
-    if (parts.length >= 5) {
-      (parts(0), parts(1), parts(2), parts(3), parts(4)) match {
-        case ("0", "*", "*", "*", "*") => Some(60L * 60 * 1000)      // Every hour
-        case ("0", "0", "*", "*", "*") => Some(24L * 60 * 60 * 1000) // Daily at midnight
-        case ("0", "*/2", "*", "*", "*") => Some(2L * 60 * 60 * 1000)
-        case ("0", "*/4", "*", "*", "*") => Some(4L * 60 * 60 * 1000)
-        case ("0", "*/6", "*", "*", "*") => Some(6L * 60 * 60 * 1000)
-        case ("0", "*/12", "*", "*", "*") => Some(12L * 60 * 60 * 1000)
-        case _ => None
-      }
-    } else {
-      None
-    }
-  }
+  /** Record when the schedule ([[IngestionScheduler]]) will next run, for the status endpoint. */
+  def recordNextRun(next: Option[Instant]): IO[Unit] =
+    status.update(_.copy(nextScheduledRun = next))
 
   /**
    * Run `run` while holding the "running" flag, or fail with [[IngestionAlreadyRunning]] if it
@@ -214,7 +157,7 @@ class IngestionService(
       exclusively {
         config.sources.filter(_.enabled).traverse(runSourceConfig).flatTap { results =>
           IO.realTimeInstant.flatMap { now =>
-            status.update(_.copy(lastRun = Some(now), lastResults = results, nextScheduledRun = calculateNextRun()))
+            status.update(_.copy(lastRun = Some(now), lastResults = results))
           }
         }
       }

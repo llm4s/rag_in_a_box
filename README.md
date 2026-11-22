@@ -207,7 +207,7 @@ lists every variable with its default; the
 | `RAG_CHUNKING_STRATEGY`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` | `sentence`, `800`, `150` | Default chunking |
 | `RAG_TOP_K`, `RAG_FUSION_STRATEGY` | `5`, `rrf` | Retrieval |
 | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM` | `none`, `none` | Reranking (`cohere`, `llm`) and query rewriting (`llm-rewrite`) |
-| `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source and its interval (`30m`, `6h`, `daily`) |
+| `INGEST_DIR`, `INGEST_SCHEDULE` | - | Directory source; cron schedule (`0 2 * * *`, `daily`) or interval (`6h`) for all sources |
 | `ALLOWED_ORIGINS` | - | CORS origins, also allowed to open `/ws` (same-origin only when unset) |
 
 Runtime settings changed through the API or the admin UI are stored in the database and survive
