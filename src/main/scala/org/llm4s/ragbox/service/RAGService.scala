@@ -679,9 +679,9 @@ class RAGService(
         fusionStrategy = config.rag.search.fusionStrategy
       ),
       database = DatabaseConfigInfo(
-        host = config.database.host,
-        port = config.database.port,
-        database = config.database.database,
+        host = config.database.effectiveHost,
+        port = config.database.effectivePort,
+        database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
         connected = ragInstance.isRight
       )
@@ -737,9 +737,9 @@ class RAGService(
         systemPrompt = Some(config.rag.systemPrompt)
       ),
       database = VisibilityDatabaseConfig(
-        host = config.database.host,
-        port = config.database.port,
-        database = config.database.database,
+        host = config.database.effectiveHost,
+        port = config.database.effectivePort,
+        database = config.database.effectiveDatabase,
         tableName = config.database.tableName,
         connected = ragInstance.isRight
       ),

@@ -25,7 +25,8 @@ final case class AppConfig(
   ingestion: IngestionConfig,
   security: SecurityConfig,
   metrics: MetricsConfig,
-  production: ProductionConfig
+  production: ProductionConfig,
+  permissions: PermissionsConfig = PermissionsConfig()
 ) {
   /**
    * Validate the configuration.
@@ -64,9 +65,9 @@ final case class AppConfig(
       }
     }
 
-    // Database connection required
-    if (database.connectionString.isEmpty) {
-      errors += "Database connection not configured (set DATABASE_URL or database host/port/database)"
+    // DATABASE_URL, if set, must be parseable
+    database.urlError.foreach { error =>
+      errors += s"Invalid DATABASE_URL: $error"
     }
 
     // Embedding provider requires API key
@@ -102,39 +103,43 @@ final case class DatabaseConfig(
   url: Option[String]
 ) {
   /**
-   * Build JDBC connection string.
-   * Uses DATABASE_URL if provided, otherwise constructs from individual settings.
+   * DATABASE_URL parsed once. None when no (non-blank) URL is configured;
+   * Some(Left(error)) when it is configured but invalid.
    */
-  def connectionString: String = url.getOrElse {
-    s"jdbc:postgresql://$host:$port/$database"
+  lazy val parsedUrl: Option[Either[String, DatabaseUrl]] =
+    url.map(_.trim).filter(_.nonEmpty).map(DatabaseUrl.parse)
+
+  /** Error describing an invalid DATABASE_URL, if any. */
+  def urlError: Option[String] = parsedUrl.flatMap(_.left.toOption)
+
+  private def validUrl: Option[DatabaseUrl] = parsedUrl.flatMap {
+    case Right(parsed) => Some(parsed)
+    case Left(error) => throw new IllegalArgumentException(s"Invalid DATABASE_URL: $error")
   }
+
+  /** Effective host: from DATABASE_URL if set, otherwise database.host. */
+  def effectiveHost: String = validUrl.map(_.host).getOrElse(host)
+
+  /** Effective port: from DATABASE_URL if set (default 5432 when it omits one), otherwise database.port. */
+  def effectivePort: Int = validUrl.map(_.port.getOrElse(DatabaseUrl.DefaultPort)).getOrElse(port)
+
+  /** Effective database name: from DATABASE_URL if it has one, otherwise database.database. */
+  def effectiveDatabase: String = validUrl.flatMap(_.database).getOrElse(database)
 
   /**
-   * Get effective user (parsed from URL or from config).
+   * JDBC connection string (never contains credentials).
+   * Built from DATABASE_URL if provided, otherwise from the individual settings.
    */
-  def effectiveUser: String = url.flatMap(parseUserFromUrl).getOrElse(user)
-
-  /**
-   * Get effective password (parsed from URL or from config).
-   */
-  def effectivePassword: Secret = url.flatMap(parsePasswordFromUrl).map(Secret(_)).getOrElse(password)
-
-  private def parseUserFromUrl(url: String): Option[String] = {
-    // Parse: postgresql://user:password@host:port/database
-    val pattern = """postgresql://([^:]+):([^@]+)@.*""".r
-    url match {
-      case pattern(user, _) => Some(user)
-      case _ => None
-    }
+  def connectionString: String = validUrl match {
+    case Some(parsed) => parsed.jdbcUrl(DatabaseUrl.DefaultPort, database)
+    case None => s"jdbc:postgresql://$host:$port/$database"
   }
 
-  private def parsePasswordFromUrl(url: String): Option[String] = {
-    val pattern = """postgresql://([^:]+):([^@]+)@.*""".r
-    url match {
-      case pattern(_, password) => Some(password)
-      case _ => None
-    }
-  }
+  /** Effective user: from DATABASE_URL userinfo if present, otherwise database.user. */
+  def effectiveUser: String = validUrl.flatMap(_.user).getOrElse(user)
+
+  /** Effective password: from DATABASE_URL userinfo if present, otherwise database.password. */
+  def effectivePassword: Secret = validUrl.flatMap(_.password).map(Secret(_)).getOrElse(password)
 }
 
 final case class EmbeddingConfig(
@@ -287,6 +292,17 @@ final case class MetricsConfig(
 )
 
 /**
+ * Permission-based RAG configuration.
+ *
+ * @param required when true, startup fails if the permission-aware SearchIndex cannot be
+ *                 created or its schema cannot be initialized, instead of silently falling
+ *                 back to non-permission mode (where queries ignore all permissions).
+ */
+final case class PermissionsConfig(
+  required: Boolean = false
+)
+
+/**
  * Production hardening configuration.
  */
 final case class ProductionConfig(
@@ -353,7 +369,7 @@ object AppConfig {
   def loadResource: Resource[IO, AppConfig] =
     Resource.eval(load)
 
-  private def parseConfig(config: Config): AppConfig = {
+  private[config] def parseConfig(config: Config): AppConfig = {
     AppConfig(
       server = ServerConfig(
         host = config.getString("server.host"),
@@ -448,6 +464,10 @@ object AppConfig {
           }.getOrElse(Seq.empty),
           allowAllOrigins = Try(config.getBoolean("production.cors.allow-all-origins")).getOrElse(true)
         )
+      ),
+      permissions = PermissionsConfig(
+        // Not wrapped in Try: an invalid PERMISSIONS_REQUIRED value should fail loudly
+        required = config.hasPath("permissions.required") && config.getBoolean("permissions.required")
       )
     )
   }
