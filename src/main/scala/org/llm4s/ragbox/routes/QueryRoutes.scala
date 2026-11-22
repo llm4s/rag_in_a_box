@@ -54,52 +54,12 @@ object QueryRoutes {
               collectionPattern = body.collection.getOrElse("*")
               userId: Option[String] = Some(PermissionContext.userId(principal))
 
-              // Assign this query to a baseline/variant group if an experiment is running
-              routing <- resolveExperimentRouting(experimentService, body.experimentId, body.collection)
-              variantConfig = routing.map(_._2)
-              storedExperimentId = routing.map(_._1).orElse(body.experimentId)
-
-              // Calculate effective topK: experiment variant > request override > request topK
-              effectiveTopK = variantConfig.flatMap(_.topK)
-                .orElse(body.overrides.flatMap(_.topK))
-                .orElse(body.topK)
-
-              // Build config snapshot for experiment tracking
-              configSnapshot = buildConfigSnapshot(ragService.currentSettings, effectiveTopK, variantConfig, body.overrides)
-
-              result <- ((ragService.hasPermissions, ragService.principals) match {
-                // Permission-aware query when SearchIndex is available
-                case (true, Some(principals)) =>
-                  for {
-                    auth <- PermissionContext.authorization(principal, principals)
-                    response <- ragService.queryWithPermissionsAndAnswer(
-                      question = body.question,
-                      auth = auth,
-                      collectionPattern = collectionPattern,
-                      topK = effectiveTopK
-                    )
-                  } yield response
-                // Fall back to legacy query (no permissions)
-                case _ =>
-                  ragService.queryWithAnswer(body.question, effectiveTopK)
-              }).attempt
+              // The experiment group (if an experiment applies) and the settings the query runs with
+              plan <- planQuery(ragService, experimentService, body)
+              result <- runQuery(ragService, principal, body.question, collectionPattern, plan).attempt
               endTime <- IO.realTimeInstant
-              totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
-              // Log the query (fire and forget - don't block response)
-              _ <- result match {
-                case Right(queryResponse) =>
-                  QueryLogging.logAnswer(
-                    queryLogRegistry,
-                    queryText = body.question,
-                    collectionPattern = Some(collectionPattern),
-                    userId = userId,
-                    totalLatencyMs = totalLatencyMs,
-                    response = queryResponse,
-                    experimentId = storedExperimentId,
-                    configSnapshot = configSnapshot
-                  ).attempt.void
-                case Left(_) => IO.unit
-              }
+              _ <- logOutcome(queryLogRegistry, body.question, collectionPattern, userId,
+                (endTime.toEpochMilli - startTime.toEpochMilli).toInt, plan, result)
               resp <- result match {
                 case Right(queryResponse) =>
                   Ok(queryResponse.asJson)
@@ -181,35 +141,19 @@ object QueryRoutes {
             // Create the SSE stream. Experiment routing is resolved first so the
             // query is assigned to a baseline/variant group before execution.
             val sseStream: Stream[IO, String] =
-              Stream.eval(resolveExperimentRouting(experimentService, body.experimentId, body.collection)).flatMap { routing =>
-              val variantConfig = routing.map(_._2)
-              val storedExperimentId = routing.map(_._1).orElse(body.experimentId)
-              // Effective topK: experiment variant > request override > request topK
-              val effectiveTopK = variantConfig.flatMap(_.topK)
-                .orElse(body.overrides.flatMap(_.topK))
-                .orElse(body.topK)
-              val configSnapshot = buildConfigSnapshot(ragService.currentSettings, effectiveTopK, variantConfig, body.overrides)
-
+              Stream.eval(planQuery(ragService, experimentService, body)).flatMap { plan =>
               Stream.eval(IO.realTimeInstant).flatMap { startTime =>
               // Start event
               val startEvent = formatSSE("start", QueryStartEvent(queryId).asJson.noSpaces)
 
               // Execute query and stream results
               val queryStream = Stream.eval {
-                ((ragService.hasPermissions, ragService.principals) match {
-                  case (true, Some(principals)) =>
-                    for {
-                      auth <- PermissionContext.authorization(principal, principals)
-                      response <- ragService.queryWithPermissionsAndAnswer(
-                        question = body.question,
-                        auth = auth,
-                        collectionPattern = collectionPattern,
-                        topK = effectiveTopK
-                      )
-                    } yield response
-                  case _ =>
-                    ragService.queryWithAnswer(body.question, effectiveTopK)
-                }).attempt
+                runQuery(ragService, principal, body.question, collectionPattern, plan).attempt.flatTap { result =>
+                  IO.realTimeInstant.flatMap { endTime =>
+                    logOutcome(queryLogRegistry, body.question, collectionPattern, userId,
+                      (endTime.toEpochMilli - startTime.toEpochMilli).toInt, plan, result)
+                  }
+                }
               }.flatMap {
                 case Right(queryResponse) =>
                   // Stream contexts
@@ -229,24 +173,7 @@ object QueryRoutes {
                   // Complete event
                   val completeEvent = Stream.emit(formatSSE("complete", QueryCompleteEvent(queryId, queryResponse.contexts.size).asJson.noSpaces))
 
-                  // Log the query asynchronously
-                  val logEffect = Stream.eval {
-                    IO.realTimeInstant.flatMap { endTime =>
-                      val totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
-                      QueryLogging.logAnswer(
-                        queryLogRegistry,
-                        queryText = body.question,
-                        collectionPattern = Some(collectionPattern),
-                        userId = userId,
-                        totalLatencyMs = totalLatencyMs,
-                        response = queryResponse,
-                        experimentId = storedExperimentId,
-                        configSnapshot = configSnapshot
-                      ).attempt.void
-                    }
-                  }.drain
-
-                  contextEvents ++ answerEvent ++ usageEvent ++ completeEvent ++ logEffect
+                  contextEvents ++ answerEvent ++ usageEvent ++ completeEvent
 
                 case Left(e) =>
                   val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
@@ -268,6 +195,115 @@ object QueryRoutes {
   })
 
   /**
+   * How a query runs and is logged: the experiment and group it was assigned to, and the
+   * settings it runs with - the group's config over the request's overrides over the runtime
+   * settings.
+   */
+  private final case class QueryPlan(
+    experimentId: Option[String],
+    variant: Option[String],
+    topK: Option[Int],
+    overrides: RAGService.SettingsOverride,
+    snapshot: Option[QueryConfigSnapshot]
+  )
+
+  /**
+   * Plan a query: assign it to an experiment group if an experiment applies (see
+   * [[resolveExperimentRouting]]), then layer the group's config over the request's overrides.
+   * Every setting in the plan is applied: topK is passed with the call, the rest select the
+   * pipeline (see `RAGService.queryWithAnswer`). The LLM temperature is not: llm4s 0.6.0 answers
+   * `/query` at temperature 0.0 (llm4s/llm4s#2715), so the snapshot records none.
+   */
+  private def planQuery(ragService: RAGService, experimentService: Option[ExperimentService], body: QueryRequest): IO[QueryPlan] =
+    resolveExperimentRouting(experimentService, body.experimentId, body.collection).map { routing =>
+      val group = routing.map(_._3)
+      val requested = body.overrides
+      val topK = group.flatMap(_.topK).orElse(requested.flatMap(_.topK)).orElse(body.topK)
+      val overrides = RAGService.SettingsOverride(
+        fusionStrategy = group.flatMap(_.fusionStrategy).orElse(requested.flatMap(_.fusionStrategy)),
+        rrfK = group.flatMap(_.rrfK),
+        systemPrompt = group.flatMap(_.systemPrompt).orElse(requested.flatMap(_.systemPrompt)),
+        reranking = group.flatMap(_.reranking)
+      )
+      val current = ragService.currentSettings
+      val snapshot = ragService.pipelineSettingsFor(overrides).toOption.map { settings =>
+        QueryConfigSnapshot(
+          topK = topK.getOrElse(current.topK),
+          fusionStrategy = settings.fusionStrategy,
+          systemPrompt = Some(settings.systemPrompt),
+          llmTemperature = None
+        )
+      }
+      QueryPlan(
+        experimentId = routing.map(_._1).orElse(body.experimentId),
+        variant = routing.map(_._2),
+        topK = topK,
+        overrides = overrides,
+        snapshot = snapshot
+      )
+    }
+
+  /** Answer the query as `plan` says, permission-filtered when a SearchIndex is available. */
+  private def runQuery(
+    ragService: RAGService,
+    principal: Principal,
+    question: String,
+    collectionPattern: String,
+    plan: QueryPlan
+  ): IO[QueryResponse] =
+    (ragService.hasPermissions, ragService.principals) match {
+      case (true, Some(principals)) =>
+        PermissionContext.authorization(principal, principals).flatMap { auth =>
+          ragService.queryWithPermissionsAndAnswer(question, auth, collectionPattern, plan.topK, plan.overrides)
+        }
+      // Fall back to legacy query (no permissions)
+      case _ =>
+        ragService.queryWithAnswer(question, plan.topK, plan.overrides)
+    }
+
+  /**
+   * Log a query's outcome: answered with its metrics, or failed - so experiment results count
+   * failures in the error rate. A rejected request (invalid input) is not a query and is not
+   * logged. Logging never fails the request.
+   */
+  private def logOutcome(
+    queryLogRegistry: QueryLogRegistryBase,
+    question: String,
+    collectionPattern: String,
+    userId: Option[String],
+    totalLatencyMs: Int,
+    plan: QueryPlan,
+    result: Either[Throwable, QueryResponse]
+  ): IO[Unit] =
+    (result match {
+      case Right(queryResponse) =>
+        QueryLogging.logAnswer(
+          queryLogRegistry,
+          queryText = question,
+          collectionPattern = Some(collectionPattern),
+          userId = userId,
+          totalLatencyMs = totalLatencyMs,
+          response = queryResponse,
+          experimentId = plan.experimentId,
+          configSnapshot = plan.snapshot,
+          variant = plan.variant
+        ).void
+      case Left(_: InvalidRequestError) => IO.unit
+      case Left(e) =>
+        QueryLogging.logFailure(
+          queryLogRegistry,
+          queryText = question,
+          collectionPattern = Some(collectionPattern),
+          userId = userId,
+          totalLatencyMs = totalLatencyMs,
+          error = e,
+          experimentId = plan.experimentId,
+          configSnapshot = plan.snapshot,
+          variant = plan.variant
+        ).void
+    }).attempt.void
+
+  /**
    * Resolve experiment traffic routing for a query.
    *
    * If an experiment is running (either the one named by `requestedId`, or the
@@ -275,14 +311,14 @@ object QueryRoutes {
    * query, the query is assigned to the baseline or variant group according to
    * the experiment's traffic split.
    *
-   * @return the tagged experiment id (`"<id>:baseline"` / `"<id>:variant"`) and
-   *         the chosen variant's config, or None when no experiment applies.
+   * @return the experiment id, the group (`baseline` / `variant`) and its config, or None
+   *         when no experiment applies.
    */
   private def resolveExperimentRouting(
     experimentService: Option[ExperimentService],
     requestedId: Option[String],
     collection: Option[String]
-  ): IO[Option[(String, ExperimentConfigSnapshot)]] =
+  ): IO[Option[(String, String, ExperimentConfigSnapshot)]] =
     experimentService match {
       case None => IO.pure(None)
       case Some(svc) =>
@@ -294,34 +330,10 @@ object QueryRoutes {
           case Some(exp)
               if exp.status == ExperimentStatus.Running &&
                 exp.collection.forall(c => collection.contains(c)) =>
-            val (expId, variant, cfg) = svc.routeQuery(exp)
-            Some((s"$expId:$variant", cfg))
+            Some(svc.routeQuery(exp))
           case _ => None
         }
     }
-
-  /**
-   * Build the effective config snapshot recorded against a query, layering
-   * experiment variant config over explicit request overrides over the runtime settings.
-   */
-  private def buildConfigSnapshot(
-    current: RuntimeConfig,
-    effectiveTopK: Option[Int],
-    variantConfig: Option[ExperimentConfigSnapshot],
-    overrides: Option[QueryOverrides]
-  ): Option[QueryConfigSnapshot] =
-    Some(QueryConfigSnapshot(
-      topK = effectiveTopK.getOrElse(current.topK),
-      fusionStrategy = variantConfig.flatMap(_.fusionStrategy)
-        .orElse(overrides.flatMap(_.fusionStrategy))
-        .getOrElse(current.fusionStrategy),
-      systemPrompt = variantConfig.flatMap(_.systemPrompt)
-        .orElse(overrides.flatMap(_.systemPrompt))
-        .orElse(Some(current.systemPrompt)),
-      llmTemperature = variantConfig.flatMap(_.llmTemperature)
-        .orElse(overrides.flatMap(_.llmTemperature))
-        .orElse(Some(current.llmTemperature))
-    ))
 
   /**
    * Format a message as a Server-Sent Event.

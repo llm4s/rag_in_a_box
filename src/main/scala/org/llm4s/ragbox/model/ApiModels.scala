@@ -569,7 +569,12 @@ final case class QueryLogEntry(
   // Token and cost accounting (llm4s tracing)
   promptTokens: Option[Int] = None,
   embeddingTokens: Option[Int] = None,
-  costUsd: Option[Double] = None
+  costUsd: Option[Double] = None,
+
+  // Experiment group (`baseline` / `variant`) and failure
+  variant: Option[String] = None,
+  failed: Boolean = false,
+  errorMessage: Option[String] = None
 )
 
 /**

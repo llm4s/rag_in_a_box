@@ -84,6 +84,20 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER")
       stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS embedding_tokens INTEGER")
       stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION")
+      // Experiment group in its own column, and failed queries (so error rates can be compared)
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS variant VARCHAR(32)")
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS failed BOOLEAN NOT NULL DEFAULT FALSE")
+      stmt.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS error_message TEXT")
+      // Rows written before the split packed the group into the id (`<experiment>:<group>`)
+      stmt.execute(
+        """UPDATE query_logs
+          |SET variant = split_part(experiment_id, ':', 2), experiment_id = split_part(experiment_id, ':', 1)
+          |WHERE variant IS NULL AND experiment_id LIKE '%:%'""".stripMargin
+      )
+      stmt.execute(
+        """CREATE INDEX IF NOT EXISTS idx_query_logs_experiment_variant
+          |    ON query_logs(experiment_id, variant)""".stripMargin
+      )
     } finally {
       stmt.close()
     }
@@ -107,7 +121,10 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
     configSnapshot: Option[QueryConfigSnapshot] = None,
     promptTokens: Option[Int] = None,
     embeddingTokens: Option[Int] = None,
-    costUsd: Option[Double] = None
+    costUsd: Option[Double] = None,
+    variant: Option[String] = None,
+    failed: Boolean = false,
+    errorMessage: Option[String] = None
   ): IO[String] = ConnectionPool.withConnection(dataSource) { conn =>
     val id = UUID.randomUUID().toString
     val sql =
@@ -115,8 +132,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         |    (id, query_text, collection_pattern, user_id,
         |     embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
         |     chunks_retrieved, chunks_used, answer_tokens, experiment_id, config_snapshot,
-        |     prompt_tokens, embedding_tokens, cost_usd)
-        |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)""".stripMargin
+        |     prompt_tokens, embedding_tokens, cost_usd, variant, failed, error_message)
+        |VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?)""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
       stmt.setQueryTimeout(30)
@@ -143,6 +160,9 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       promptTokens.fold(stmt.setNull(14, java.sql.Types.INTEGER))(stmt.setInt(14, _))
       embeddingTokens.fold(stmt.setNull(15, java.sql.Types.INTEGER))(stmt.setInt(15, _))
       costUsd.fold(stmt.setNull(16, java.sql.Types.DOUBLE))(stmt.setDouble(16, _))
+      stmt.setString(17, variant.orNull)
+      stmt.setBoolean(18, failed)
+      stmt.setString(19, errorMessage.map(_.take(2000)).orNull)
       stmt.executeUpdate()
       id
     } finally {
@@ -193,7 +213,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
         |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
         |       experiment_id, config_snapshot, created_at,
-        |       prompt_tokens, embedding_tokens, cost_usd
+        |       prompt_tokens, embedding_tokens, cost_usd, variant, failed, error_message
         |FROM query_logs WHERE id = ?::uuid""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
@@ -252,7 +272,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
            |       embedding_latency_ms, search_latency_ms, llm_latency_ms, total_latency_ms,
            |       chunks_retrieved, chunks_used, answer_tokens, user_rating,
            |       experiment_id, config_snapshot, created_at,
-        |       prompt_tokens, embedding_tokens, cost_usd
+        |       prompt_tokens, embedding_tokens, cost_usd, variant, failed, error_message
            |FROM query_logs $whereClause
            |ORDER BY created_at DESC
            |LIMIT ? OFFSET ?""".stripMargin
@@ -290,7 +310,8 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
   }
 
   /**
-   * Get analytics summary.
+   * Get analytics summary, over the queries that succeeded (failed queries are logged for
+   * experiment error rates, and have no meaningful latency or chunk counts).
    */
   def getSummary(from: Instant, to: Instant): IO[QueryAnalyticsSummary] = ConnectionPool.withConnection(dataSource) { conn =>
     val sql =
@@ -308,7 +329,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         |    AVG(user_rating) as avg_rating,
         |    COUNT(user_rating) as rated_count
         |FROM query_logs
-        |WHERE created_at >= ? AND created_at <= ?""".stripMargin
+        |WHERE created_at >= ? AND created_at <= ? AND NOT failed""".stripMargin
     val stmt = conn.prepareStatement(sql)
     try {
       stmt.setQueryTimeout(30)
@@ -379,7 +400,7 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
         |    AVG(total_latency_ms) as avg_latency,
         |    AVG(user_rating) as avg_rating
         |FROM query_logs
-        |WHERE created_at >= ? AND created_at <= ?
+        |WHERE created_at >= ? AND created_at <= ? AND NOT failed
         |GROUP BY collection_pattern
         |ORDER BY query_count DESC
         |LIMIT 10""".stripMargin
@@ -433,7 +454,10 @@ class QueryLogRegistry(dataSource: DataSource) extends QueryLogRegistryBase {
       createdAt = rs.getTimestamp("created_at").toInstant,
       promptTokens = Option(rs.getInt("prompt_tokens")).filterNot(_ => rs.wasNull()),
       embeddingTokens = Option(rs.getInt("embedding_tokens")).filterNot(_ => rs.wasNull()),
-      costUsd = Option(rs.getDouble("cost_usd")).filterNot(_ => rs.wasNull())
+      costUsd = Option(rs.getDouble("cost_usd")).filterNot(_ => rs.wasNull()),
+      variant = Option(rs.getString("variant")),
+      failed = rs.getBoolean("failed"),
+      errorMessage = Option(rs.getString("error_message"))
     )
   }
 }

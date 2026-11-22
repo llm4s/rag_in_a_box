@@ -43,7 +43,10 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
       configSnapshot: Option[QueryConfigSnapshot] = None,
       promptTokens: Option[Int] = None,
       embeddingTokens: Option[Int] = None,
-      costUsd: Option[Double] = None
+      costUsd: Option[Double] = None,
+      variant: Option[String] = None,
+      failed: Boolean = false,
+      errorMessage: Option[String] = None
     ) = IO {
       val id = java.util.UUID.randomUUID().toString
       val entry = QueryLogEntry(
@@ -61,6 +64,9 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
         userRating = None,
         experimentId = experimentId,
         configSnapshot = configSnapshot,
+        variant = variant,
+        failed = failed,
+        errorMessage = errorMessage,
         createdAt = Instant.now()
       )
       logs = logs + (id -> entry)

@@ -731,8 +731,49 @@ class RAGService(
    * query's per-stage latencies, token usage and cost, from what llm4s traced while answering.
    */
   def queryWithAnswer(question: String, topK: Option[Int]): IO[QueryResponse] =
-    withCurrentPipeline(r => measured(r.queryWithAnswer(question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
+    queryWithAnswer(question, topK, RAGService.SettingsOverride.Empty)
+
+  /**
+   * [[queryWithAnswer]] with settings of its own over the runtime settings - an experiment
+   * group's or a request's overrides. The query runs on the pipeline built for those settings
+   * (built on first use, then reused; see [[PipelinePool]]).
+   */
+  def queryWithAnswer(question: String, topK: Option[Int], overrides: RAGService.SettingsOverride): IO[QueryResponse] =
+    withPipelineFor(overrides)(r => measured(r.queryWithAnswer(question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
       toQueryResponse(result, collected, nanos)
+    }
+
+  /**
+   * The pipeline settings `overrides` select over the current runtime settings.
+   *
+   * @return the settings, or an [[InvalidRequestError]] for a value llm4s has no strategy for
+   */
+  def pipelineSettingsFor(overrides: RAGService.SettingsOverride): Either[InvalidRequestError, PipelineSettings] = {
+    val current = currentPipelineSettings
+    for {
+      fusion <- overrides.fusionStrategy.fold(Right(current.fusionStrategy)) { f =>
+        Either.cond(RAGService.FusionStrategies.contains(f), f, InvalidRequestError(
+          s"Unknown fusion strategy '$f'. Use one of: ${RAGService.FusionStrategies.mkString(", ")}"
+        ))
+      }
+      reranking <- overrides.reranking.fold(Right(current.reranking)) { r =>
+        val settings = current.reranking.copy(strategy = r)
+        settings.normalizedStrategy.map(_ => settings).left.map(InvalidRequestError(_))
+      }
+    } yield current
+      .copy(
+        fusionStrategy = fusion,
+        rrfK = overrides.rrfK.getOrElse(current.rrfK),
+        systemPrompt = overrides.systemPrompt.getOrElse(current.systemPrompt),
+        reranking = reranking
+      )
+      .forMode(config, hasPermissions)
+  }
+
+  /** Run `f` with the pipeline `overrides` select (the current one when they change nothing). */
+  private def withPipelineFor[B](overrides: RAGService.SettingsOverride)(f: RAG => IO[B]): IO[B] =
+    IO.fromEither(pipelineSettingsFor(overrides)).flatMap { selected =>
+      if (selected == currentPipelineSettings) withCurrentPipeline(f) else withPipeline(selected)(f)
     }
 
   // ============================================================
@@ -773,10 +814,11 @@ class RAGService(
     question: String,
     auth: UserAuthorization,
     collectionPattern: String,
-    topK: Option[Int]
+    topK: Option[Int],
+    overrides: RAGService.SettingsOverride = RAGService.SettingsOverride.Empty
   ): IO[QueryResponse] =
     parseCollectionPattern(collectionPattern).flatMap { pattern =>
-      withCurrentPipeline(r => measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
+      withPipelineFor(overrides)(r => measured(r.queryWithPermissionsAndAnswer(auth, pattern, question, Some(resolveTopK(topK))))).map { case (result, collected, nanos) =>
         toQueryResponse(result, collected, nanos)
       }
     }
@@ -1515,6 +1557,26 @@ object RAGService {
 
   /** Minimum time between attempts to build the RAG instance after a failure. */
   val RetryCooldownMillis: Long = 5000L
+
+  /** The fusion strategies a query can be given. */
+  val FusionStrategies: Seq[String] = Seq("rrf", "weighted", "vector_only", "keyword_only")
+
+  /**
+   * Settings a query runs with instead of the runtime settings' (an experiment group's or a
+   * request's overrides). topK is not here: it is passed with each call.
+   *
+   * @param reranking `none`, `cohere` or `llm`
+   */
+  final case class SettingsOverride(
+    fusionStrategy: Option[String] = None,
+    rrfK: Option[Int] = None,
+    systemPrompt: Option[String] = None,
+    reranking: Option[String] = None
+  )
+
+  object SettingsOverride {
+    val Empty: SettingsOverride = SettingsOverride()
+  }
 
   /**
    * How many pipelines are kept at once: the current settings' and, while an experiment runs,

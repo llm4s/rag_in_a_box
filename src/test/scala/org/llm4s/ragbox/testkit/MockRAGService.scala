@@ -31,6 +31,10 @@ class MockRAGService(
   // Track method calls for assertions
   private var searchCalls: Seq[(String, Option[Int])] = Seq.empty
   private var queryCalls: Seq[(String, Option[Int])] = Seq.empty
+  private var overrideCalls: Seq[RAGService.SettingsOverride] = Seq.empty
+
+  /** The settings overrides each answered query was given, oldest first. */
+  def getQueryOverrides: Seq[RAGService.SettingsOverride] = overrideCalls
   private var ingestCalls: Seq[(String, String, Map[String, String])] = Seq.empty
   private var deleteCalls: Seq[String] = Seq.empty
 
@@ -90,8 +94,9 @@ class MockRAGService(
     }
   }
 
-  override def queryWithAnswer(question: String, topK: Option[Int]): IO[QueryResponse] = {
+  override def queryWithAnswer(question: String, topK: Option[Int], overrides: RAGService.SettingsOverride): IO[QueryResponse] = {
     queryCalls = queryCalls :+ (question, topK)
+    overrideCalls = overrideCalls :+ overrides
     errorToThrow match {
       case Some(e) => IO.raiseError(e)
       case None => IO.pure(queryResponse)
