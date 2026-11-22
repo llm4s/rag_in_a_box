@@ -190,8 +190,11 @@ object QueryRoutes {
    * Plan a query: assign it to an experiment group if an experiment applies (see
    * [[resolveExperimentRouting]]), then layer the group's config over the request's overrides.
    * Every setting in the plan is applied: topK is passed with the call, the rest select the
-   * pipeline (see `RAGService.queryWithAnswer`). The LLM temperature is not: llm4s 0.6.0 answers
-   * `/query` at temperature 0.0 (llm4s/llm4s#2715), so the snapshot records none.
+   * pipeline (see `RAGService.queryWithAnswer`) - except, in permission mode, fusion, rrfK and
+   * reranking, which vector-only permission search does not apply (llm4s/llm4s#2716), so the
+   * snapshot records `searchMode = vector-only` and leaves them out. The LLM temperature is not:
+   * llm4s 0.6.0 answers `/query` at temperature 0.0 (llm4s/llm4s#2715), so the snapshot records
+   * none.
    */
   private def planQuery(ragService: RAGService, experimentService: Option[ExperimentService], body: QueryRequest): IO[QueryPlan] =
     resolveExperimentRouting(experimentService, body.experimentId, body.collection).map { routing =>
@@ -206,15 +209,19 @@ object QueryRoutes {
         similarityThreshold = requested.flatMap(_.similarityThreshold)
       )
       val current = ragService.currentSettings
+      // Permission-mode search is vector-only (llm4s/llm4s#2716): fusion, rrfK and reranking do
+      // not apply there, so the snapshot leaves them out
+      val hybrid = !ragService.hasPermissions
       val snapshot = ragService.pipelineSettingsFor(overrides).toOption.map { settings =>
         QueryConfigSnapshot(
           topK = topK.getOrElse(current.topK),
-          fusionStrategy = settings.fusionStrategy,
+          fusionStrategy = Option.when(hybrid)(settings.fusionStrategy),
           systemPrompt = Some(settings.systemPrompt),
           llmTemperature = None,
           similarityThreshold = overrides.similarityThreshold,
-          rrfK = Option.when(settings.fusionStrategy == "rrf")(settings.rrfK),
-          reranking = Some(settings.reranking.normalizedStrategy.getOrElse(settings.reranking.strategy))
+          rrfK = Option.when(hybrid && settings.fusionStrategy == "rrf")(settings.rrfK),
+          reranking = Option.when(hybrid)(settings.reranking.normalizedStrategy.getOrElse(settings.reranking.strategy)),
+          searchMode = Some(if (hybrid) QueryConfigSnapshot.HybridSearch else QueryConfigSnapshot.VectorOnlySearch)
         )
       }
       QueryPlan(

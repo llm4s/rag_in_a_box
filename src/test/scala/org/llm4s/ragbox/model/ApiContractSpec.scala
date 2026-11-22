@@ -1,6 +1,6 @@
 package org.llm4s.ragbox.model
 
-import io.circe.{Encoder, Json, Printer}
+import io.circe.{Decoder, Encoder, Json, Printer}
 import io.circe.parser.parse
 import io.circe.syntax._
 import org.scalatest.flatspec.AnyFlatSpec
@@ -28,14 +28,42 @@ import java.time.Instant
  *
  * Samples must populate every Option and collection: `None` encodes as `null`
  * and empty arrays as `never[]`, which would weaken the TypeScript check.
+ *
+ * Nullability (#64): the backend sends `null` for a `None`, so every TypeScript
+ * field for an `Option` must accept `null`. A second fixture,
+ * `api-contract-nulls.json`, holds each sample with every `Option` field set to
+ * `null`, and contract.check.ts checks the TypeScript types accept it too. The
+ * `Option` fields are found from the models' own codecs, so a new one is covered
+ * without editing this file: a top-level field is nullable when the sample with
+ * that field set to `null` decodes and encodes back with the field `null`, and
+ * the sample without the field decodes too (which tells an Option from a Double:
+ * circe decodes a `null` Double as NaN).
  */
 class ApiContractSpec extends AnyFlatSpec with Matchers {
 
-  private val fixturePath: Path = Paths.get("admin-ui", "src", "types", "contract", "api-contract.json")
+  private val contractDir: Path = Paths.get("admin-ui", "src", "types", "contract")
+  private val fixturePath: Path = contractDir.resolve("api-contract.json")
+  private val nullsFixturePath: Path = contractDir.resolve("api-contract-nulls.json")
 
   private val t0 = Instant.parse("2024-01-01T00:00:00Z")
 
-  private def entry[A: Encoder](name: String, value: A): (String, Json) = name -> value.asJson
+  /** A model's sample, and the same sample with every Option field `null` (see the class comment). */
+  private final case class Sample(full: Json, nulls: Json)
+
+  private def entry[A: Encoder: Decoder](name: String, value: A): (String, Sample) = {
+    val full = value.asJson
+    val obj = full.asObject.getOrElse(fail(s"$name does not encode as a JSON object"))
+    def roundTrip(json: Json): Option[Json] = json.as[A].toOption.map(_.asJson)
+    // An Option field decodes from null and from a missing key; a Double decodes null too (as NaN,
+    // which encodes as null) but not a missing key
+    val nullable = obj.keys.filter { key =>
+      roundTrip(Json.fromJsonObject(obj.add(key, Json.Null))).exists(_.hcursor.downField(key).focus.contains(Json.Null)) &&
+        roundTrip(Json.fromJsonObject(obj.remove(key))).isDefined
+    }.toSeq
+    val nulls = roundTrip(Json.fromJsonObject(nullable.foldLeft(obj)((o, key) => o.add(key, Json.Null))))
+      .getOrElse(fail(s"$name does not decode with all of its Option fields (${nullable.mkString(", ")}) null"))
+    name -> Sample(full, nulls)
+  }
 
   // --- Runtime config -------------------------------------------------------
   private val runtimeConfig = RuntimeConfig(
@@ -101,8 +129,8 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
 
   // --- Analytics --------------------------------------------------------------
   private val queryConfigSnapshot = QueryConfigSnapshot(
-    topK = 5, fusionStrategy = "rrf", systemPrompt = Some("You are helpful."), llmTemperature = Some(0.1),
-    similarityThreshold = Some(0.25), rrfK = Some(60), reranking = Some("cohere")
+    topK = 5, fusionStrategy = Some("rrf"), systemPrompt = Some("You are helpful."), llmTemperature = Some(0.1),
+    similarityThreshold = Some(0.25), rrfK = Some(60), reranking = Some("cohere"), searchMode = Some("hybrid")
   )
   private val queryLogEntry = QueryLogEntry(
     id = "5f0c7a9e-1b2d-4c3e-8f40-123456789abc", queryText = "What is solar power?", collectionPattern = Some("docs"),
@@ -113,8 +141,26 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     errorMessage = Some("LLM timed out")
   )
 
-  /** Model name (matching the key used in contract.check.ts) -> encoded sample. */
-  private val contract: Json = Json.obj(
+  // --- Experiments ------------------------------------------------------------
+  private val experimentConfig = ExperimentConfigSnapshot(
+    topK = Some(8), fusionStrategy = Some("rrf"), systemPrompt = Some("Be brief."), llmTemperature = Some(0.2),
+    rrfK = Some(30), reranking = Some("cohere")
+  )
+  private val experiment = Experiment(
+    id = "exp-1", name = "prompt test", description = Some("Shorter answers"), status = ExperimentStatus.Running,
+    baselineConfig = experimentConfig, variantConfig = experimentConfig, trafficSplit = 0.5, collection = Some("docs"),
+    createdAt = t0, startedAt = Some(t0), endedAt = Some(t0)
+  )
+  private val variantMetrics = ExperimentVariantMetrics(
+    queryCount = 10, avgLatencyMs = 120.0, avgRating = Some(4.2), ratedCount = 5, avgChunksUsed = 3.0,
+    avgChunksRetrieved = 5.0, failedCount = 1, errorRate = 0.1, latencyStdDevMs = Some(12.5), ratingStdDev = Some(0.4),
+    positiveCount = 4
+  )
+  private val significanceTest = SignificanceTest("latencyMs", "welch-t", 120.0, 110.0, -1.2, 0.25, significant = false)
+  private val experimentAnalysis = ExperimentAnalysis("-8.3%", Some("+4.8%"), "+0.0%", "-50.0%", Seq(significanceTest))
+
+  /** Model name (matching the key used in contract.check.ts) -> its samples. */
+  private val samples: Seq[(String, Sample)] = Seq(
     // Runtime config
     entry("RuntimeConfig", runtimeConfig),
     entry("RuntimeConfigResponse", RuntimeConfigResponse(runtimeConfig, Some(t0), Seq("topK"), Seq("chunkSize"))),
@@ -189,40 +235,84 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
       groups = Seq("eng"), scopes = Some(Seq("query")), collections = Some(Seq("eng")), userId = Some(1)
     )),
     // Errors
-    entry("ErrorResponse", ErrorResponse("validation_failed", "Configuration validation failed", Some("topK: too large")))
+    entry("ErrorResponse", ErrorResponse("validation_failed", "Configuration validation failed", Some("topK: too large"))),
+    // Experiments
+    entry("ExperimentConfigSnapshot", experimentConfig),
+    entry("Experiment", experiment),
+    entry("ExperimentListResponse", ExperimentListResponse(Seq(experiment), 1)),
+    entry("CreateExperimentResponse", CreateExperimentResponse(experiment, "Created")),
+    entry("ExperimentOperationResponse", ExperimentOperationResponse(success = true, "Started", Some(experiment))),
+    entry("ExperimentVariantMetrics", variantMetrics),
+    entry("SignificanceTest", significanceTest),
+    entry("ExperimentAnalysis", experimentAnalysis),
+    entry("ExperimentResults", ExperimentResults(
+      experimentId = "exp-1", experimentName = "prompt test", status = ExperimentStatus.Completed, duration = Some("2h 5m"),
+      baseline = variantMetrics, variant = variantMetrics, analysis = experimentAnalysis
+    ))
   )
+
+  private val contract: Json = Json.fromFields(samples.map { case (name, sample) => name -> sample.full })
+  private val nullsContract: Json = Json.fromFields(samples.map { case (name, sample) => name -> sample.nulls })
 
   private val printer = Printer.spaces2SortKeys
 
-  "The API contract fixture" should "match the encoded Scala response models" in {
-    val rendered = printer.print(contract) + "\n"
+  private def updating: Boolean = sys.env.get("UPDATE_API_CONTRACT").exists(v => v == "1" || v.equalsIgnoreCase("true"))
 
-    if (sys.env.get("UPDATE_API_CONTRACT").exists(v => v == "1" || v.equalsIgnoreCase("true"))) {
-      Files.createDirectories(fixturePath.getParent)
-      Files.write(fixturePath, rendered.getBytes(StandardCharsets.UTF_8))
-      info(s"Wrote $fixturePath")
+  /** Fail with the models that differ between `expected` and the checked-in fixture at `path`. */
+  private def checkFixture(path: Path, expected: Json): Unit = {
+    val rendered = printer.print(expected) + "\n"
+
+    if (updating) {
+      Files.createDirectories(path.getParent)
+      Files.write(path, rendered.getBytes(StandardCharsets.UTF_8))
+      info(s"Wrote $path")
     }
 
-    withClue(s"$fixturePath is missing; run with UPDATE_API_CONTRACT=1 to create it. ") {
-      Files.exists(fixturePath) shouldBe true
+    withClue(s"$path is missing; run with UPDATE_API_CONTRACT=1 to create it. ") {
+      Files.exists(path) shouldBe true
     }
 
-    val existing = parse(new String(Files.readAllBytes(fixturePath), StandardCharsets.UTF_8))
-      .fold(e => fail(s"Could not parse $fixturePath: ${e.getMessage}"), identity)
+    val existing = parse(new String(Files.readAllBytes(path), StandardCharsets.UTF_8))
+      .fold(e => fail(s"Could not parse $path: ${e.getMessage}"), identity)
 
-    val expectedModels = contract.asObject.get.toMap
+    val expectedModels = expected.asObject.get.toMap
     val actualModels = existing.asObject.map(_.toMap).getOrElse(Map.empty)
     val drift = (expectedModels.keySet ++ actualModels.keySet).toSeq.sorted.filter { name =>
       expectedModels.get(name) != actualModels.get(name)
     }
 
     withClue(
-      s"API response models drifted from $fixturePath for: ${drift.mkString(", ")}.\n" +
+      s"API response models drifted from $path for: ${drift.mkString(", ")}.\n" +
         "If the change is intentional, run `UPDATE_API_CONTRACT=1 sbt \"testOnly org.llm4s.ragbox.model.ApiContractSpec\"`, " +
         "then fix admin-ui/src/types/api.ts until `npx vue-tsc --noEmit` passes.\n"
     ) {
       drift shouldBe empty
     }
+  }
+
+  "The API contract fixture" should "match the encoded Scala response models" in {
+    checkFixture(fixturePath, contract)
+  }
+
+  "The nulls fixture" should "match the samples with every Option field null" in {
+    checkFixture(nullsFixturePath, nullsContract)
+  }
+
+  it should "null exactly the Option fields" in {
+    val nulls = samples.toMap.view.mapValues(_.nulls).toMap
+    def nullKeys(model: String): Set[String] =
+      nulls(model).asObject.get.toList.collect { case (k, v) if v.isNull => k }.toSet
+    nullKeys("QueryLogEntry") shouldBe Set(
+      "collectionPattern", "userId", "embeddingLatencyMs", "searchLatencyMs", "llmLatencyMs", "answerTokens",
+      "userRating", "experimentId", "configSnapshot", "promptTokens", "embeddingTokens", "costUsd", "variant",
+      "errorMessage"
+    )
+    nullKeys("QueryConfigSnapshot") shouldBe Set(
+      "fusionStrategy", "systemPrompt", "llmTemperature", "similarityThreshold", "rrfK", "reranking", "searchMode"
+    )
+    // No Option fields: the same as the full sample
+    nullKeys("RuntimeConfig") shouldBe empty
+    nulls("RuntimeConfig") shouldBe samples.toMap.apply("RuntimeConfig").full
   }
 
   it should "not encode any null values (they would weaken the TypeScript check)" in {

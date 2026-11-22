@@ -180,10 +180,11 @@ class ApiConsistency59StackSpec extends AnyFlatSpec with Matchers with PgVectorF
       logged._2.hcursor.downField("configSnapshot").get[Double]("similarityThreshold") shouldBe Right(0.25)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Option[Double]]("similarityThreshold") shouldBe Right(None)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Int]("topK").isRight shouldBe true
-      // The default rrf fusion records its constant; reranking is recorded too
-      loggedWithout._2.hcursor.downField("configSnapshot").get[String]("fusionStrategy") shouldBe Right("rrf")
-      loggedWithout._2.hcursor.downField("configSnapshot").get[Int]("rrfK").isRight shouldBe true
-      loggedWithout._2.hcursor.downField("configSnapshot").get[String]("reranking") shouldBe Right("none")
+      // Permission mode searches vector-only (llm4s/llm4s#2716): fusion, rrfK and reranking did
+      // not apply, so the snapshot says so and leaves them out (#64)
+      val snapshot = loggedWithout._2.hcursor.downField("configSnapshot")
+      snapshot.get[String]("searchMode") shouldBe Right("vector-only")
+      Seq("fusionStrategy", "rrfK", "reranking").foreach(k => snapshot.downField(k).focus shouldBe Some(Json.Null))
     }
   }
 

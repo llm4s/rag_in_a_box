@@ -1,0 +1,885 @@
+{
+  "AllCollectionConfigsResponse" : {
+    "collections" : [
+      {
+        "collection" : "docs",
+        "config" : {
+          "collection" : "docs",
+          "fileTypeStrategies" : {
+            ".md" : "markdown"
+          },
+          "maxSize" : 1600,
+          "overlap" : 100,
+          "strategy" : "markdown",
+          "targetSize" : 800,
+          "updatedAt" : "2024-01-01T00:00:00Z"
+        },
+        "documentCount" : 3,
+        "effectiveConfig" : {
+          "appliedFileTypeOverride" : ".md",
+          "maxSize" : 1600,
+          "overlap" : 100,
+          "source" : "file-type",
+          "strategy" : "markdown",
+          "targetSize" : 800
+        },
+        "hasCustomConfig" : true
+      }
+    ],
+    "defaultConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    }
+  },
+  "AuthModeResponse" : {
+    "authRequired" : true,
+    "methods" : [
+      "password",
+      "api-key"
+    ],
+    "mode" : "basic",
+    "oauthLoginUrl" : null
+  },
+  "ChunkInfo" : {
+    "chunkMetadata" : {
+      "endOffset" : 12,
+      "headings" : [
+        "Intro"
+      ],
+      "isCodeBlock" : false,
+      "language" : "scala",
+      "startOffset" : 0
+    },
+    "content" : "Hello world.",
+    "contentLength" : 12,
+    "documentId" : "doc-1",
+    "id" : "doc-1-0",
+    "index" : 0,
+    "metadata" : {
+      "collection" : "docs"
+    }
+  },
+  "ChunkMetadataInfo" : {
+    "endOffset" : null,
+    "headings" : [
+      "Intro"
+    ],
+    "isCodeBlock" : false,
+    "language" : null,
+    "startOffset" : null
+  },
+  "ChunkSizeDistribution" : {
+    "avg" : 450.0,
+    "buckets" : [
+      {
+        "count" : 10,
+        "rangeEnd" : 500,
+        "rangeStart" : 0
+      }
+    ],
+    "max" : 900,
+    "median" : 430.0,
+    "min" : 10,
+    "p90" : 800.0
+  },
+  "ChunkingCompareResponse" : {
+    "recommendation" : null,
+    "results" : [
+      {
+        "chunks" : [
+          {
+            "content" : "Hello world.",
+            "headings" : [
+              "Intro"
+            ],
+            "index" : 0,
+            "isCodeBlock" : false,
+            "language" : "scala",
+            "length" : 12
+          }
+        ],
+        "stats" : {
+          "avgChunkSize" : 12.0,
+          "chunkCount" : 1,
+          "estimatedTokens" : 3,
+          "maxChunkSize" : 12,
+          "minChunkSize" : 12,
+          "totalLength" : 12
+        },
+        "strategy" : "sentence",
+        "warnings" : [
+          {
+            "level" : "info",
+            "message" : "Short document",
+            "suggestion" : "Use smaller chunks"
+          }
+        ]
+      }
+    ]
+  },
+  "ChunkingStats" : {
+    "avgChunkSize" : 12.0,
+    "chunkCount" : 1,
+    "estimatedTokens" : 3,
+    "maxChunkSize" : 12,
+    "minChunkSize" : 12,
+    "totalLength" : 12
+  },
+  "ChunkingWarning" : {
+    "level" : "info",
+    "message" : "Short document",
+    "suggestion" : null
+  },
+  "CollectionChunkingConfig" : {
+    "collection" : "docs",
+    "fileTypeStrategies" : {
+      ".md" : "markdown"
+    },
+    "maxSize" : null,
+    "overlap" : null,
+    "strategy" : null,
+    "targetSize" : null,
+    "updatedAt" : null
+  },
+  "CollectionConfigResponse" : {
+    "collection" : "docs",
+    "config" : null,
+    "documentCount" : 3,
+    "effectiveConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    },
+    "hasCustomConfig" : true
+  },
+  "CollectionConfigUpdateResponse" : {
+    "collection" : "docs",
+    "config" : {
+      "collection" : "docs",
+      "fileTypeStrategies" : {
+        ".md" : "markdown"
+      },
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "strategy" : "markdown",
+      "targetSize" : 800,
+      "updatedAt" : "2024-01-01T00:00:00Z"
+    },
+    "message" : "Updated"
+  },
+  "ConfigChange" : {
+    "changedAt" : "2024-01-01T00:00:00Z",
+    "changedBy" : null,
+    "field" : "topK",
+    "id" : 1,
+    "newValue" : "8",
+    "oldValue" : "5"
+  },
+  "ConfigHistoryResponse" : {
+    "changes" : [
+      {
+        "changedAt" : "2024-01-01T00:00:00Z",
+        "changedBy" : "admin",
+        "field" : "topK",
+        "id" : 1,
+        "newValue" : "8",
+        "oldValue" : "5"
+      }
+    ],
+    "hasMore" : false,
+    "page" : 1,
+    "pageSize" : 50,
+    "total" : 1
+  },
+  "ConfigMetaItem" : {
+    "description" : "Number of chunks",
+    "key" : "topK",
+    "requiresRestart" : false,
+    "type" : "hot",
+    "value" : "5"
+  },
+  "ContextItem" : {
+    "chunkIndex" : null,
+    "content" : "Solar panels convert light.",
+    "documentId" : null,
+    "metadata" : {
+      "collection" : "docs"
+    },
+    "score" : 0.92
+  },
+  "CreateExperimentResponse" : {
+    "experiment" : {
+      "baselineConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      },
+      "collection" : "docs",
+      "createdAt" : "2024-01-01T00:00:00Z",
+      "description" : "Shorter answers",
+      "endedAt" : "2024-01-01T00:00:00Z",
+      "id" : "exp-1",
+      "name" : "prompt test",
+      "startedAt" : "2024-01-01T00:00:00Z",
+      "status" : "running",
+      "trafficSplit" : 0.5,
+      "variantConfig" : {
+        "fusionStrategy" : "rrf",
+        "llmTemperature" : 0.2,
+        "reranking" : "cohere",
+        "rrfK" : 30,
+        "systemPrompt" : "Be brief.",
+        "topK" : 8
+      }
+    },
+    "message" : "Created"
+  },
+  "DetailedCollectionStats" : {
+    "avgChunkSize" : 450.0,
+    "avgChunksPerDoc" : 3.0,
+    "chunkCount" : 9,
+    "chunkingStrategy" : null,
+    "documentCount" : 3,
+    "name" : "docs"
+  },
+  "DetailedStatsResponse" : {
+    "avgChunksPerDocument" : 3.0,
+    "chunkCount" : 9,
+    "chunkSizeDistribution" : {
+      "avg" : 450.0,
+      "buckets" : [
+        {
+          "count" : 10,
+          "rangeEnd" : 500,
+          "rangeStart" : 0
+        }
+      ],
+      "max" : 900,
+      "median" : 430.0,
+      "min" : 10,
+      "p90" : 800.0
+    },
+    "collectionCount" : 1,
+    "collections" : [
+      {
+        "avgChunkSize" : 450.0,
+        "avgChunksPerDoc" : 3.0,
+        "chunkCount" : 9,
+        "chunkingStrategy" : "sentence",
+        "documentCount" : 3,
+        "name" : "docs"
+      }
+    ],
+    "currentConfig" : {
+      "maxSize" : 1200,
+      "overlap" : 150,
+      "strategy" : "sentence",
+      "targetSize" : 800
+    },
+    "documentCount" : 3,
+    "indexedSince" : null,
+    "lastIngestion" : null,
+    "vectorCount" : 9
+  },
+  "DocumentChunksResponse" : {
+    "chunkCount" : 1,
+    "chunkingConfig" : {
+      "maxSize" : 1200,
+      "overlap" : 150,
+      "strategy" : "sentence",
+      "targetSize" : 800
+    },
+    "chunks" : [
+      {
+        "chunkMetadata" : {
+          "endOffset" : 12,
+          "headings" : [
+            "Intro"
+          ],
+          "isCodeBlock" : false,
+          "language" : "scala",
+          "startOffset" : 0
+        },
+        "content" : "Hello world.",
+        "contentLength" : 12,
+        "documentId" : "doc-1",
+        "id" : "doc-1-0",
+        "index" : 0,
+        "metadata" : {
+          "collection" : "docs"
+        }
+      }
+    ],
+    "collection" : null,
+    "documentId" : "doc-1",
+    "filename" : null
+  },
+  "DocumentInfo" : {
+    "chunkCount" : 3,
+    "collection" : null,
+    "createdAt" : null,
+    "filename" : "guide.md",
+    "id" : "doc-1",
+    "metadata" : {
+      "author" : "alice"
+    },
+    "updatedAt" : null
+  },
+  "DocumentListResponse" : {
+    "documents" : [
+      {
+        "chunkCount" : 3,
+        "collection" : "docs",
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "filename" : "guide.md",
+        "id" : "doc-1",
+        "metadata" : {
+          "author" : "alice"
+        },
+        "updatedAt" : "2024-01-01T00:00:00Z"
+      }
+    ],
+    "hasMore" : false,
+    "page" : 1,
+    "pageSize" : 50,
+    "total" : 1
+  },
+  "DocumentUploadResponse" : {
+    "chunks" : 3,
+    "documentId" : "doc-1",
+    "message" : "Successfully ingested"
+  },
+  "EffectiveCollectionConfig" : {
+    "appliedFileTypeOverride" : null,
+    "maxSize" : 1600,
+    "overlap" : 100,
+    "source" : "file-type",
+    "strategy" : "markdown",
+    "targetSize" : 800
+  },
+  "EffectiveConfigPreviewResponse" : {
+    "collection" : "docs",
+    "configResolutionPath" : [
+      "Using collection config"
+    ],
+    "effectiveConfig" : {
+      "appliedFileTypeOverride" : ".md",
+      "maxSize" : 1600,
+      "overlap" : 100,
+      "source" : "file-type",
+      "strategy" : "markdown",
+      "targetSize" : 800
+    },
+    "filename" : null
+  },
+  "ErrorResponse" : {
+    "details" : null,
+    "error" : "validation_failed",
+    "message" : "Configuration validation failed"
+  },
+  "Experiment" : {
+    "baselineConfig" : {
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.2,
+      "reranking" : "cohere",
+      "rrfK" : 30,
+      "systemPrompt" : "Be brief.",
+      "topK" : 8
+    },
+    "collection" : null,
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "description" : null,
+    "endedAt" : null,
+    "id" : "exp-1",
+    "name" : "prompt test",
+    "startedAt" : null,
+    "status" : "running",
+    "trafficSplit" : 0.5,
+    "variantConfig" : {
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.2,
+      "reranking" : "cohere",
+      "rrfK" : 30,
+      "systemPrompt" : "Be brief.",
+      "topK" : 8
+    }
+  },
+  "ExperimentAnalysis" : {
+    "chunksUsedChange" : "+0.0%",
+    "errorRateChange" : "-50.0%",
+    "latencyChange" : "-8.3%",
+    "ratingChange" : null,
+    "tests" : [
+      {
+        "baseline" : 120.0,
+        "metric" : "latencyMs",
+        "pValue" : 0.25,
+        "significant" : false,
+        "statistic" : -1.2,
+        "test" : "welch-t",
+        "variant" : 110.0
+      }
+    ]
+  },
+  "ExperimentConfigSnapshot" : {
+    "fusionStrategy" : null,
+    "llmTemperature" : null,
+    "reranking" : null,
+    "rrfK" : null,
+    "systemPrompt" : null,
+    "topK" : null
+  },
+  "ExperimentListResponse" : {
+    "experiments" : [
+      {
+        "baselineConfig" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.2,
+          "reranking" : "cohere",
+          "rrfK" : 30,
+          "systemPrompt" : "Be brief.",
+          "topK" : 8
+        },
+        "collection" : "docs",
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "description" : "Shorter answers",
+        "endedAt" : "2024-01-01T00:00:00Z",
+        "id" : "exp-1",
+        "name" : "prompt test",
+        "startedAt" : "2024-01-01T00:00:00Z",
+        "status" : "running",
+        "trafficSplit" : 0.5,
+        "variantConfig" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.2,
+          "reranking" : "cohere",
+          "rrfK" : 30,
+          "systemPrompt" : "Be brief.",
+          "topK" : 8
+        }
+      }
+    ],
+    "total" : 1
+  },
+  "ExperimentOperationResponse" : {
+    "experiment" : null,
+    "message" : "Started",
+    "success" : true
+  },
+  "ExperimentResults" : {
+    "analysis" : {
+      "chunksUsedChange" : "+0.0%",
+      "errorRateChange" : "-50.0%",
+      "latencyChange" : "-8.3%",
+      "ratingChange" : "+4.8%",
+      "tests" : [
+        {
+          "baseline" : 120.0,
+          "metric" : "latencyMs",
+          "pValue" : 0.25,
+          "significant" : false,
+          "statistic" : -1.2,
+          "test" : "welch-t",
+          "variant" : 110.0
+        }
+      ]
+    },
+    "baseline" : {
+      "avgChunksRetrieved" : 5.0,
+      "avgChunksUsed" : 3.0,
+      "avgLatencyMs" : 120.0,
+      "avgRating" : 4.2,
+      "errorRate" : 0.1,
+      "failedCount" : 1,
+      "latencyStdDevMs" : 12.5,
+      "positiveCount" : 4,
+      "queryCount" : 10,
+      "ratedCount" : 5,
+      "ratingStdDev" : 0.4
+    },
+    "duration" : null,
+    "experimentId" : "exp-1",
+    "experimentName" : "prompt test",
+    "status" : "completed",
+    "variant" : {
+      "avgChunksRetrieved" : 5.0,
+      "avgChunksUsed" : 3.0,
+      "avgLatencyMs" : 120.0,
+      "avgRating" : 4.2,
+      "errorRate" : 0.1,
+      "failedCount" : 1,
+      "latencyStdDevMs" : 12.5,
+      "positiveCount" : 4,
+      "queryCount" : 10,
+      "ratedCount" : 5,
+      "ratingStdDev" : 0.4
+    }
+  },
+  "ExperimentVariantMetrics" : {
+    "avgChunksRetrieved" : 5.0,
+    "avgChunksUsed" : 3.0,
+    "avgLatencyMs" : 120.0,
+    "avgRating" : null,
+    "errorRate" : 0.1,
+    "failedCount" : 1,
+    "latencyStdDevMs" : null,
+    "positiveCount" : 4,
+    "queryCount" : 10,
+    "ratedCount" : 5,
+    "ratingStdDev" : null
+  },
+  "LoginResponse" : {
+    "expiresIn" : 3600,
+    "role" : "admin",
+    "token" : "jwt",
+    "username" : "admin"
+  },
+  "PresetInfo" : {
+    "bestFor" : [
+      "general"
+    ],
+    "description" : "Good default",
+    "displayName" : "Balanced",
+    "maxSize" : 1200,
+    "name" : "balanced",
+    "overlap" : 150,
+    "targetSize" : 800
+  },
+  "PresetsResponse" : {
+    "current" : {
+      "bestFor" : [
+        "general"
+      ],
+      "description" : "Good default",
+      "displayName" : "Balanced",
+      "maxSize" : 1200,
+      "name" : "balanced",
+      "overlap" : 150,
+      "targetSize" : 800
+    },
+    "presets" : [
+      {
+        "bestFor" : [
+          "general"
+        ],
+        "description" : "Good default",
+        "displayName" : "Balanced",
+        "maxSize" : 1200,
+        "name" : "balanced",
+        "overlap" : 150,
+        "targetSize" : 800
+      }
+    ]
+  },
+  "PreviewChunk" : {
+    "content" : "Hello world.",
+    "headings" : [
+      "Intro"
+    ],
+    "index" : 0,
+    "isCodeBlock" : false,
+    "language" : null,
+    "length" : 12
+  },
+  "PrincipalResponse" : {
+    "authMethod" : "access-token",
+    "collections" : null,
+    "groups" : [
+      "eng"
+    ],
+    "id" : "token:1",
+    "isAdmin" : false,
+    "role" : "user",
+    "scopes" : null,
+    "userId" : null,
+    "username" : "ingester"
+  },
+  "QueryConfigSnapshot" : {
+    "fusionStrategy" : null,
+    "llmTemperature" : null,
+    "reranking" : null,
+    "rrfK" : null,
+    "searchMode" : null,
+    "similarityThreshold" : null,
+    "systemPrompt" : null,
+    "topK" : 5
+  },
+  "QueryLogEntry" : {
+    "answerTokens" : null,
+    "chunksRetrieved" : 5,
+    "chunksUsed" : 4,
+    "collectionPattern" : null,
+    "configSnapshot" : null,
+    "costUsd" : null,
+    "createdAt" : "2024-01-01T00:00:00Z",
+    "embeddingLatencyMs" : null,
+    "embeddingTokens" : null,
+    "errorMessage" : null,
+    "experimentId" : null,
+    "failed" : true,
+    "id" : "5f0c7a9e-1b2d-4c3e-8f40-123456789abc",
+    "llmLatencyMs" : null,
+    "promptTokens" : null,
+    "queryText" : "What is solar power?",
+    "searchLatencyMs" : null,
+    "totalLatencyMs" : 930,
+    "userId" : null,
+    "userRating" : null,
+    "variant" : null
+  },
+  "QueryLogListResponse" : {
+    "page" : 1,
+    "pageSize" : 20,
+    "queries" : [
+      {
+        "answerTokens" : 80,
+        "chunksRetrieved" : 5,
+        "chunksUsed" : 4,
+        "collectionPattern" : "docs",
+        "configSnapshot" : {
+          "fusionStrategy" : "rrf",
+          "llmTemperature" : 0.1,
+          "reranking" : "cohere",
+          "rrfK" : 60,
+          "searchMode" : "hybrid",
+          "similarityThreshold" : 0.25,
+          "systemPrompt" : "You are helpful.",
+          "topK" : 5
+        },
+        "costUsd" : 0.0042,
+        "createdAt" : "2024-01-01T00:00:00Z",
+        "embeddingLatencyMs" : 12,
+        "embeddingTokens" : 7,
+        "errorMessage" : "LLM timed out",
+        "experimentId" : "exp-1",
+        "failed" : true,
+        "id" : "5f0c7a9e-1b2d-4c3e-8f40-123456789abc",
+        "llmLatencyMs" : 900,
+        "promptTokens" : 1200,
+        "queryText" : "What is solar power?",
+        "searchLatencyMs" : 8,
+        "totalLatencyMs" : 930,
+        "userId" : "alice",
+        "userRating" : 4,
+        "variant" : "variant"
+      }
+    ],
+    "total" : 1
+  },
+  "QueryMetrics" : {
+    "chunksRetrieved" : 5,
+    "chunksUsed" : 5,
+    "completionTokens" : null,
+    "costUsd" : null,
+    "embeddingLatencyMs" : null,
+    "embeddingTokens" : null,
+    "llmLatencyMs" : null,
+    "promptTokens" : null,
+    "searchLatencyMs" : null
+  },
+  "QueryResponse" : {
+    "answer" : "An answer.",
+    "contexts" : [
+      {
+        "chunkIndex" : 0,
+        "content" : "Solar panels convert light.",
+        "documentId" : "doc-1",
+        "metadata" : {
+          "collection" : "docs"
+        },
+        "score" : 0.92
+      }
+    ],
+    "metrics" : null,
+    "queryId" : null,
+    "usage" : null
+  },
+  "RAGConfigInfo" : {
+    "chunkOverlap" : 150,
+    "chunkSize" : 800,
+    "chunkingStrategy" : "sentence",
+    "fusionApplies" : false,
+    "fusionStrategy" : "rrf",
+    "limitations" : [
+      "fusionStrategy and rrfK have no effect (llm4s/llm4s#2716)."
+    ],
+    "queryTransform" : "none",
+    "reranking" : "none",
+    "rrfK" : 60,
+    "searchMode" : "vector",
+    "topK" : 5
+  },
+  "RuntimeConfig" : {
+    "chunkOverlap" : 150,
+    "chunkSize" : 800,
+    "chunkingStrategy" : "sentence",
+    "fusionStrategy" : "rrf",
+    "llmTemperature" : 0.1,
+    "rrfK" : 60,
+    "systemPrompt" : "You are helpful.",
+    "topK" : 5
+  },
+  "RuntimeConfigResponse" : {
+    "config" : {
+      "chunkOverlap" : 150,
+      "chunkSize" : 800,
+      "chunkingStrategy" : "sentence",
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.1,
+      "rrfK" : 60,
+      "systemPrompt" : "You are helpful.",
+      "topK" : 5
+    },
+    "hotSettings" : [
+      "topK"
+    ],
+    "lastModified" : null,
+    "warmSettings" : [
+      "chunkSize"
+    ]
+  },
+  "RuntimeConfigUpdateResponse" : {
+    "changes" : [
+      {
+        "changeability" : "hot",
+        "effectiveImmediately" : true,
+        "field" : "llmTemperature",
+        "newValue" : "0.2",
+        "note" : "Applies to chat answers.",
+        "oldValue" : "0.7"
+      }
+    ],
+    "current" : {
+      "chunkOverlap" : 150,
+      "chunkSize" : 800,
+      "chunkingStrategy" : "sentence",
+      "fusionStrategy" : "rrf",
+      "llmTemperature" : 0.1,
+      "rrfK" : 60,
+      "systemPrompt" : "You are helpful.",
+      "topK" : 5
+    },
+    "message" : "Updated",
+    "success" : true
+  },
+  "RuntimeConfigValidateResponse" : {
+    "valid" : false,
+    "validations" : [
+      {
+        "currentValue" : "5",
+        "error" : "topK must be between 1 and 100",
+        "field" : "topK",
+        "proposedValue" : "500",
+        "valid" : false,
+        "warning" : "Large topK increases latency"
+      }
+    ],
+    "warnings" : [
+      "warning"
+    ]
+  },
+  "SettingUpdateResult" : {
+    "changeability" : "hot",
+    "effectiveImmediately" : true,
+    "field" : "llmTemperature",
+    "newValue" : "0.2",
+    "note" : null,
+    "oldValue" : "0.7"
+  },
+  "SettingValidation" : {
+    "currentValue" : "5",
+    "error" : null,
+    "field" : "topK",
+    "proposedValue" : "500",
+    "valid" : false,
+    "warning" : null
+  },
+  "SignificanceTest" : {
+    "baseline" : 120.0,
+    "metric" : "latencyMs",
+    "pValue" : 0.25,
+    "significant" : false,
+    "statistic" : -1.2,
+    "test" : "welch-t",
+    "variant" : 110.0
+  },
+  "SizeBucket" : {
+    "count" : 10,
+    "rangeEnd" : 500,
+    "rangeStart" : 0
+  },
+  "StrategiesResponse" : {
+    "currentDefault" : "sentence",
+    "strategies" : [
+      {
+        "bestFor" : [
+          "prose"
+        ],
+        "description" : "Splits on sentence boundaries",
+        "displayName" : "Sentence",
+        "name" : "sentence",
+        "requiresEmbeddings" : false,
+        "tradeoffs" : [
+          "slower"
+        ]
+      }
+    ]
+  },
+  "StrategyInfo" : {
+    "bestFor" : [
+      "prose"
+    ],
+    "description" : "Splits on sentence boundaries",
+    "displayName" : "Sentence",
+    "name" : "sentence",
+    "requiresEmbeddings" : false,
+    "tradeoffs" : [
+      "slower"
+    ]
+  },
+  "StrategyResult" : {
+    "chunks" : [
+      {
+        "content" : "Hello world.",
+        "headings" : [
+          "Intro"
+        ],
+        "index" : 0,
+        "isCodeBlock" : false,
+        "language" : "scala",
+        "length" : 12
+      }
+    ],
+    "stats" : {
+      "avgChunkSize" : 12.0,
+      "chunkCount" : 1,
+      "estimatedTokens" : 3,
+      "maxChunkSize" : 12,
+      "minChunkSize" : 12,
+      "totalLength" : 12
+    },
+    "strategy" : "sentence",
+    "warnings" : [
+      {
+        "level" : "info",
+        "message" : "Short document",
+        "suggestion" : "Use smaller chunks"
+      }
+    ]
+  },
+  "UsageInfo" : {
+    "completionTokens" : 80,
+    "promptTokens" : 1200,
+    "totalTokens" : 1280
+  }
+}
