@@ -27,6 +27,11 @@ External ingesters allow you to push documents to RAG in a Box from any source -
 - **Incremental sync**: Only process changed documents
 - **Content hashing**: Skip unchanged documents automatically
 
+The built-in URL and web-crawler ingestion only fetches public addresses (see
+[Ingestion policy](configuration.md#ingestion-policy-allowed-directories-and-urls)). An external
+ingester is the way to index intranet systems: it runs with its own network access and pushes
+the content.
+
 ## Sync API Pattern
 
 ### 1. Get Current Document States

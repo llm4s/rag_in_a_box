@@ -415,8 +415,9 @@ object AppConfig {
         // Load from config file first, then merge with environment variables
         val configIngestion = IngestionConfig.fromConfig(config)
         val envIngestion = IngestionConfig.fromEnv()
-        // Env takes precedence if configured
-        if (envIngestion.enabled) envIngestion else configIngestion
+        // Env takes precedence if configured; the policy (allowed roots, URL rules) applies either way
+        (if (envIngestion.enabled) envIngestion else configIngestion)
+          .copy(policy = IngestionConfig.policyFromConfig(config))
       },
       security = SecurityConfig(
         apiKey = getOptionalString(config, "security.api-key"),

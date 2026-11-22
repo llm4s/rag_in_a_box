@@ -2,13 +2,13 @@ package org.llm4s.ragbox.ingestion
 
 import cats.effect.{IO, Ref, Resource}
 import cats.syntax.all._
-import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadResult}
+import org.llm4s.error.NetworkError
+import org.llm4s.rag.loader.{CrawlerConfig, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadResult}
 import org.llm4s.rag.loader.s3.S3Loader
 import org.llm4s.ragbox.service.RAGService
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 
-import java.io.File
 import java.sql.{DriverManager, ResultSet}
 import java.time.Instant
 import java.util.Properties
@@ -69,6 +69,11 @@ final case class IngestionAlreadyRunning()
  *
  * Only one run of the configured sources happens at a time: [[runAll]] and [[runSource]] fail
  * with [[IngestionAlreadyRunning]] while a run is in progress.
+ *
+ * '''Ingestion policy.''' Directories are read only under the allowed roots
+ * ([[IngestionConfig.allowedRoots]]), and the walk never follows a symlink out of the directory.
+ * URLs must be http(s), on an allowed host, and resolve to public addresses ([[UrlPolicy]]).
+ * The one-shot methods fail with [[IngestionRequestRejected]] when a request breaks the policy.
  */
 class IngestionService(
   ragService: RAGService,
@@ -76,6 +81,9 @@ class IngestionService(
 ) {
 
   private val logger = LoggerFactory.getLogger(getClass)
+
+  private val pathPolicy = new PathPolicy(config.allowedRoots)
+  private val urlPolicy = new UrlPolicy(config.policy.url)
 
   private val status: Ref[IO, IngestionStatus] = Ref.unsafe(
     IngestionStatus(
@@ -194,14 +202,13 @@ class IngestionService(
     IO.realTimeInstant.flatMap { startTime =>
       val run = source match {
         case dir: DirectorySourceConfig =>
-          syncSource(dir.name, dir.name, "directory", directoryLoader(dir), removeUnlisted = true, startTime)
+          directoryLoader(dir).flatMap(syncSource(dir.name, dir.name, "directory", _, removeUnlisted = true, startTime))
         case url: UrlSourceConfig =>
-          val loader = UrlLoader(urls = url.urls, metadata = url.metadata + ("source" -> url.name))
-          syncSource(url.name, url.name, "url", loader, removeUnlisted = false, startTime)
+          urlSourceLoader(url).flatMap(syncSource(url.name, url.name, "url", _, removeUnlisted = false, startTime))
         case db: DatabaseSourceConfig =>
           runDatabaseIngestion(db, startTime)
         case web: WebCrawlerSourceConfig =>
-          syncSource(web.name, web.name, "web", webLoader(web), removeUnlisted = true, startTime)
+          webLoader(web).flatMap(syncSource(web.name, web.name, "web", _, removeUnlisted = true, startTime))
         case s3: S3SourceConfig =>
           syncSource(s3.name, s3.name, "s3", IngestionService.s3Loader(s3), removeUnlisted = true, startTime)
       }
@@ -216,19 +223,78 @@ class IngestionService(
     case _: S3SourceConfig => "s3"
   }
 
-  private def directoryLoader(config: DirectorySourceConfig): DocumentLoader =
-    DirectoryLoader(
-      path = new File(config.path).toPath,
-      extensions = config.extensions,
-      recursive = config.recursive,
-      metadata = config.metadata + ("source" -> config.name),
-      maxDepth = config.maxDepth
+  /**
+   * A loader for the directory at `path`, if the policy allows it: under an allowed root, with
+   * valid patterns. Fails with [[IngestionRequestRejected]] otherwise.
+   */
+  private def confinedDirectoryLoader(
+    path: String,
+    patterns: Set[String],
+    recursive: Boolean,
+    metadata: Map[String, String],
+    maxDepth: Int
+  ): IO[DocumentLoader] =
+    IO.blocking {
+      for {
+        extensions <- PathPolicy.checkPatterns(patterns)
+        allowed <- pathPolicy.checkDirectory(path)
+      } yield ConfinedDirectoryLoader(allowed.path, allowed.real, extensions, recursive, metadata, maxDepth)
+    }.flatMap(_.fold(reason => IO.raiseError(IngestionRequestRejected(reason)), loader => IO.pure(loader)))
+
+  private def directoryLoader(config: DirectorySourceConfig): IO[DocumentLoader] =
+    confinedDirectoryLoader(
+      config.path,
+      config.patterns,
+      config.recursive,
+      config.metadata + ("source" -> config.name),
+      config.maxDepth
     )
 
-  /** Crawls websites from the seed URLs; sync is incremental by URL and content hash. */
-  private def webLoader(config: WebCrawlerSourceConfig): DocumentLoader =
+  /** Check each URL against the policy: the allowed ones, and a failure for each refused one. */
+  private def partitionUrls(urls: Seq[String]): IO[(Seq[String], Seq[(String, String)])] =
+    IO.blocking {
+      urls.partitionMap(url => urlPolicy.check(url).left.map(url -> _).map(_ => url)).swap
+    }
+
+  private def refusals(refused: Seq[(String, String)], documentIds: Boolean): DocumentLoader =
+    FixedResultsLoader(refused.map { case (url, reason) =>
+      logger.warn(s"Ingestion policy refused URL '$url': $reason")
+      val error = NetworkError(s"Refused by ingestion policy: $reason", None, "ingestion-policy")
+      // Naming the document keeps its previously ingested version
+      if (documentIds) LoadResult.failure(url, error, documentId = url) else LoadResult.failure(url, error)
+    })
+
+  /** The configured URLs the policy allows; each refused one is reported as a failure. */
+  private def urlSourceLoader(config: UrlSourceConfig): IO[DocumentLoader] =
+    partitionUrls(config.urls).map { case (allowed, refused) =>
+      UrlLoader(urls = allowed, metadata = config.metadata + ("source" -> config.name)) ++
+        refusals(refused, documentIds = true)
+    }
+
+  /**
+   * Crawls websites from the seed URLs the policy allows; sync is incremental by URL and content
+   * hash. llm4s checks the address of every page and redirect it fetches; pages on hosts outside
+   * the allowed hosts list are skipped (and so removed if previously ingested).
+   */
+  private def webLoader(config: WebCrawlerSourceConfig): IO[DocumentLoader] =
+    partitionUrls(config.seedUrls).flatMap { case (allowed, refused) =>
+      if (allowed.isEmpty)
+        IO.raiseError(IngestionRequestRejected(
+          refused.headOption.fold("No seed URLs configured")(r => s"Seed URL refused by ingestion policy: ${r._2}")
+        ))
+      else
+        IO.pure(FilteredLoader(crawler(config, allowed), hostFilter) ++ refusals(refused, documentIds = false))
+    }
+
+  private def hostFilter(success: LoadResult.Success): LoadResult = {
+    val url = success.document.metadata.getOrElse("url", success.document.id)
+    if (urlPolicy.urlHostAllowed(url)) success
+    else LoadResult.skipped(url, "Host is not in the allowed hosts list")
+  }
+
+  private def crawler(config: WebCrawlerSourceConfig, seedUrls: Seq[String]): DocumentLoader =
     WebCrawlerLoader(
-      seedUrls = config.seedUrls,
+      seedUrls = seedUrls,
       config = CrawlerConfig(
         maxDepth = config.maxDepth,
         maxPages = config.maxPages,
@@ -363,13 +429,9 @@ class IngestionService(
     metadata: Map[String, String] = Map.empty
   ): IO[IngestionResult] =
     IO.realTimeInstant.flatMap { startTime =>
-      val loader = DirectoryLoader(
-        path = new File(path).toPath,
-        extensions = patterns.map(_.stripPrefix("*.").stripPrefix(".")),
-        recursive = recursive,
-        metadata = metadata + ("source" -> "api")
-      )
-      syncSource(s"api:directory:$path", path, "directory", loader, removeUnlisted = true, startTime)
+      confinedDirectoryLoader(path, patterns, recursive, metadata + ("source" -> "api"), maxDepth = 10).flatMap {
+        loader => syncSource(s"api:directory:$path", path, "directory", loader, removeUnlisted = true, startTime)
+      }
     }
 
   /**
@@ -380,8 +442,15 @@ class IngestionService(
     metadata: Map[String, String] = Map.empty
   ): IO[IngestionResult] =
     IO.realTimeInstant.flatMap { startTime =>
-      val loader = UrlLoader(urls = urls, metadata = metadata + ("source" -> "api"))
-      syncSource("api:url", "url-ingest", "url", loader, removeUnlisted = false, startTime)
+      for {
+        _ <- IO.raiseWhen(urls.isEmpty)(IngestionRequestRejected("At least one URL is required"))
+        checked <- partitionUrls(urls)
+        _ <- checked._2.headOption.traverse_ { case (url, reason) =>
+          IO.raiseError(IngestionRequestRejected(s"URL '${url.take(UrlPolicy.MaxUrlLength)}' refused: $reason"))
+        }
+        loader = UrlLoader(urls = urls, metadata = metadata + ("source" -> "api"))
+        result <- syncSource("api:url", "url-ingest", "url", loader, removeUnlisted = false, startTime)
+      } yield result
     }
 
   /** The result of a source run that failed as a whole. */

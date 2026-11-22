@@ -147,8 +147,17 @@ final case class IngestionConfig(
   enabled: Boolean = false,
   runOnStartup: Boolean = false,
   schedule: Option[String] = None, // Cron expression
-  sources: Seq[SourceConfig] = Seq.empty
-)
+  sources: Seq[SourceConfig] = Seq.empty,
+  policy: IngestionPolicyConfig = IngestionPolicyConfig()
+) {
+
+  /**
+   * The directories directory ingestion may read under: `policy.allowedRoots` when configured,
+   * otherwise the paths of the configured directory sources (so `INGEST_DIR`, when set).
+   */
+  def allowedRoots: Seq[String] =
+    policy.allowedRoots.getOrElse(sources.collect { case d: DirectorySourceConfig => d.path })
+}
 
 object IngestionConfig {
 
@@ -178,7 +187,33 @@ object IngestionConfig {
       enabled = enabled,
       runOnStartup = runOnStartup,
       schedule = schedule,
-      sources = sources
+      sources = sources,
+      policy = policyFromConfig(config)
+    )
+  }
+
+  /**
+   * Load the ingestion policy (allowed roots, URL restrictions) from Typesafe Config.
+   *
+   * `ingestion.allowed-roots` and `ingestion.url.allowed-hosts` are lists or comma-separated
+   * strings; a blank value means "not set".
+   */
+  def policyFromConfig(config: Config): IngestionPolicyConfig = {
+    def list(path: String): Option[Seq[String]] =
+      if (!config.hasPath(path)) None
+      else
+        Try(config.getStringList(path).asScala.toSeq)
+          .orElse(Try(config.getString(path).split(",").toSeq))
+          .toOption
+          .map(_.map(_.trim).filter(_.nonEmpty))
+          .filter(_.nonEmpty)
+
+    IngestionPolicyConfig(
+      allowedRoots = list("ingestion.allowed-roots"),
+      url = UrlPolicyConfig(
+        allowedHosts = list("ingestion.url.allowed-hosts").getOrElse(Seq.empty),
+        allowPrivateNetworks = Try(config.getBoolean("ingestion.url.allow-private-networks")).getOrElse(false)
+      )
     )
   }
 

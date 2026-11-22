@@ -379,6 +379,10 @@ curl -X POST http://localhost:8080/api/v1/ingest/directory \
   }'
 ```
 
+The path must be under an allowed root (`INGEST_ALLOWED_ROOTS`, default `INGEST_DIR`); URLs must
+be public http(s) addresses. Refused requests get `400`. See
+[Ingestion policy](docs/guide/configuration.md#ingestion-policy-allowed-directories-and-urls).
+
 ### URL Ingestion
 
 Ingest documents from URLs:
