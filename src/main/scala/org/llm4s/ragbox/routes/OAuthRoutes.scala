@@ -10,7 +10,6 @@ import org.http4s.headers.{Location, `Set-Cookie`, `WWW-Authenticate`}
 import org.http4s.Challenge
 import org.llm4s.ragbox.auth.*
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs.given
 
 /**
  * HTTP routes for OAuth2/OIDC authentication.
@@ -169,9 +168,9 @@ class OAuthRoutes(
         Forbidden(ErrorResponse("forbidden", s"Login rejected: $msg").asJson)
 
       case Left(error) =>
-        InternalServerError(
-          ErrorResponse.internalError(s"Authentication failed: ${error.message}").asJson
-        )
+        // Provider or network failure: logged, not shown (it can carry the provider's response)
+        IO(OAuthRoutes.logger.error(s"OAuth callback failed: ${error.message}")) *>
+          InternalServerError(ErrorResponse.internalError("Authentication failed").asJson)
 
   private def createPreAuthCookie(browserBinding: String): ResponseCookie =
     ResponseCookie(
@@ -218,6 +217,8 @@ class OAuthRoutes(
     )
 
 object OAuthRoutes:
+
+  private val logger = org.slf4j.LoggerFactory.getLogger("org.llm4s.ragbox.routes.OAuthRoutes")
 
   /** Where the callback sends the browser when there is no (safe) `redirect_after`. */
   val DefaultRedirect = "/admin/"

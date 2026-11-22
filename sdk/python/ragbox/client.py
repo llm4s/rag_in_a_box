@@ -395,8 +395,15 @@ class RagBoxClient:
         Returns:
             List of document IDs
         """
-        response = self._request("GET", "/api/v1/sync/documents")
-        return response.json().get("documentIds", [])
+        ids: List[str] = []
+        page = 1
+        while True:
+            response = self._request("GET", "/api/v1/sync/documents", params={"page": page})
+            body = response.json()
+            ids.extend(doc["id"] for doc in body.get("documents", []))
+            if not body.get("hasMore"):
+                return ids
+            page += 1
 
     # ============================================================
     # Health & Config Operations

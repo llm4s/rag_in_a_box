@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 import java.time.Instant
 
 // ============================================================
@@ -70,7 +72,7 @@ final case class SuggestionEvidence(
   threshold: Double,
   sampleSize: Int,
   timeRange: String
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Optimization Suggestion
@@ -105,7 +107,7 @@ final case class OptimizationSuggestion(
   currentValue: Option[String],
   suggestedValue: Option[String],
   createdAt: Instant
-)
+) derives Codec.AsObject
 
 // ============================================================
 // API Response Models
@@ -124,7 +126,7 @@ final case class SuggestionsResponse(
   analyzedQueries: Int,
   analyzedCollections: Int,
   analysisTimestamp: Instant
-)
+) derives Codec.AsObject
 
 /**
  * Summary of suggestions by severity.
@@ -135,7 +137,7 @@ final case class SuggestionsSummary(
   infoCount: Int,
   total: Int,
   topIssues: Seq[String]
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Internal Analysis Models
@@ -154,7 +156,7 @@ final case class CollectionMetrics(
   ratedQueryCount: Int,
   zeroResultQueries: Int,
   p95LatencyMs: Int
-)
+) derives Codec.AsObject
 
 /**
  * Global metrics summary for analysis.
@@ -169,7 +171,7 @@ final case class GlobalMetrics(
   zeroResultQueries: Int,
   p95LatencyMs: Int,
   collectionMetrics: Seq[CollectionMetrics]
-)
+) derives Codec.AsObject
 
 /**
  * Current configuration snapshot for analysis.
@@ -181,4 +183,4 @@ final case class ConfigSnapshot(
   topK: Int,
   embeddingProvider: String,
   embeddingModel: String
-)
+) derives Codec.AsObject

@@ -10,7 +10,6 @@ import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.config.{RuntimeConfigManager, RuntimeSettings}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{CollectionConfigRegistry, DocumentRegistry}
 
 /**

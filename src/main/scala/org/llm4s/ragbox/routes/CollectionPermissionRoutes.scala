@@ -6,6 +6,7 @@ import io.circe.syntax._
 import io.circe.{Decoder, Encoder}
 import io.circe.generic.semiauto._
 import org.http4s._
+import org.llm4s.error.ValidationError
 import org.llm4s.ragbox.auth.{PermissionContext, Principal}
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
@@ -13,13 +14,18 @@ import org.http4s.dsl.io._
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model.ErrorResponse
-import org.llm4s.ragbox.model.Codecs._
+import org.llm4s.ragbox.service.{ConflictError, InvalidRequestError, RAGService}
+import org.llm4s.types.Result
 
 /**
  * HTTP routes for collection management with permission controls.
  *
  * Provides CRUD operations for the hierarchical collection structure
  * with queryableBy permissions via the LLM4S CollectionStore.
+ *
+ * `GET /api/v1/collections` itself is defined once, in [[DocumentRoutes]]: the names of the
+ * collections that have documents. The collections with their permissions are listed by
+ * `GET /api/v1/collections/accessible`.
  */
 object CollectionPermissionRoutes {
 
@@ -81,97 +87,55 @@ object CollectionPermissionRoutes {
     )
 
   /**
-   * Resolve external principal IDs to PrincipalIds.
+   * A CollectionStore call (JDBC) on the blocking pool. llm4s reports what the request got wrong
+   * (an existing or missing collection, a bad parent) as a `ValidationError`: a 400. Any other
+   * store error is a server error.
    */
-  private def resolvePrincipals(
-    externalIds: Seq[String],
-    principals: PrincipalStore
-  ): IO[Set[PrincipalId]] =
-    externalIds.toList.traverse { extId =>
-      IO.fromEither(
-        ExternalPrincipal.parse(extId)
-          .flatMap(principals.getOrCreate)
-          .left.map(e => new RuntimeException(s"Failed to resolve principal '$extId': ${e.message}"))
-      )
-    }.map(_.toSet)
+  private def store[A](call: => Result[A]): IO[A] =
+    IO.blocking(call).flatMap {
+      case Right(a) => IO.pure(a)
+      case Left(e: ValidationError) => IO.raiseError(InvalidRequestError(e.message))
+      case Left(e) => IO.raiseError(new RuntimeException(e.message))
+    }
+
+  private def parsePath(path: String): IO[CollectionPath] =
+    IO.fromEither(CollectionPath.create(path).left.map(e => InvalidRequestError(s"Invalid collection path '$path': ${e.message}")))
+
+  /** Run `f` with the `pattern` parameter (all collections when absent), or 400 if it is invalid. */
+  private def withPattern(pattern: Option[String])(f: CollectionPattern => IO[Response[IO]]): IO[Response[IO]] =
+    pattern.traverse(p => CollectionPattern.parse(p).left.map(e => s"Invalid collection pattern '$p': ${e.message}")) match {
+      case Left(message) => BadRequest(ErrorResponse.badRequest(message).asJson)
+      case Right(parsed) => f(parsed.getOrElse(CollectionPattern.All))
+    }
 
   // Creating and deleting collections and changing their permissions is admin-only; reads are filtered.
   def routes(collectionStore: CollectionStore, principalStore: PrincipalStore): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.mutating(req) && Authz.under("/api/v1/collections")(req))(AuthedRoutes.of[Principal, IO] {
 
-    // POST /api/v1/collections - Create collection
-    case (req @ POST -> Root / "api" / "v1" / "collections") as principal =>
+    // POST /api/v1/collections - Create collection (409 if it exists)
+    case (req @ POST -> Root / "api" / "v1" / "collections") as _ =>
       for {
         body <- req.as[CreateCollectionRequest]
-        path <- IO.fromEither(
-          CollectionPath.create(body.path)
-            .left.map(e => new RuntimeException(e.message))
-        )
-        queryableBy <- body.queryableBy match {
-          case Some(ids) => resolvePrincipals(ids, principalStore)
-          case None => IO.pure(Set.empty[PrincipalId])
-        }
-        config = CollectionConfig(
+        path <- parsePath(body.path)
+        existing <- store(collectionStore.get(path))
+        _ <- IO.raiseWhen(existing.isDefined)(ConflictError(s"Collection '${path.value}' already exists"))
+        queryableBy <- RAGService.resolvePrincipals(body.queryableBy.getOrElse(Nil), principalStore)
+        created <- store(collectionStore.create(CollectionConfig(
           path = path,
           queryableBy = queryableBy,
           isLeaf = body.isLeaf.getOrElse(true),
           metadata = body.metadata.getOrElse(Map.empty)
-        )
-        result <- IO.fromEither(
-          collectionStore.create(config)
-            .left.map(e => new RuntimeException(e.message))
-        ).attempt
-        response <- result match {
-          case Right(coll) =>
-            Created(toResponse(coll).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to create collection",
-              Some(e.getMessage)
-            ).asJson)
-        }
+        )))
+        response <- Created(toResponse(created).asJson)
       } yield response
 
-    // GET /api/v1/collections - List collections (with optional pattern filter)
-    case GET -> Root / "api" / "v1" / "collections" :? PatternParam(patternOpt) as principal =>
-      val pattern = patternOpt
-        .flatMap(p => CollectionPattern.parse(p).toOption)
-        .getOrElse(CollectionPattern.All)
-
-      for {
-        result <- visibleCollections(collectionStore, principalStore, principal, pattern).attempt
-        response <- result match {
-          case Right(collections) =>
-            Ok(CollectionListResponse(collections.map(toResponse)).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to list collections",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
-
-    // GET /api/v1/collections/accessible - List collections accessible to current user
+    // GET /api/v1/collections/accessible?pattern= - The collections the caller may query, with
+    // their permissions (administrators: all of them)
     case GET -> Root / "api" / "v1" / "collections" / "accessible" :? PatternParam(patternOpt) as principal =>
-      val pattern = patternOpt
-        .flatMap(p => CollectionPattern.parse(p).toOption)
-        .getOrElse(CollectionPattern.All)
-
-      for {
-        auth <- PermissionContext.authorization(principal, principalStore)
-        result <- IO.fromEither(
-          collectionStore.findAccessible(auth, pattern)
-            .left.map(e => new RuntimeException(e.message))
-        ).attempt
-        response <- result match {
-          case Right(collections) =>
-            Ok(CollectionListResponse(collections.map(toResponse)).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to list accessible collections",
-              Some(e.getMessage)
-            ).asJson)
+      withPattern(patternOpt) { pattern =>
+        visibleCollections(collectionStore, principalStore, principal, pattern).flatMap { collections =>
+          Ok(CollectionListResponse(collections.map(toResponse)).asJson)
         }
-      } yield response
+      }
 
     // GET /api/v1/collections/:path - Get collection by path
     // Note: path can contain slashes, so we match the remainder
@@ -188,16 +152,28 @@ object CollectionPermissionRoutes {
       ifVisible(collectionStore, principalStore, principal, path)(getCollection(collectionStore, path))
 
     // PUT /api/v1/collections/:path/permissions - Update collection permissions
-    case (req @ PUT -> Root / "api" / "v1" / "collections" / path / "permissions") as principal =>
-      updateCollectionPermissions(req, collectionStore, principalStore, path)
+    case (req @ PUT -> Root / "api" / "v1" / "collections" / pathStr / "permissions") as _ =>
+      for {
+        body <- req.as[UpdatePermissionsRequest]
+        path <- parsePath(pathStr)
+        queryableBy <- RAGService.resolvePrincipals(body.queryableBy, principalStore)
+        updated <- store(collectionStore.updatePermissions(path, queryableBy))
+        response <- Ok(toResponse(updated).asJson)
+      } yield response
 
     // DELETE /api/v1/collections/:path - Delete collection
-    case DELETE -> Root / "api" / "v1" / "collections" / path as principal =>
-      deleteCollection(collectionStore, path)
+    case DELETE -> Root / "api" / "v1" / "collections" / pathStr as _ =>
+      parsePath(pathStr).flatMap(path => store(collectionStore.delete(path))) *> NoContent()
 
     // GET /api/v1/collections/:path/stats - Get collection statistics
-    case GET -> Root / "api" / "v1" / "collections" / path / "stats" as principal =>
-      ifVisible(collectionStore, principalStore, principal, path)(getCollectionStats(collectionStore, path))
+    case GET -> Root / "api" / "v1" / "collections" / pathStr / "stats" as principal =>
+      ifVisible(collectionStore, principalStore, principal, pathStr) {
+        for {
+          path <- parsePath(pathStr)
+          stats <- store(collectionStore.stats(path))
+          response <- Ok(CollectionStatsResponse(path = pathStr, documentCount = stats.documentCount, chunkCount = stats.chunkCount).asJson)
+        } yield response
+      }
   })
 
   /**
@@ -210,10 +186,10 @@ object CollectionPermissionRoutes {
     principal: Principal,
     pattern: CollectionPattern
   ): IO[Seq[Collection]] =
-    if (principal.isAdmin) IO.fromEither(collectionStore.list(pattern).left.map(e => new RuntimeException(e.message)))
+    if (principal.isAdmin) store(collectionStore.list(pattern))
     else
       PermissionContext.authorization(principal, principalStore).flatMap { auth =>
-        IO.fromEither(collectionStore.findAccessible(auth, pattern).left.map(e => new RuntimeException(e.message)))
+        store(collectionStore.findAccessible(auth, pattern))
       }.map(_.filter(c => principal.canAccessCollection(c.path.value)))
 
   /** Run `operation` if `principal` may see collection `path`, else 404 (existence is not revealed). */
@@ -232,98 +208,11 @@ object CollectionPermissionRoutes {
 
   private def getCollection(collectionStore: CollectionStore, pathStr: String): IO[Response[IO]] =
     for {
-      path <- IO.fromEither(
-        CollectionPath.create(pathStr)
-          .left.map(e => new RuntimeException(e.message))
-      )
-      result <- IO.fromEither(
-        collectionStore.get(path)
-          .left.map(e => new RuntimeException(e.message))
-      ).attempt
-      response <- result match {
-        case Right(Some(coll)) =>
-          Ok(toResponse(coll).asJson)
-        case Right(None) =>
-          NotFound(ErrorResponse.notFound(s"Collection not found: $pathStr").asJson)
-        case Left(e) =>
-          InternalServerError(ErrorResponse.internalError(
-            "Failed to get collection",
-            Some(e.getMessage)
-          ).asJson)
-      }
-    } yield response
-
-  private def updateCollectionPermissions(
-    req: Request[IO],
-    collectionStore: CollectionStore,
-    principalStore: PrincipalStore,
-    pathStr: String
-  ): IO[Response[IO]] =
-    for {
-      body <- req.as[UpdatePermissionsRequest]
-      path <- IO.fromEither(
-        CollectionPath.create(pathStr)
-          .left.map(e => new RuntimeException(e.message))
-      )
-      queryableBy <- resolvePrincipals(body.queryableBy, principalStore)
-      result <- IO.fromEither(
-        collectionStore.updatePermissions(path, queryableBy)
-          .left.map(e => new RuntimeException(e.message))
-      ).attempt
-      response <- result match {
-        case Right(coll) =>
-          Ok(toResponse(coll).asJson)
-        case Left(e) =>
-          InternalServerError(ErrorResponse.internalError(
-            "Failed to update permissions",
-            Some(e.getMessage)
-          ).asJson)
-      }
-    } yield response
-
-  private def deleteCollection(collectionStore: CollectionStore, pathStr: String): IO[Response[IO]] =
-    for {
-      path <- IO.fromEither(
-        CollectionPath.create(pathStr)
-          .left.map(e => new RuntimeException(e.message))
-      )
-      result <- IO.fromEither(
-        collectionStore.delete(path)
-          .left.map(e => new RuntimeException(e.message))
-      ).attempt
-      response <- result match {
-        case Right(_) =>
-          NoContent()
-        case Left(e) =>
-          InternalServerError(ErrorResponse.internalError(
-            "Failed to delete collection",
-            Some(e.getMessage)
-          ).asJson)
-      }
-    } yield response
-
-  private def getCollectionStats(collectionStore: CollectionStore, pathStr: String): IO[Response[IO]] =
-    for {
-      path <- IO.fromEither(
-        CollectionPath.create(pathStr)
-          .left.map(e => new RuntimeException(e.message))
-      )
-      result <- IO.fromEither(
-        collectionStore.stats(path)
-          .left.map(e => new RuntimeException(e.message))
-      ).attempt
-      response <- result match {
-        case Right(stats) =>
-          Ok(CollectionStatsResponse(
-            path = pathStr,
-            documentCount = stats.documentCount,
-            chunkCount = stats.chunkCount
-          ).asJson)
-        case Left(e) =>
-          InternalServerError(ErrorResponse.internalError(
-            "Failed to get collection stats",
-            Some(e.getMessage)
-          ).asJson)
+      path <- parsePath(pathStr)
+      collection <- store(collectionStore.get(path))
+      response <- collection match {
+        case Some(coll) => Ok(toResponse(coll).asJson)
+        case None => NotFound(ErrorResponse.notFound(s"Collection not found: $pathStr").asJson)
       }
     } yield response
 }

@@ -4,7 +4,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import io.circe.syntax._
 import io.circe.parser._
-import org.llm4s.ragbox.model.Codecs._
 import java.time.Instant
 
 class ApiModelsSpec extends AnyFlatSpec with Matchers {

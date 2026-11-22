@@ -8,7 +8,6 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.implicits._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{ExperimentRegistry, QueryLogRegistry}
 import org.llm4s.ragbox.routes.{ExperimentRoutes, QueryRoutes}
 import org.llm4s.ragbox.service.{ExperimentService, RAGService}
@@ -37,7 +36,7 @@ class ExperimentIntegrationSpec extends AnyFlatSpec with Matchers with PgVectorF
       for {
         logs <- QueryLogRegistry(live.dataSource)
         registry <- ExperimentRegistry(live.dataSource)
-      } yield Stack(live, logs, ExperimentService(registry, logs, live.dataSource))
+      } yield Stack(live, logs, ExperimentService(registry, live.dataSource))
     }
 
   private def ingestAnimals(service: RAGService): IO[Unit] =

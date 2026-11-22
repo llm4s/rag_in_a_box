@@ -14,7 +14,6 @@ import org.http4s.dsl.io._
 import org.http4s.headers.`Content-Type`
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase, QueryLogging}
 import org.llm4s.ragbox.service.{Llm4sPipeline, RAGService}
 
@@ -28,12 +27,7 @@ import java.util.UUID
 object ChatRoutes {
 
   // Query parameter extractor for includeArchived
-  object IncludeArchivedParam extends OptionalQueryParamDecoderMatcher[Boolean]("includeArchived")
-  object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
-  object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
-
-  private def clamp(value: Option[Int], default: Int, max: Int): Int =
-    math.min(math.max(value.getOrElse(default), 0), max)
+  object IncludeArchivedParam extends Params.Validating[Boolean]("includeArchived")
 
   /**
    * The session, if `principal` may see it: its owner, or any administrator. Sessions created
@@ -76,37 +70,38 @@ object ChatRoutes {
 
     // GET /api/v1/chat/sessions?limit=&offset= - List sessions, most recently updated first.
     // `total` is the number of sessions, across all pages.
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) +& LimitParam(limit) +& OffsetParam(offset) as principal =>
-      val archived = includeArchived.getOrElse(false)
-      for {
-        sessions <- chatRegistry.listSessions(
-          archived,
-          clamp(limit, ChatSessionRegistry.DefaultSessionLimit, ChatSessionRegistry.MaxSessionLimit),
-          math.max(offset.getOrElse(0), 0),
-          ownerFilter(principal)
-        )
-        total <- chatRegistry.countSessions(archived, ownerFilter(principal))
-        response <- Ok(ChatSessionListResponse(sessions, total).asJson)
-      } yield response
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" :? IncludeArchivedParam(includeArchived) +& Params.Limit(limit) +& Params.Offset(offset) as principal =>
+      Params.withValid((Params.opt(includeArchived), Params.opt(limit), Params.opt(offset)).tupled) { case (includeArchived, limit, offset) =>
+        val archived = includeArchived.getOrElse(false)
+        for {
+          sessions <- chatRegistry.listSessions(
+            archived,
+            Params.limit(limit, ChatSessionRegistry.DefaultSessionLimit, ChatSessionRegistry.MaxSessionLimit),
+            Params.offset(offset),
+            ownerFilter(principal)
+          )
+          total <- chatRegistry.countSessions(archived, ownerFilter(principal))
+          response <- Ok(ChatSessionListResponse(sessions, total).asJson)
+        } yield response
+      }
 
     // GET /api/v1/chat/sessions/:id?limit=&offset= - Get session with its latest messages
-    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? LimitParam(limit) +& OffsetParam(offset) as principal =>
-      for {
-        sessionOpt <- visibleSession(chatRegistry, principal, id)
-        response <- sessionOpt match {
+    case GET -> Root / "api" / "v1" / "chat" / "sessions" / id :? Params.Limit(limit) +& Params.Offset(offset) as principal =>
+      Params.withValid((Params.opt(limit), Params.opt(offset)).tupled) { case (limit, offset) =>
+        visibleSession(chatRegistry, principal, id).flatMap {
           case Some(session) =>
             for {
               messages <- chatRegistry.getMessages(
                 id,
-                clamp(limit, ChatSessionRegistry.DefaultMessageLimit, ChatSessionRegistry.MaxMessageLimit),
-                math.max(offset.getOrElse(0), 0)
+                Params.limit(limit, ChatSessionRegistry.DefaultMessageLimit, ChatSessionRegistry.MaxMessageLimit),
+                Params.offset(offset)
               )
               resp <- Ok(ChatSessionDetailResponse(session, messages).asJson)
             } yield resp
           case None =>
             NotFound(ErrorResponse.notFound(s"Session '$id' not found").asJson)
         }
-      } yield response
+      }
 
     // PUT /api/v1/chat/sessions/:id - Update session
     case (req @ PUT -> Root / "api" / "v1" / "chat" / "sessions" / id) as principal =>
@@ -177,15 +172,7 @@ object ChatRoutes {
               startTime <- IO.realTimeInstant
 
               // Execute RAG query
-              queryResult <- ((ragService.hasPermissions, ragService.principals) match {
-                case (true, Some(principals)) =>
-                  for {
-                    auth <- PermissionContext.authorization(principal, principals)
-                    response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
-                  } yield response
-                case _ =>
-                  ragService.chatAnswer(body.content, history, permissions = None, topK = None)
-              }).attempt
+              queryResult <- ragService.chatAs(principal, body.content, history, session.collectionPattern).attempt
 
               endTime <- IO.realTimeInstant
               totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
@@ -214,13 +201,8 @@ object ChatRoutes {
                   } yield result
 
                 case Left(e) =>
-                  val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
-                  } else {
-                    Option(e.getMessage).getOrElse("Query failed")
-                  }
-
                   for {
+                    errorMessage <- ErrorHandling.clientMessage(e, "Query failed")
                     // Add error message
                     errorAssistant <- chatRegistry.addMessage(
                       sessionId = sessionId,
@@ -288,15 +270,7 @@ object ChatRoutes {
 
                 // Execute query and stream results
                 val queryStream = Stream.eval {
-                  ((ragService.hasPermissions, ragService.principals) match {
-                    case (true, Some(principals)) =>
-                      for {
-                        auth <- PermissionContext.authorization(principal, principals)
-                        response <- ragService.chatAnswer(body.content, history, Some(auth -> session.collectionPattern), topK = None)
-                      } yield response
-                    case _ =>
-                      ragService.chatAnswer(body.content, history, permissions = None, topK = None)
-                  }).attempt
+                  ragService.chatAs(principal, body.content, history, session.collectionPattern).attempt
                 }.flatMap {
                   case Right(queryResponse) =>
                     // Stream contexts
@@ -340,22 +314,15 @@ object ChatRoutes {
                     contextEvents ++ answerEvent ++ usageEvent ++ completeEvent ++ saveEffect
 
                   case Left(e) =>
-                    val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                      "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
-                    } else {
-                      Option(e.getMessage).getOrElse("Unknown error")
+                    // Report the error, then save it as the reply
+                    Stream.eval(ErrorHandling.clientMessage(e, "Query failed")).flatMap { errorMessage =>
+                      Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces)) ++
+                        Stream.eval(chatRegistry.addMessage(
+                          sessionId = sessionId,
+                          role = "assistant",
+                          content = s"$ErrorReplyPrefix $errorMessage"
+                        )).drain
                     }
-
-                    // Save error message
-                    val saveError = Stream.eval {
-                      chatRegistry.addMessage(
-                        sessionId = sessionId,
-                        role = "assistant",
-                        content = s"$ErrorReplyPrefix $errorMessage"
-                      )
-                    }.drain
-
-                    Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces)) ++ saveError
                 }
 
                 Stream.emit(startEvent) ++ queryStream

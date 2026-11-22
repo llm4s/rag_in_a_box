@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 import java.time.Instant
 
 /**
@@ -29,7 +31,7 @@ final case class ChatSession(
   updatedAt: Instant,
   isArchived: Boolean = false,
   ownerId: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * A single chat message stored in the database.
@@ -56,7 +58,7 @@ final case class ChatMessageRecord(
   queryLogId: Option[String] = None,
   createdAt: Instant,
   messageIndex: Int
-)
+) derives Codec.AsObject
 
 /**
  * Request to create a new chat session.
@@ -64,7 +66,7 @@ final case class ChatMessageRecord(
 final case class CreateChatSessionRequest(
   title: Option[String] = None,
   collectionPattern: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response after creating a chat session.
@@ -72,7 +74,7 @@ final case class CreateChatSessionRequest(
 final case class CreateChatSessionResponse(
   session: ChatSession,
   message: String
-)
+) derives Codec.AsObject
 
 /**
  * Request to update a chat session.
@@ -81,7 +83,7 @@ final case class UpdateChatSessionRequest(
   title: Option[String] = None,
   collectionPattern: Option[String] = None,
   isArchived: Option[Boolean] = None
-)
+) derives Codec.AsObject
 
 /**
  * List response for chat sessions.
@@ -89,7 +91,7 @@ final case class UpdateChatSessionRequest(
 final case class ChatSessionListResponse(
   sessions: Seq[ChatSession],
   total: Int
-)
+) derives Codec.AsObject
 
 /**
  * Response for a chat session with all its messages.
@@ -97,21 +99,21 @@ final case class ChatSessionListResponse(
 final case class ChatSessionDetailResponse(
   session: ChatSession,
   messages: Seq[ChatMessageRecord]
-)
+) derives Codec.AsObject
 
 /**
  * Request to send a message in a chat session.
  */
 final case class SendChatMessageRequest(
   content: String
-)
+) derives Codec.AsObject
 
 /**
  * Request to rate a chat message.
  */
 final case class RateChatMessageRequest(
   rating: Int
-)
+) derives Codec.AsObject
 
 /**
  * Response for chat operations.
@@ -119,4 +121,4 @@ final case class RateChatMessageRequest(
 final case class ChatOperationResponse(
   success: Boolean,
   message: String
-)
+) derives Codec.AsObject

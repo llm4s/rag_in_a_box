@@ -12,7 +12,6 @@ import org.http4s.headers.`Content-Type`
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{QueryLogRegistryBase, QueryLogging}
 import org.llm4s.ragbox.service.{ExperimentService, InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
@@ -60,21 +59,8 @@ object QueryRoutes {
               endTime <- IO.realTimeInstant
               _ <- logOutcome(queryLogRegistry, body.question, collectionPattern, userId,
                 (endTime.toEpochMilli - startTime.toEpochMilli).toInt, plan, result)
-              resp <- result match {
-                case Right(queryResponse) =>
-                  Ok(queryResponse.asJson)
-                case Left(e: InvalidRequestError) =>
-                  BadRequest(ErrorResponse.badRequest(e.message).asJson)
-                case Left(e) if e.getMessage != null && e.getMessage.contains("LLM client required") =>
-                  BadRequest(ErrorResponse.configError(
-                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
-                  ).asJson)
-                case Left(e) =>
-                  InternalServerError(ErrorResponse.internalError(
-                    "Query failed",
-                    Option(e.getMessage)
-                  ).asJson)
-              }
+              // A failure is answered by ErrorHandling (400 invalid / no LLM, else a generic 500)
+              resp <- IO.fromEither(result).flatMap(queryResponse => Ok(queryResponse.asJson))
             } yield resp
         }
       } yield response
@@ -90,34 +76,8 @@ object QueryRoutes {
           .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
-            val searchIO = (ragService.hasPermissions, ragService.principals) match {
-              // Permission-aware search when SearchIndex is available
-              case (true, Some(principals)) =>
-                for {
-                  auth <- PermissionContext.authorization(principal, principals)
-                  collectionPattern = body.collection.getOrElse("*")
-                  response <- ragService.searchWithPermissions(
-                    query = body.query,
-                    auth = auth,
-                    collectionPattern = collectionPattern,
-                    topK = body.topK
-                  )
-                } yield response
-              // Fall back to legacy search (no permissions)
-              case _ =>
-                ragService.search(body.query, body.topK)
-            }
-            searchIO.attempt.flatMap {
-              case Right(searchResponse) =>
-                Ok(searchResponse.asJson)
-              case Left(e: InvalidRequestError) =>
-                BadRequest(ErrorResponse.badRequest(e.message).asJson)
-              case Left(e) =>
-                InternalServerError(ErrorResponse.internalError(
-                  "Search failed",
-                  Option(e.getMessage)
-                ).asJson)
-            }
+            ragService.searchAs(principal, body.query, body.collection.getOrElse("*"), body.topK)
+              .flatMap(searchResponse => Ok(searchResponse.asJson))
         }
       } yield response
 
@@ -176,12 +136,9 @@ object QueryRoutes {
                   contextEvents ++ answerEvent ++ usageEvent ++ completeEvent
 
                 case Left(e) =>
-                  val errorMessage = if (e.getMessage != null && e.getMessage.contains("LLM client required")) {
-                    "LLM not available. Set LLM_MODEL to a registered provider and its API key; the server log says why it could not be built."
-                  } else {
-                    Option(e.getMessage).getOrElse("Unknown error")
+                  Stream.eval(ErrorHandling.clientMessage(e, "Query failed")).map { message =>
+                    formatSSE("error", QueryErrorEvent("query_failed", message).asJson.noSpaces)
                   }
-                  Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces))
               }
 
               Stream.emit(startEvent) ++ queryStream
@@ -252,15 +209,7 @@ object QueryRoutes {
     collectionPattern: String,
     plan: QueryPlan
   ): IO[QueryResponse] =
-    (ragService.hasPermissions, ragService.principals) match {
-      case (true, Some(principals)) =>
-        PermissionContext.authorization(principal, principals).flatMap { auth =>
-          ragService.queryWithPermissionsAndAnswer(question, auth, collectionPattern, plan.topK, plan.overrides)
-        }
-      // Fall back to legacy query (no permissions)
-      case _ =>
-        ragService.queryWithAnswer(question, plan.topK, plan.overrides)
-    }
+    ragService.answer(principal, question, collectionPattern, plan.topK, plan.overrides)
 
   /**
    * Log a query's outcome: answered with its metrics, or failed - so experiment results count

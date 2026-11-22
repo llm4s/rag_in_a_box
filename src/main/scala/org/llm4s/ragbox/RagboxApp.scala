@@ -55,13 +55,16 @@ final class RagboxApp private (
 
   /**
    * The complete HTTP app: public routes, then every other route behind the [[authenticator]].
+   * Errors any route raises are turned into responses by [[ErrorHandling]].
    * Outside the authenticator, from the inside out: rate limits (so failed authentication is
    * limited too), the request-size limit, CORS, request logging (credentials redacted) and the
    * removal of untrusted identity headers.
    */
   def httpApp(wsb: WebSocketBuilder2[IO]): HttpApp[IO] = {
-    val all: HttpRoutes[IO] =
+    // Errors raised by any route (or the authenticator) become ErrorResponses here
+    val all: HttpRoutes[IO] = ErrorHandling(
       routes.public <+> authenticator(Authz.tokenAllowlist(routes.authed <+> WebSocketRoutes.routes(wsb, hub)))
+    )
 
     val limited = RequestSizeMiddleware(RequestSizeMiddleware.Config(
       maxBodySize = config.production.requestSize.maxBodySizeBytes,
@@ -149,7 +152,7 @@ object RagboxApp {
       chunkingService = ChunkingService(config, runtimeConfigManager)
       suggestionService = SuggestionService(queryLogRegistry, config, runtimeConfigManager)
       experimentRegistry <- Resource.eval(ExperimentRegistry(pool))
-      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, pool)
+      experimentService = ExperimentService(experimentRegistry, pool)
       chatSessionRegistry <- Resource.eval(ChatSessionRegistry(pool))
       oidc <- oidcComponents(config, pool, ragService, oidcHttpClient)
       limiters <- Resource.eval(RateLimitMiddleware.createLimiters(RateLimitMiddleware.Config.from(config.production.rateLimit)))

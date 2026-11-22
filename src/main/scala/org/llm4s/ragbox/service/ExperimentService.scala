@@ -3,7 +3,7 @@ package org.llm4s.ragbox.service
 import cats.effect.IO
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.db.ConnectionPool
-import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry, QueryLogRegistryBase}
+import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry}
 
 import java.time.{Duration, Instant}
 import javax.sql.DataSource
@@ -40,7 +40,6 @@ final case class InvalidExperimentError(errors: Seq[String]) extends RuntimeExce
  */
 class ExperimentService(
   experimentRegistry: ExperimentRegistry,
-  queryLogRegistry: QueryLogRegistryBase,
   dataSource: DataSource
 ) {
 
@@ -388,23 +387,6 @@ object ExperimentService {
   /**
    * Create an experiment service.
    */
-  def apply(
-    experimentRegistry: ExperimentRegistry,
-    queryLogRegistry: QueryLogRegistryBase,
-    dataSource: DataSource
-  ): ExperimentService = {
-    new ExperimentService(experimentRegistry, queryLogRegistry, dataSource)
-  }
-
-  /**
-   * Create and initialize an experiment service with its dependencies.
-   */
-  def create(
-    dataSource: DataSource,
-    queryLogRegistry: QueryLogRegistryBase
-  ): IO[ExperimentService] = {
-    for {
-      registry <- ExperimentRegistry(dataSource)
-    } yield new ExperimentService(registry, queryLogRegistry, dataSource)
-  }
+  def apply(experimentRegistry: ExperimentRegistry, dataSource: DataSource): ExperimentService =
+    new ExperimentService(experimentRegistry, dataSource)
 }

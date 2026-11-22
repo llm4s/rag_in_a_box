@@ -80,8 +80,11 @@ object IngestionEvent {
  * Raised when an ingestion run is requested while another is still in progress.
  * The ingestion routes map it to 409 Conflict.
  */
-final case class IngestionAlreadyRunning()
-    extends RuntimeException("An ingestion run is already in progress")
+final case class IngestionAlreadyRunning() extends RuntimeException(IngestionAlreadyRunning.Message)
+
+object IngestionAlreadyRunning {
+  val Message: String = "An ingestion run is already in progress"
+}
 
 /**
  * Service for managing document ingestion from configured sources.

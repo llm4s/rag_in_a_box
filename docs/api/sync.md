@@ -33,6 +33,13 @@ GET /api/v1/sync/documents
 |-----------|------|-------------|
 | `include` | string | Comma-separated fields to include: `hash`, `updatedAt` |
 | `since` | ISO-8601 | Only return documents modified after this timestamp |
+| `page` | integer | 1-based page (default 1) |
+| `pageSize` | integer | Documents per page (default 1000, max 10000) |
+
+The listing is paged. Without `page`/`pageSize` the first 1000 documents are returned, which is
+every document of most installations; when `hasMore` is true, request the next `page`. `total`
+counts every matching document. Documents are ordered by indexing time (by update time with
+`since`), so pages are stable while nothing changes.
 
 ### Examples
 
@@ -65,7 +72,10 @@ curl "http://localhost:8080/api/v1/sync/documents?since=2024-01-15T00:00:00Z&inc
       "collection": "confluence"
     }
   ],
-  "total": 2
+  "total": 2,
+  "page": 1,
+  "pageSize": 1000,
+  "hasMore": false
 }
 ```
 

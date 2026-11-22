@@ -9,7 +9,6 @@ import org.http4s.circe._
 import org.http4s.implicits._
 import org.llm4s.rag.permissions.{CollectionConfig, CollectionPath}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.routes.CollectionConfigRoutes
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.ragbox.testkit.{FakeLLM, PgVectorFixture}

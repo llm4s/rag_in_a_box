@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
 import org.llm4s.ragbox.auth.Principal
@@ -8,7 +9,6 @@ import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry}
 import org.llm4s.ragbox.service.{ExperimentNotFoundError, ExperimentService, ExperimentStateError, InvalidExperimentError}
 
@@ -26,8 +26,6 @@ import org.llm4s.ragbox.service.{ExperimentNotFoundError, ExperimentService, Exp
 object ExperimentRoutes {
 
   object StatusQueryParam extends OptionalQueryParamDecoderMatcher[String]("status")
-  object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
-  object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
 
   /** The response for an operation's failure: 404, 409 or 400, with the operation response shape. */
   private val operationError: PartialFunction[Throwable, IO[Response[IO]]] = {
@@ -57,21 +55,23 @@ object ExperimentRoutes {
       } yield response
 
     // GET /api/v1/experiments?status=&limit=&offset= - List experiments, newest first
-    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) +& LimitParam(limit) +& OffsetParam(offset) as principal =>
-      status.map(s => ExperimentStatus.fromString(s).toRight(s)) match {
-        case Some(Left(unknown)) =>
-          BadRequest(ErrorResponse.badRequest(
-            s"Unknown status '$unknown'. Use one of: ${ExperimentStatus.values.map(_.value).mkString(", ")}"
-          ).asJson)
-        case parsed =>
-          for {
-            experiments <- experimentService.listExperiments(
-              parsed.flatMap(_.toOption),
-              math.min(math.max(limit.getOrElse(ExperimentRegistry.DefaultListLimit), 0), ExperimentRegistry.MaxListLimit),
-              math.max(offset.getOrElse(0), 0)
-            )
-            response <- Ok(experiments.asJson)
-          } yield response
+    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) +& Params.Limit(limit) +& Params.Offset(offset) as _ =>
+      Params.withValid((Params.opt(limit), Params.opt(offset)).tupled) { case (limit, offset) =>
+        status.map(s => ExperimentStatus.fromString(s).toRight(s)) match {
+          case Some(Left(unknown)) =>
+            BadRequest(ErrorResponse.badRequest(
+              s"Unknown status '$unknown'. Use one of: ${ExperimentStatus.values.map(_.value).mkString(", ")}"
+            ).asJson)
+          case parsed =>
+            for {
+              experiments <- experimentService.listExperiments(
+                parsed.flatMap(_.toOption),
+                Params.limit(limit, ExperimentRegistry.DefaultListLimit, ExperimentRegistry.MaxListLimit),
+                Params.offset(offset)
+              )
+              response <- Ok(experiments.asJson)
+            } yield response
+        }
       }
 
     // GET /api/v1/experiments/running - Get the currently running experiment

@@ -16,7 +16,6 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
 import org.llm4s.ragbox.testkit.{MockRAGService, InMemoryQueryLogRegistry, TestFixtures}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
 
@@ -132,7 +131,7 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
   }
 
   it should "return error when query fails" in {
-    mockService.setError(new RuntimeException("Query failed"))
+    mockService.setError(new RuntimeException("relation \"query_secrets\" does not exist"))
 
     val body = """{"question": "What is RAG?"}"""
     val request = Request[IO](Method.POST, uri"/api/v1/query")
@@ -144,7 +143,9 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     response.status shouldBe Status.InternalServerError
 
     val responseBody = response.as[String].unsafeRunSync()
-    responseBody should include("Query failed")
+    // A generic 500: the exception's text is logged, never sent
+    responseBody should include("internal_error")
+    responseBody should not include "query_secrets"
 
     mockService.clearError()
   }
@@ -211,7 +212,7 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
   }
 
   it should "return error when search fails" in {
-    mockService.setError(new RuntimeException("Search failed"))
+    mockService.setError(new RuntimeException("relation \"search_secrets\" does not exist"))
 
     val body = """{"query": "RAG"}"""
     val request = Request[IO](Method.POST, uri"/api/v1/search")
@@ -223,7 +224,8 @@ class QueryRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     response.status shouldBe Status.InternalServerError
 
     val responseBody = response.as[String].unsafeRunSync()
-    responseBody should include("Search failed")
+    responseBody should include("internal_error")
+    responseBody should not include "search_secrets"
 
     mockService.clearError()
   }

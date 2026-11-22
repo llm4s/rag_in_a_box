@@ -9,7 +9,6 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.ingestion.{IngestionAlreadyRunning, IngestionRequestRejected, IngestionService, DirectorySourceConfig, UrlSourceConfig, DatabaseSourceConfig, WebCrawlerSourceConfig, S3SourceConfig}
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for document ingestion.
@@ -27,87 +26,33 @@ object IngestionRoutes {
   def routes(ingestionService: IngestionService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/ingest"))(AuthedRoutes.of[Principal, IO] {
 
     // POST /api/v1/ingest/directory - One-shot directory ingestion
-    case (req @ POST -> Root / "api" / "v1" / "ingest" / "directory") as principal =>
-      for {
-        body <- req.as[DirectoryIngestRequest]
-        result <- ingestionService.ingestDirectory(
+    case (req @ POST -> Root / "api" / "v1" / "ingest" / "directory") as _ =>
+      req.as[DirectoryIngestRequest].flatMap { body =>
+        ingestionService.ingestDirectory(
           path = body.path,
           patterns = body.patterns.map(_.toSet).getOrElse(Set("*.md", "*.txt", "*.pdf")),
           recursive = body.recursive.getOrElse(true),
           metadata = body.metadata.getOrElse(Map.empty)
-        ).attempt
-        response <- result match {
-          case Right(ingestionResult) =>
-            val resp = toIngestResponse(ingestionResult)
-            if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
-          case Left(IngestionRequestRejected(reason)) =>
-            BadRequest(ErrorResponse.badRequest(reason).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to ingest directory",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+        ).flatMap(resultResponse).recoverWith(rejected)
+      }
 
     // POST /api/v1/ingest/url - One-shot URL ingestion
-    case (req @ POST -> Root / "api" / "v1" / "ingest" / "url") as principal =>
-      for {
-        body <- req.as[UrlIngestRequest]
-        result <- ingestionService.ingestUrls(
-          urls = body.urls,
-          metadata = body.metadata.getOrElse(Map.empty)
-        ).attempt
-        response <- result match {
-          case Right(ingestionResult) =>
-            val resp = toIngestResponse(ingestionResult)
-            if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
-          case Left(IngestionRequestRejected(reason)) =>
-            BadRequest(ErrorResponse.badRequest(reason).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to ingest URLs",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+    case (req @ POST -> Root / "api" / "v1" / "ingest" / "url") as _ =>
+      req.as[UrlIngestRequest].flatMap { body =>
+        ingestionService.ingestUrls(urls = body.urls, metadata = body.metadata.getOrElse(Map.empty))
+          .flatMap(resultResponse).recoverWith(rejected)
+      }
 
     // POST /api/v1/ingest/run - Run all configured sources
-    case POST -> Root / "api" / "v1" / "ingest" / "run" as principal =>
-      for {
-        results <- ingestionService.runAll().attempt
-        response <- results match {
-          case Right(ingestionResults) =>
-            Ok(ingestionResults.map(toIngestResponse).asJson)
-          case Left(e: IngestionAlreadyRunning) =>
-            Conflict(ErrorResponse("conflict", e.getMessage).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to run ingestion",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+    case POST -> Root / "api" / "v1" / "ingest" / "run" as _ =>
+      ingestionService.runAll().flatMap(results => Ok(results.map(toIngestResponse).asJson)).recoverWith(rejected)
 
     // POST /api/v1/ingest/run/:source - Run specific source
-    case POST -> Root / "api" / "v1" / "ingest" / "run" / sourceName as principal =>
-      for {
-        result <- ingestionService.runSource(sourceName).attempt
-        response <- result match {
-          case Right(Some(ingestionResult)) =>
-            val resp = toIngestResponse(ingestionResult)
-            if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
-          case Right(None) =>
-            NotFound(ErrorResponse.notFound(s"Source '$sourceName' not found").asJson)
-          case Left(e: IngestionAlreadyRunning) =>
-            Conflict(ErrorResponse("conflict", e.getMessage).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              s"Failed to run source '$sourceName'",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+    case POST -> Root / "api" / "v1" / "ingest" / "run" / sourceName as _ =>
+      ingestionService.runSource(sourceName).flatMap {
+        case Some(result) => resultResponse(result)
+        case None => NotFound(ErrorResponse.notFound(s"Source '$sourceName' not found").asJson)
+      }.recoverWith(rejected)
 
     // GET /api/v1/ingest/status - Get ingestion status
     case GET -> Root / "api" / "v1" / "ingest" / "status" as principal =>
@@ -130,6 +75,18 @@ object IngestionRoutes {
         response <- Ok(sources.map(toSourceInfo).asJson)
       } yield response
   })
+
+  /** 200 with the result, or 500 with it when the run failed as a whole. */
+  private def resultResponse(result: org.llm4s.ragbox.ingestion.IngestionResult): IO[Response[IO]] = {
+    val resp = toIngestResponse(result)
+    if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
+  }
+
+  /** A request the ingestion policy refuses (400), or a run while one is in progress (409). */
+  private val rejected: PartialFunction[Throwable, IO[Response[IO]]] = {
+    case IngestionRequestRejected(reason) => BadRequest(ErrorResponse.badRequest(reason).asJson)
+    case _: IngestionAlreadyRunning => Conflict(ErrorResponse("conflict", IngestionAlreadyRunning.Message).asJson)
+  }
 
   private def toIngestResponse(result: org.llm4s.ragbox.ingestion.IngestionResult): IngestResponse =
     IngestResponse(

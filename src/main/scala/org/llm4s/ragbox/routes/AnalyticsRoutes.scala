@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
 import org.llm4s.ragbox.auth.Principal
@@ -8,13 +9,9 @@ import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
-import org.http4s.QueryParamDecoder
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
-
-import java.time.Instant
-import java.time.format.DateTimeParseException
+import org.llm4s.ragbox.routes.Params.{opt, withValid, From, Page, PageSize, Paging, To}
 
 /**
  * HTTP routes for query analytics.
@@ -24,21 +21,11 @@ import java.time.format.DateTimeParseException
  */
 object AnalyticsRoutes {
 
-  // Custom decoder for Instant
-  implicit val instantQueryParamDecoder: QueryParamDecoder[Instant] =
-    QueryParamDecoder[String].emap { str =>
-      try Right(Instant.parse(str))
-      catch {
-        case _: DateTimeParseException =>
-          Left(ParseFailure(s"Invalid timestamp format: $str", s"Expected ISO-8601 format like 2024-01-01T00:00:00Z"))
-      }
-    }
-
-  object FromParam extends OptionalQueryParamDecoderMatcher[Instant]("from")
-  object ToParam extends OptionalQueryParamDecoderMatcher[Instant]("to")
   object CollectionParam extends OptionalQueryParamDecoderMatcher[String]("collection")
-  object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
-  object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
+
+  /** Default and maximum page sizes of GET /analytics/queries. */
+  val DefaultPageSize: Int = 50
+  val MaxPageSize: Int = 100
 
   // Query analytics contain every user's query text: admin-only. POST /feedback stays open to any authenticated caller.
   def routes(queryLogRegistry: QueryLogRegistryBase): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/analytics"))(AuthedRoutes.of[Principal, IO] {
@@ -46,98 +33,56 @@ object AnalyticsRoutes {
     // GET /api/v1/analytics/queries - List query logs with pagination
     // Query params: from, to, collection, page, pageSize
     case GET -> Root / "api" / "v1" / "analytics" / "queries"
-        :? FromParam(fromOpt) +& ToParam(toOpt) +& CollectionParam(collOpt)
-        +& PageParam(pageOpt) +& PageSizeParam(pageSizeOpt) as principal =>
-      for {
-        result <- queryLogRegistry.list(
-          from = fromOpt,
-          to = toOpt,
-          collection = collOpt,
-          page = pageOpt.getOrElse(1),
-          pageSize = pageSizeOpt.getOrElse(50).min(100)  // Cap at 100
-        ).attempt
-        response <- result match {
-          case Right((queries, total)) =>
-            Ok(QueryLogListResponse(
-              queries = queries,
-              total = total,
-              page = pageOpt.getOrElse(1),
-              pageSize = pageSizeOpt.getOrElse(50).min(100)
-            ).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to list queries",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+        :? From(fromOpt) +& To(toOpt) +& CollectionParam(collOpt)
+        +& Page(pageOpt) +& PageSize(pageSizeOpt) as _ =>
+      withValid((opt(fromOpt), opt(toOpt), opt(pageOpt), opt(pageSizeOpt)).tupled) { case (from, to, page, pageSize) =>
+        val paging = Paging(page, pageSize, DefaultPageSize, MaxPageSize)
+        queryLogRegistry.list(from = from, to = to, collection = collOpt, page = paging.page, pageSize = paging.pageSize)
+          .flatMap { case (queries, total) =>
+            Ok(QueryLogListResponse(queries = queries, total = total, page = paging.page, pageSize = paging.pageSize).asJson)
+          }
+      }
 
     // GET /api/v1/analytics/queries/summary - Get analytics summary
     // Query params: from, to (defaults to last 7 days)
     case GET -> Root / "api" / "v1" / "analytics" / "queries" / "summary"
-        :? FromParam(fromOpt) +& ToParam(toOpt) as principal =>
-      for {
-        now <- IO.realTimeInstant
-        from = fromOpt.getOrElse(now.minusSeconds(7 * 24 * 3600)) // Default: last 7 days
-        to = toOpt.getOrElse(now)
-        result <- queryLogRegistry.getSummary(from, to).attempt
-        response <- result match {
-          case Right(summary) =>
-            Ok(summary.asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to get analytics summary",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+        :? From(fromOpt) +& To(toOpt) as _ =>
+      withValid((opt(fromOpt), opt(toOpt)).tupled) { case (fromParam, toParam) =>
+        for {
+          now <- IO.realTimeInstant
+          from = fromParam.getOrElse(now.minusSeconds(7 * 24 * 3600)) // Default: last 7 days
+          to = toParam.getOrElse(now)
+          summary <- queryLogRegistry.getSummary(from, to)
+          response <- Ok(summary.asJson)
+        } yield response
+      }
 
-    // GET /api/v1/analytics/queries/:id - Get single query log
-    case GET -> Root / "api" / "v1" / "analytics" / "queries" / id as principal =>
-      for {
-        result <- queryLogRegistry.get(id).attempt
-        response <- result match {
-          case Right(Some(entry)) =>
-            Ok(entry.asJson)
-          case Right(None) =>
-            NotFound(ErrorResponse.notFound(s"Query $id not found").asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              s"Failed to get query $id",
-              Some(e.getMessage)
-            ).asJson)
+    // GET /api/v1/analytics/queries/:id - Get single query log (ids are UUIDs)
+    case GET -> Root / "api" / "v1" / "analytics" / "queries" / id as _ =>
+      Params.withUuid(id, s"Query $id not found") { uuid =>
+        queryLogRegistry.get(uuid.toString).flatMap {
+          case Some(entry) => Ok(entry.asJson)
+          case None => NotFound(ErrorResponse.notFound(s"Query $id not found").asJson)
         }
-      } yield response
+      }
 
     // POST /api/v1/feedback - Submit feedback for a query
-    case (req @ POST -> Root / "api" / "v1" / "feedback") as principal =>
-      for {
-        body <- req.as[QueryFeedbackRequest]
-        result <- (
-          if (body.rating < 1 || body.rating > 5) {
-            IO.pure(Left(new IllegalArgumentException("Rating must be between 1 and 5")))
-          } else {
+    case (req @ POST -> Root / "api" / "v1" / "feedback") as _ =>
+      req.as[QueryFeedbackRequest].flatMap { body =>
+        if (body.rating < 1 || body.rating > 5)
+          BadRequest(ErrorResponse.badRequest("Rating must be between 1 and 5").asJson)
+        else
+          Params.withUuid(body.queryId, s"Query ${body.queryId} not found") { uuid =>
             queryLogRegistry.addFeedback(
-              queryId = body.queryId,
+              queryId = uuid.toString,
               rating = body.rating,
               relevantChunks = body.relevantChunks,
               comment = body.comment
-            ).map(Right(_))
+            ).flatMap {
+              case true => Ok(QueryFeedbackResponse(success = true, message = "Feedback recorded").asJson)
+              case false => NotFound(ErrorResponse.notFound(s"Query ${body.queryId} not found").asJson)
+            }
           }
-        ).attempt.map(_.flatten)
-        response <- result match {
-          case Right(true) =>
-            Ok(QueryFeedbackResponse(success = true, message = "Feedback recorded").asJson)
-          case Right(false) =>
-            NotFound(ErrorResponse.notFound(s"Query ${body.queryId} not found").asJson)
-          case Left(e: IllegalArgumentException) =>
-            BadRequest(ErrorResponse.badRequest(e.getMessage).asJson)
-          case Left(e) =>
-            InternalServerError(ErrorResponse.internalError(
-              "Failed to submit feedback",
-              Some(e.getMessage)
-            ).asJson)
-        }
-      } yield response
+      }
   })
 }

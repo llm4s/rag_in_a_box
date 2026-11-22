@@ -17,6 +17,10 @@ import java.time.Instant
 
 class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
 
+  /** Query log ids are UUIDs. */
+  private val QueryId = "8f14e45f-ceea-467f-a0e6-2d5c3c3b7a11"
+
+
   // Mock query log registry for testing
   private class MockQueryLogRegistry extends QueryLogRegistryBase {
     private var logs = Map[String, QueryLogEntry]()
@@ -142,7 +146,7 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
   }
 
   private val sampleEntry = QueryLogEntry(
-    id = "query-1",
+    id = QueryId,
     queryText = "What is RAG?",
     collectionPattern = Some("docs"),
     userId = Some("user-1"),
@@ -240,13 +244,13 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
     val (routes, registry) = createRoutes()
     registry.addEntry(sampleEntry)
 
-    val request = Request[IO](Method.GET, uri"/api/v1/analytics/queries/query-1")
+    val request = Request[IO](Method.GET, Uri.unsafeFromString(s"/api/v1/analytics/queries/$QueryId"))
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
     response.status shouldBe Status.Ok
     val body = response.as[String].unsafeRunSync()
     body should include("What is RAG?")
-    body should include("query-1")
+    body should include(QueryId)
   }
 
   it should "return 404 for non-existent query" in {
@@ -262,7 +266,7 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
     val (routes, registry) = createRoutes()
     registry.addEntry(sampleEntry)
 
-    val requestBody = """{"queryId": "query-1", "rating": 5, "comment": "Great answer!"}"""
+    val requestBody = s"""{"queryId": "$QueryId", "rating": 5, "comment": "Great answer!"}"""
     val request = Request[IO](Method.POST, uri"/api/v1/feedback")
       .withEntity(requestBody)
       .withContentType(headers.`Content-Type`(MediaType.application.json))
@@ -278,7 +282,7 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
     val (routes, registry) = createRoutes()
     registry.addEntry(sampleEntry)
 
-    val requestBody = """{"queryId": "query-1", "rating": 10}"""
+    val requestBody = s"""{"queryId": "$QueryId", "rating": 10}"""
     val request = Request[IO](Method.POST, uri"/api/v1/feedback")
       .withEntity(requestBody)
       .withContentType(headers.`Content-Type`(MediaType.application.json))
@@ -301,5 +305,18 @@ class AnalyticsRoutesSpec extends AnyFlatSpec with Matchers {
     val response = routes.orNotFound.run(request).unsafeRunSync()
 
     response.status shouldBe Status.NotFound
+  }
+
+  "GET /api/v1/analytics/queries/{id}" should "answer 404 for an id that is not a UUID, without querying the database" in {
+    val (routes, _) = createRoutes()
+    val response = routes.orNotFound.run(Request[IO](Method.GET, uri"/api/v1/analytics/queries/not-a-uuid")).unsafeRunSync()
+    response.status shouldBe Status.NotFound
+  }
+
+  "GET /api/v1/analytics/queries?page=abc" should "answer 400 for a malformed query parameter" in {
+    val (routes, _) = createRoutes()
+    val response = routes.orNotFound.run(Request[IO](Method.GET, uri"/api/v1/analytics/queries?page=abc")).unsafeRunSync()
+    response.status shouldBe Status.BadRequest
+    response.as[String].unsafeRunSync() should include("page")
   }
 }

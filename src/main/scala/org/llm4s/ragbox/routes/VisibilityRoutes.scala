@@ -1,13 +1,13 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
 import org.llm4s.ragbox.auth.Principal
 import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.service.RAGService
 
 /**
@@ -18,9 +18,9 @@ import org.llm4s.ragbox.service.RAGService
  */
 object VisibilityRoutes {
 
-  // Query parameter extractors
-  object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
-  object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
+  /** Default and maximum page sizes of GET /visibility/chunks. */
+  val DefaultPageSize: Int = 50
+  val MaxPageSize: Int = 500
 
   // Visibility exposes raw chunk text of every document regardless of permissions: admin-only.
   def routes(ragService: RAGService): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(Authz.under("/api/v1/visibility"))(AuthedRoutes.of[Principal, IO] {
@@ -34,11 +34,11 @@ object VisibilityRoutes {
 
     // GET /api/v1/visibility/chunks - List all chunks (paginated)
     case GET -> Root / "api" / "v1" / "visibility" / "chunks"
-        :? PageParam(page) +& PageSizeParam(pageSize) as principal =>
-      for {
-        result <- ragService.listChunks(page.getOrElse(1), pageSize.getOrElse(50))
-        response <- Ok(result.asJson)
-      } yield response
+        :? Params.Page(page) +& Params.PageSize(pageSize) as _ =>
+      Params.withValid((Params.opt(page), Params.opt(pageSize)).tupled) { case (page, pageSize) =>
+        val paging = Params.Paging(page, pageSize, DefaultPageSize, MaxPageSize)
+        ragService.listChunks(paging.page, paging.pageSize).flatMap(result => Ok(result.asJson))
+      }
 
     // GET /api/v1/visibility/chunks/{docId} - Get all chunks for a document
     case GET -> Root / "api" / "v1" / "visibility" / "chunks" / docId as principal =>

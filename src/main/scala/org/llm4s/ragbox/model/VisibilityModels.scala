@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 import java.time.Instant
 
 /**
@@ -19,7 +21,7 @@ final case class ChangeabilityInfo(
   requiresReindex: Boolean,
   affectsNewDocsOnly: Boolean,
   description: String
-)
+) derives Codec.AsObject
 
 object ChangeabilityInfo {
   val hot: ChangeabilityInfo = ChangeabilityInfo(
@@ -54,7 +56,7 @@ final case class ConfigSetting(
   name: String,
   value: String,
   changeability: ChangeabilityInfo
-)
+) derives Codec.AsObject
 
 /**
  * Embedding configuration details for visibility API.
@@ -64,7 +66,7 @@ final case class VisibilityEmbeddingConfig(
   model: String,
   dimensions: Option[Int],
   changeability: ChangeabilityInfo
-)
+) derives Codec.AsObject
 
 /**
  * LLM configuration details for visibility API.
@@ -73,7 +75,7 @@ final case class VisibilityLLMConfig(
   model: String,
   temperature: Double,
   changeability: ChangeabilityInfo
-)
+) derives Codec.AsObject
 
 /**
  * Detailed RAG configuration with changeability annotations.
@@ -88,7 +90,7 @@ final case class DetailedRAGConfigInfo(
   systemPrompt: Option[String],
   searchMode: String = "hybrid",
   limitations: Seq[String] = Seq.empty
-)
+) derives Codec.AsObject
 
 /**
  * Database configuration for visibility (no credentials exposed).
@@ -99,7 +101,7 @@ final case class VisibilityDatabaseConfig(
   database: String,
   tableName: String,
   connected: Boolean
-)
+) derives Codec.AsObject
 
 /**
  * Summary of what's configurable at runtime.
@@ -108,7 +110,7 @@ final case class RuntimeConfigurableInfo(
   hotSettings: Seq[String],   // Can change immediately
   warmSettings: Seq[String],  // Can change for new documents
   coldSettings: Seq[String]   // Require restart/full re-index
-)
+) derives Codec.AsObject
 
 /**
  * Complete detailed configuration response.
@@ -119,7 +121,7 @@ final case class DetailedConfigResponse(
   rag: DetailedRAGConfigInfo,
   database: VisibilityDatabaseConfig,
   runtimeConfigurable: RuntimeConfigurableInfo
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Chunk Visibility
@@ -134,7 +136,7 @@ final case class ChunkMetadataInfo(
   language: Option[String],
   startOffset: Option[Int],
   endOffset: Option[Int]
-)
+) derives Codec.AsObject
 
 /**
  * Information about a single chunk.
@@ -147,7 +149,7 @@ final case class ChunkInfo(
   contentLength: Int,
   metadata: Map[String, String],
   chunkMetadata: ChunkMetadataInfo
-)
+) derives Codec.AsObject
 
 /**
  * Paginated list of chunks.
@@ -158,7 +160,7 @@ final case class ChunkListResponse(
   page: Int,
   pageSize: Int,
   hasMore: Boolean
-)
+) derives Codec.AsObject
 
 /**
  * Snapshot of chunking configuration used for a document.
@@ -168,7 +170,7 @@ final case class ChunkConfigSnapshot(
   targetSize: Int,
   maxSize: Int,
   overlap: Int
-)
+) derives Codec.AsObject
 
 /**
  * All chunks for a specific document.
@@ -180,7 +182,7 @@ final case class DocumentChunksResponse(
   chunkCount: Int,
   chunks: Seq[ChunkInfo],
   chunkingConfig: ChunkConfigSnapshot
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Statistics Visibility
@@ -193,7 +195,7 @@ final case class SizeBucket(
   rangeStart: Int,
   rangeEnd: Int,
   count: Int
-)
+) derives Codec.AsObject
 
 /**
  * Distribution of chunk sizes.
@@ -205,7 +207,7 @@ final case class ChunkSizeDistribution(
   median: Double,
   p90: Double,
   buckets: Seq[SizeBucket]
-)
+) derives Codec.AsObject
 
 /**
  * Detailed statistics for a collection.
@@ -217,7 +219,7 @@ final case class DetailedCollectionStats(
   avgChunksPerDoc: Double,
   avgChunkSize: Double,
   chunkingStrategy: Option[String]
-)
+) derives Codec.AsObject
 
 /**
  * Detailed system statistics.
@@ -233,7 +235,7 @@ final case class DetailedStatsResponse(
   indexedSince: Option[Instant],
   lastIngestion: Option[Instant],
   currentConfig: ChunkConfigSnapshot
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Collection Visibility
@@ -248,7 +250,7 @@ final case class CollectionChunkingInfo(
   maxSize: Option[Int],
   overlap: Option[Int],
   fileTypeStrategies: Map[String, String]
-)
+) derives Codec.AsObject
 
 /**
  * Effective configuration after merging with defaults.
@@ -259,7 +261,7 @@ final case class EffectiveChunkingInfo(
   maxSize: Int,
   overlap: Int,
   source: String  // "collection", "default", or "file-type"
-)
+) derives Codec.AsObject
 
 /**
  * Collection details with chunking configuration.
@@ -270,7 +272,7 @@ final case class CollectionDetailInfo(
   chunkCount: Int,
   customConfig: Option[CollectionChunkingInfo],
   effectiveConfig: EffectiveChunkingInfo
-)
+) derives Codec.AsObject
 
 /**
  * List of all collections with their configurations.
@@ -278,4 +280,4 @@ final case class CollectionDetailInfo(
 final case class CollectionsResponse(
   collections: Seq[CollectionDetailInfo],
   defaultConfig: EffectiveChunkingInfo
-)
+) derives Codec.AsObject

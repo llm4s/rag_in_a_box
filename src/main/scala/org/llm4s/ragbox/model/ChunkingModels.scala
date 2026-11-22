@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 /**
  * Models for the Chunking Preview API.
  *
@@ -27,7 +29,7 @@ final case class ChunkingPreviewRequest(
   maxSize: Option[Int] = None,
   overlap: Option[Int] = None,
   filename: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * A chunk from a preview operation.
@@ -39,7 +41,7 @@ final case class PreviewChunk(
   headings: Seq[String],
   isCodeBlock: Boolean,
   language: Option[String]
-)
+) derives Codec.AsObject
 
 /**
  * Statistics about a chunking preview.
@@ -51,7 +53,7 @@ final case class ChunkingStats(
   minChunkSize: Int,
   maxChunkSize: Int,
   estimatedTokens: Int
-)
+) derives Codec.AsObject
 
 /**
  * Warnings or suggestions about chunking.
@@ -60,7 +62,7 @@ final case class ChunkingWarning(
   level: String,  // "info", "warning", "error"
   message: String,
   suggestion: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from a chunking preview.
@@ -71,7 +73,7 @@ final case class ChunkingPreviewResponse(
   chunks: Seq[PreviewChunk],
   stats: ChunkingStats,
   warnings: Seq[ChunkingWarning]
-)
+) derives Codec.AsObject
 
 /**
  * The chunking configuration that was used.
@@ -82,7 +84,7 @@ final case class ChunkingConfigUsed(
   maxSize: Int,
   overlap: Int,
   source: String  // "request", "auto-detect", "default"
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Compare Request/Response
@@ -96,7 +98,7 @@ final case class ChunkingCompareRequest(
   strategies: Seq[String],  // e.g., ["simple", "sentence", "markdown"]
   targetSize: Option[Int] = None,
   overlap: Option[Int] = None
-)
+) derives Codec.AsObject
 
 /**
  * Result of a single strategy in a comparison.
@@ -106,7 +108,7 @@ final case class StrategyResult(
   chunks: Seq[PreviewChunk],
   stats: ChunkingStats,
   warnings: Seq[ChunkingWarning]
-)
+) derives Codec.AsObject
 
 /**
  * Response comparing multiple chunking strategies.
@@ -114,7 +116,7 @@ final case class StrategyResult(
 final case class ChunkingCompareResponse(
   results: Seq[StrategyResult],
   recommendation: Option[StrategyRecommendation]
-)
+) derives Codec.AsObject
 
 /**
  * A recommendation based on the comparison.
@@ -122,7 +124,7 @@ final case class ChunkingCompareResponse(
 final case class StrategyRecommendation(
   strategy: String,
   reason: String
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Strategy Information
@@ -138,7 +140,7 @@ final case class StrategyInfo(
   bestFor: Seq[String],
   tradeoffs: Seq[String],
   requiresEmbeddings: Boolean
-)
+) derives Codec.AsObject
 
 /**
  * Response listing available strategies.
@@ -146,7 +148,7 @@ final case class StrategyInfo(
 final case class StrategiesResponse(
   strategies: Seq[StrategyInfo],
   currentDefault: String
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Preset Configurations
@@ -163,7 +165,7 @@ final case class PresetInfo(
   maxSize: Int,
   overlap: Int,
   bestFor: Seq[String]
-)
+) derives Codec.AsObject
 
 /**
  * Response listing available presets.
@@ -171,4 +173,4 @@ final case class PresetInfo(
 final case class PresetsResponse(
   presets: Seq[PresetInfo],
   current: PresetInfo
-)
+) derives Codec.AsObject

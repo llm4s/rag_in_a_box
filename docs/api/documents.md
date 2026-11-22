@@ -336,7 +336,9 @@ curl -X DELETE "http://localhost:8080/api/v1/documents?all=true"
 
 ## List Collections
 
-List all document collections.
+The names of the collections that have documents (only those the caller may see). Documents
+without a collection are listed under `default`. In permission mode, the collections with their
+access lists are `GET /api/v1/collections/accessible` (see the permissions guide).
 
 ```
 GET /api/v1/collections

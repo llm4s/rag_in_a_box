@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.routes
 
 import cats.effect.IO
+import cats.syntax.all._
 import io.circe.syntax._
 import org.http4s._
 import org.llm4s.ragbox.auth.Principal
@@ -9,7 +10,6 @@ import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.config.RuntimeConfigManager
 import org.llm4s.ragbox.model._
-import org.llm4s.ragbox.model.Codecs._
 
 /**
  * HTTP routes for runtime configuration management.
@@ -19,8 +19,9 @@ import org.llm4s.ragbox.model.Codecs._
 object RuntimeConfigRoutes {
 
   // Query parameter extractors
-  object PageParam extends OptionalQueryParamDecoderMatcher[Int]("page")
-  object PageSizeParam extends OptionalQueryParamDecoderMatcher[Int]("pageSize")
+  /** Default and maximum page sizes of the change history. */
+  val DefaultPageSize: Int = 50
+  val MaxPageSize: Int = 100
 
   // Changing the runtime configuration (including the system prompt) and its change history are admin-only.
   def routes(configManager: RuntimeConfigManager): AuthedRoutes[Principal, IO] = Authz.adminOnlyWhen(req => Authz.under("/api/v1/config/runtime")(req) && (Authz.mutating(req) || req.pathInfo.renderString.endsWith("/history")))(AuthedRoutes.of[Principal, IO] {
@@ -37,16 +38,7 @@ object RuntimeConfigRoutes {
       for {
         request <- req.as[RuntimeConfigUpdateRequest]
         // First validate
-        validation <- configManager.validate(RuntimeConfigValidateRequest(
-          topK = request.topK,
-          fusionStrategy = request.fusionStrategy,
-          rrfK = request.rrfK,
-          systemPrompt = request.systemPrompt,
-          llmTemperature = request.llmTemperature,
-          chunkingStrategy = request.chunkingStrategy,
-          chunkSize = request.chunkSize,
-          chunkOverlap = request.chunkOverlap
-        ))
+        validation <- configManager.validate(request)
         response <- if (validation.valid) {
           configManager.update(request).flatMap(result => Ok(result.asJson))
         } else {
@@ -61,18 +53,18 @@ object RuntimeConfigRoutes {
     // POST /api/v1/config/runtime/validate - Validate proposed changes
     case (req @ POST -> Root / "api" / "v1" / "config" / "runtime" / "validate") as principal =>
       for {
-        request <- req.as[RuntimeConfigValidateRequest]
+        request <- req.as[RuntimeConfigUpdateRequest]
         result <- configManager.validate(request)
         response <- Ok(result.asJson)
       } yield response
 
     // GET /api/v1/config/runtime/history - Get config change history
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "history"
-        :? PageParam(page) +& PageSizeParam(pageSize) as principal =>
-      for {
-        result <- configManager.getHistory(page.getOrElse(1), pageSize.getOrElse(50))
-        response <- Ok(result.asJson)
-      } yield response
+        :? Params.Page(page) +& Params.PageSize(pageSize) as _ =>
+      Params.withValid((Params.opt(page), Params.opt(pageSize)).tupled) { case (page, pageSize) =>
+        val paging = Params.Paging(page, pageSize, DefaultPageSize, MaxPageSize)
+        configManager.getHistory(paging.page, paging.pageSize).flatMap(result => Ok(result.asJson))
+      }
 
     // GET /api/v1/config/runtime/meta - Get metadata about configurable settings
     case GET -> Root / "api" / "v1" / "config" / "runtime" / "meta" as principal =>
@@ -93,20 +85,4 @@ object RuntimeConfigRoutes {
         response <- Ok(meta.asJson)
       } yield response
   })
-}
-
-/**
- * Metadata about a configuration item.
- */
-final case class ConfigMetaItem(
-  key: String,
-  value: String,
-  `type`: String,  // "hot", "warm", or "cold"
-  description: String,
-  requiresRestart: Boolean
-)
-
-object ConfigMetaItem {
-  import io.circe.generic.semiauto._
-  implicit val encoder: io.circe.Encoder[ConfigMetaItem] = deriveEncoder
 }

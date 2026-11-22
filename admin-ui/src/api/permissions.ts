@@ -7,7 +7,7 @@ import type {
 } from '@/types/api'
 
 export async function getCollections(pattern?: string): Promise<CollectionListResponse> {
-  const response = await client.get<CollectionListResponse>('/collections', {
+  const response = await client.get<CollectionListResponse>('/collections/accessible', {
     params: pattern ? { pattern } : undefined
   })
   return response.data

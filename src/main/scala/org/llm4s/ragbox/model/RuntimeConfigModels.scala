@@ -1,5 +1,7 @@
 package org.llm4s.ragbox.model
 
+import io.circe.Codec
+
 import java.time.Instant
 
 /**
@@ -27,7 +29,7 @@ final case class RuntimeConfig(
   chunkingStrategy: String,
   chunkSize: Int,
   chunkOverlap: Int
-)
+) derives Codec.AsObject
 
 /**
  * Request to update runtime configuration.
@@ -41,7 +43,20 @@ final case class RuntimeConfigUpdateRequest(
   chunkingStrategy: Option[String] = None,
   chunkSize: Option[Int] = None,
   chunkOverlap: Option[Int] = None
-)
+) derives Codec.AsObject
+
+/**
+ * Metadata about a configuration item (`GET /api/v1/config/runtime/meta`).
+ *
+ * @param `type` `hot`, `warm` or `cold`
+ */
+final case class ConfigMetaItem(
+  key: String,
+  value: String,
+  `type`: String,
+  description: String,
+  requiresRestart: Boolean
+) derives Codec.AsObject
 
 /**
  * Result of updating a single setting.
@@ -58,7 +73,7 @@ final case class SettingUpdateResult(
   changeability: String,  // "hot" or "warm"
   effectiveImmediately: Boolean,
   note: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from updating runtime configuration.
@@ -68,21 +83,7 @@ final case class RuntimeConfigUpdateResponse(
   changes: Seq[SettingUpdateResult],
   current: RuntimeConfig,
   message: String
-)
-
-/**
- * Request to validate proposed configuration changes.
- */
-final case class RuntimeConfigValidateRequest(
-  topK: Option[Int] = None,
-  fusionStrategy: Option[String] = None,
-  rrfK: Option[Int] = None,
-  systemPrompt: Option[String] = None,
-  llmTemperature: Option[Double] = None,
-  chunkingStrategy: Option[String] = None,
-  chunkSize: Option[Int] = None,
-  chunkOverlap: Option[Int] = None
-)
+) derives Codec.AsObject
 
 /**
  * Validation result for a single setting.
@@ -94,7 +95,7 @@ final case class SettingValidation(
   proposedValue: String,
   error: Option[String] = None,
   warning: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response from validating configuration changes.
@@ -103,7 +104,7 @@ final case class RuntimeConfigValidateResponse(
   valid: Boolean,
   validations: Seq[SettingValidation],
   warnings: Seq[String]
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Configuration History
@@ -119,7 +120,7 @@ final case class ConfigChange(
   newValue: String,
   changedAt: Instant,
   changedBy: Option[String] = None
-)
+) derives Codec.AsObject
 
 /**
  * Response containing configuration change history.
@@ -130,7 +131,7 @@ final case class ConfigHistoryResponse(
   page: Int,
   pageSize: Int,
   hasMore: Boolean
-)
+) derives Codec.AsObject
 
 // ============================================================
 // Runtime Config Response (GET)
@@ -144,4 +145,4 @@ final case class RuntimeConfigResponse(
   lastModified: Option[Instant],
   hotSettings: Seq[String],
   warmSettings: Seq[String]
-)
+) derives Codec.AsObject

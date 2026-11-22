@@ -3,6 +3,9 @@ package org.llm4s.ragbox.store
 import cats.effect.IO
 import org.llm4s.ragbox.model.{ChunkInfo, ChunkListResponse, ChunkSizeDistribution}
 
+/** A collection's chunk count and average chunk size (characters). */
+final case class CollectionChunkStats(chunkCount: Int, avgChunkSize: Double)
+
 /**
  * Trait for storing and retrieving chunk information.
  *
@@ -41,37 +44,16 @@ trait ChunkStore {
    * Get total chunk count.
    */
   def count(): IO[Int]
-
   /**
-   * Get chunk count for a specific document.
+   * Chunk count and average chunk size per collection, keyed like the document registry's
+   * collections ("default" for chunks with no collection).
    */
-  def countByDocument(documentId: String): IO[Int]
-
-  /**
-   * Get chunk count for a specific collection.
-   */
-  def countByCollection(collection: String): IO[Int]
-
-  /**
-   * Get average chunk size.
-   */
-  def avgChunkSize(): IO[Double]
-
-  /**
-   * Get average chunk size for a collection.
-   */
-  def avgChunkSizeByCollection(collection: String): IO[Double]
+  def statsByCollection(): IO[Map[String, CollectionChunkStats]]
 
   /**
    * Delete all chunks for a document.
    */
   def deleteByDocument(documentId: String): IO[Unit]
-
-  /**
-   * Delete all chunks for a collection.
-   */
-  def deleteByCollection(collection: String): IO[Unit]
-
   /**
    * Clear all chunks.
    */

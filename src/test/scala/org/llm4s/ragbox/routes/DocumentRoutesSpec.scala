@@ -15,7 +15,6 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
 import org.llm4s.ragbox.testkit.{MockRAGService, TestFixtures}
-import org.llm4s.ragbox.model.Codecs._
 
 class DocumentRoutesSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach {
 

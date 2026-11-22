@@ -31,8 +31,16 @@ rag-in-a-box/
 │   │   ├── ConfigRoutes.scala
 │   │   ├── HealthRoutes.scala
 │   │   └── MetricsRoutes.scala
+│   ├── routes/ErrorHandling.scala # Errors -> ErrorResponse (400/404/409/500)
+│   ├── routes/Params.scala        # Query parameter, paging and id validation
 │   └── service/
-│       └── RAGService.scala       # Core RAG wrapper
+│       ├── RAGService.scala       # Facade the routes use
+│       ├── RagPipelines.scala     # llm4s pipelines, LLM, embedder, runtime settings
+│       ├── DocumentIngestion.scala # Ingest / upsert / delete documents
+│       ├── QueryService.scala     # Search, answers, chat replies and their metrics
+│       ├── StatsService.scala     # Statistics, chunks, sync status
+│       ├── SystemInfoService.scala # Health, readiness, config views, providers
+│       └── ServiceError.scala     # Typed errors routes map to statuses
 └── src/main/resources/
     └── application.conf           # Default configuration
 ```
