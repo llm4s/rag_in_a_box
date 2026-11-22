@@ -1,74 +1,110 @@
+---
+layout: page
+title: Auth Migration
+parent: User Guide
+nav_order: 5
+---
+
 # Authentication Migration Guide
 
-This guide covers migrating RAG in a Box from one authentication mode to another.
+This guide covers moving a RAG in a Box deployment from one authentication mode to another.
+For the modes themselves see [Authentication](guide/authentication.md).
 
 ## Authentication Modes
 
-RAG in a Box supports three authentication modes:
+| Mode | `AUTH_MODE` | Who can log in | Use case |
+|------|-------------|----------------|----------|
+| Open | `open` (default) | Nobody needs to: every request is an anonymous administrator, unless `API_KEY` is set | Local development only |
+| Basic | `basic` | ragbox users with a password (`POST /api/v1/auth/login` returns a JWT) | Small deployments without an identity provider |
+| OAuth | `oauth` | Users of an OIDC provider (Google, Azure AD, Okta, Keycloak, custom); session cookie | Enterprise SSO |
 
-| Mode | `AUTH_MODE` | Use Case |
-|------|-------------|----------|
-| Open | `open` | Development, internal tools |
-| Basic | `basic` | Simple deployments with API keys |
-| OAuth | `oauth` | Enterprise with SSO integration |
+Credentials accepted in each mode:
+
+| Credential | open | open + `API_KEY` | basic | oauth |
+|------------|------|------------------|-------|-------|
+| none (anonymous administrator) | yes | | | |
+| static `API_KEY` (`X-API-Key` or `Authorization: Bearer`) | | yes | if set | if set |
+| `rat_` [access token](guide/access-tokens.md) (`Authorization: Bearer`) | | yes | yes | yes |
+| JWT from `POST /api/v1/auth/login` | | | yes | |
+| OIDC session cookie | | | | yes |
+
+So `API_KEY` and `rat_` access tokens keep working across every mode change (except that in
+open mode without `API_KEY` no credential is checked at all). They are the way to keep
+integrations (ingesters, scripts, the Python SDK) running while you migrate. There is no
+separate switch to enable them: setting `API_KEY` is enough, and access tokens are created by
+an administrator with `POST /api/v1/tokens`.
+
+---
+
+## What Carries Over, and What Does Not
+
+| Data | Effect of changing mode |
+|------|-------------------------|
+| Documents, collections, chunking configs, analytics | Unaffected |
+| `rat_` access tokens | Keep working (stored in the database, independent of the mode) |
+| `API_KEY` | Keeps working while set |
+| Password users (`users` table) | Kept, but they can only log in in basic mode |
+| JWTs issued in basic mode | Rejected in every other mode; also invalid after `JWT_SECRET` changes |
+| OAuth sessions | Rejected outside oauth mode; in-memory sessions are lost on restart |
+| Collection permissions | Kept, but they name user identities, which differ between modes (below) |
+
+### Identities and collection permissions
+
+Collection permissions are granted to external user ids and groups. The id a request is
+checked against depends on how it authenticated:
+
+- **Basic mode**: the ragbox username (e.g. `alice`).
+- **OAuth mode**: by default `<issuer>|<sub>` (e.g. `https://accounts.google.com|1234567890`).
+  With `OAUTH_CLAIM_USER_ID=email` it is the (verified) e-mail address; with any other claim,
+  that claim's value. Groups come from the groups claim (`OAUTH_CLAIM_GROUPS`).
+- **API key / admin-scoped tokens / open mode**: administrators, who see every collection.
+
+When the identity changes, re-grant permissions to the new identifiers with
+`PUT /api/v1/collections/{path}/permissions`, or grant them to groups, which are usually
+stable across a provider change. Administrators in oauth mode are the members of
+`OAUTH_ADMIN_GROUPS`; with none set, no SSO user is an administrator.
 
 ---
 
 ## Migration Paths
 
-### Open → OAuth
+### Open → Basic
 
-**Scenario**: Moving from unauthenticated access to enterprise SSO.
-
-**Before** (no authentication):
 ```bash
-export AUTH_MODE=open
+export AUTH_MODE=basic
+export ADMIN_PASSWORD='a-strong-password-of-12+-chars'   # creates the admin user on first start
+export JWT_SECRET="$(openssl rand -base64 48)"            # 32+ characters, not a placeholder
+# optional: export ADMIN_USERNAME=admin
 ```
 
-**After** (OAuth with Google):
+Startup fails if `ADMIN_PASSWORD` or `JWT_SECRET` is missing or too weak. After the restart,
+log in to the admin UI (or `POST /api/v1/auth/login`), create users with `POST /api/v1/users`,
+and give integrations an `API_KEY` or a `rat_` token.
+
+### Open → OAuth
+
 ```bash
 export AUTH_MODE=oauth
 export OAUTH_PROVIDER=google
 export OAUTH_CLIENT_ID=your-client-id
 export OAUTH_CLIENT_SECRET=your-client-secret
 export OAUTH_REDIRECT_URI=https://app.example.com/api/v1/oauth/callback
+export OAUTH_ADMIN_GROUPS=ragbox-admins          # who administers ragbox
+export OAUTH_SESSION_STORAGE=postgres            # for more than one replica
 ```
 
-**Migration Steps**:
+1. Register the application with the provider and set the redirect URI exactly as above
+   (see [OAuth Configuration](oauth-configuration.md)).
+2. OAuth mode needs permission-based RAG (the PostgreSQL search index); the server refuses
+   to start in oauth mode without it.
+3. Set `API_KEY` (or create admin-scoped `rat_` tokens first, while still in open mode) if
+   anything needs administrative API access and no SSO group is an admin group.
+4. Deploy. Browser users log in through `/api/v1/oauth/login`.
 
-1. **Configure identity provider** (Google, Azure AD, Okta, or Keycloak)
-   - Create OAuth application
-   - Configure redirect URI
-   - Note client credentials
-
-2. **Update deployment configuration**
-   - Set environment variables as shown above
-   - Ensure PostgreSQL is available for session storage
-
-3. **Deploy with new configuration**
-   - All existing sessions will be invalid
-   - Users will need to log in via OAuth
-
-4. **Update client applications**
-   - API clients must obtain tokens via OAuth flow
-   - Or use API keys (if enabled alongside OAuth)
-
-**Rollback**: Set `AUTH_MODE=open` to revert.
-
----
+**Rollback**: set `AUTH_MODE=open` and restart.
 
 ### Basic → OAuth
 
-**Scenario**: Upgrading from API key authentication to enterprise SSO.
-
-**Before** (basic auth):
-```bash
-export AUTH_MODE=basic
-export AUTH_USERNAME=admin
-export AUTH_PASSWORD=secret123
-```
-
-**After** (OAuth):
 ```bash
 export AUTH_MODE=oauth
 export OAUTH_PROVIDER=azure
@@ -76,37 +112,20 @@ export OAUTH_CLIENT_ID=your-client-id
 export OAUTH_CLIENT_SECRET=your-client-secret
 export OAUTH_AZURE_TENANT_ID=your-tenant-id
 export OAUTH_REDIRECT_URI=https://app.example.com/api/v1/oauth/callback
+export OAUTH_ADMIN_GROUPS=ragbox-admins
 ```
 
-**Migration Steps**:
+1. Integrations: keep `API_KEY` set and keep using existing `rat_` tokens; they work in oauth
+   mode unchanged.
+2. Password logins stop working (`POST /api/v1/auth/login` answers `400` outside basic mode),
+   and outstanding JWTs are rejected.
+3. Re-grant collection permissions to the users' OIDC identities or to groups (see
+   [Identities and collection permissions](#identities-and-collection-permissions)).
+4. The `users` table is left as it is; it is used again if you switch back.
 
-1. **Preserve API key access** (optional)
-   If you have API clients that can't use OAuth, keep API key authentication:
-   ```bash
-   export API_KEY_ENABLED=true
-   export API_KEY=your-secure-api-key
-   ```
-   API clients can continue using the `X-API-Key` header.
+**Rollback**: set `AUTH_MODE=basic` (with the same `JWT_SECRET` and `ADMIN_PASSWORD`).
 
-2. **Configure identity provider**
-   - Set up OAuth application
-   - Map user groups if needed
-
-3. **Communicate to users**
-   - Notify users of authentication change
-   - Provide login instructions
-
-4. **Deploy and monitor**
-   - Watch for authentication failures
-   - Assist users with first-time OAuth login
-
-**Rollback**: Set `AUTH_MODE=basic` and restore basic auth credentials.
-
----
-
-### OAuth → OAuth (Provider Change)
-
-**Scenario**: Switching identity providers (e.g., Google to Azure AD).
+### OAuth → OAuth (provider change)
 
 **Before** (Google):
 ```bash
@@ -123,180 +142,73 @@ export OAUTH_CLIENT_SECRET=new-azure-secret
 export OAUTH_AZURE_TENANT_ID=your-tenant-id
 ```
 
-**Migration Steps**:
+With the default `OAUTH_CLAIM_USER_ID=sub`, identities include the issuer, so every user gets
+a new identity after a provider change and per-user permissions must be granted again.
+Alternatives:
 
-1. **Set up new provider** alongside existing
-   - Create OAuth application in new provider
-   - Test with a staging environment
+- Grant permissions to groups, and make the new provider emit the same group names.
+- Use `OAUTH_CLAIM_USER_ID=email`, if both providers assert verified e-mail addresses
+  (logins without `email_verified: true` are then rejected with `403`).
 
-2. **User identity mapping**
-   - Ensure email addresses match between providers
-   - Or plan for new user records
-
-3. **Deploy with new provider**
-   - All existing sessions will be invalid
-   - Users log in with new provider
-
-4. **Clean up old provider**
-   - Revoke old OAuth application
-   - Remove old configuration
-
-**Note**: User IDs may change between providers. If using `sub` claim (default), users may appear as new users. Consider mapping by email instead:
-```bash
-export OAUTH_CLAIM_USER_ID=email
-```
-
----
-
-## User Data Considerations
-
-### Session Migration
-
-Sessions cannot be migrated between authentication modes. All users will need to re-authenticate after switching modes.
-
-### User Records
-
-User records persist across auth mode changes. However:
-
-- **User ID matching**: Ensure the claim used for user ID maps to existing users
-- **Email-based matching**: Consider using email as user ID for consistency:
-  ```bash
-  export OAUTH_CLAIM_USER_ID=email
-  ```
-
-### API Keys and Tokens
-
-- **JWT tokens**: Become invalid when switching modes
-- **API keys**: Can be preserved if `API_KEY_ENABLED=true`
-
----
-
-## Hybrid Authentication
-
-For gradual migration, you can enable multiple authentication methods:
-
-```bash
-# Primary: OAuth
-export AUTH_MODE=oauth
-export OAUTH_PROVIDER=google
-export OAUTH_CLIENT_ID=...
-
-# Secondary: API keys for programmatic access
-export API_KEY_ENABLED=true
-export API_KEY=your-secure-api-key
-```
-
-This allows:
-- Human users to authenticate via OAuth
-- API clients to continue using API keys
+Existing sessions keep the old identity until they expire; to force everyone to log in again
+with `OAUTH_SESSION_STORAGE=postgres`, run `DELETE FROM oauth_sessions;` (with in-memory
+storage, a restart does it).
 
 ---
 
 ## Zero-Downtime Migration
 
-For production systems requiring zero downtime:
+A rolling update briefly runs old and new configurations side by side, so during the
+rollout a request may reach either. Plan for that:
 
-1. **Prepare new configuration**
-   - Test in staging environment
-   - Verify OAuth flow works
-
-2. **Rolling deployment**
-   - Deploy new configuration to one instance
-   - Verify it works
-   - Roll out to remaining instances
-
-3. **Session handling**
-   - Users with old sessions will be logged out
-   - New sessions use OAuth
-
-4. **Monitor**
-   - Watch for authentication errors
-   - Check user feedback
+1. Test the new configuration in staging, including the login flow.
+2. Make sure integrations authenticate with `API_KEY` or `rat_` tokens, which both modes accept.
+3. Roll out; users whose session or JWT the new mode does not accept are asked to log in again.
+4. With several replicas in oauth mode, use `OAUTH_SESSION_STORAGE=postgres`, or a session
+   created by one replica is unknown to the others.
 
 ---
 
-## Rollback Procedures
+## Troubleshooting
 
-### Quick Rollback
+### Users can't log in after migration
 
-If issues arise after migration:
+1. Check the server logs; configuration errors fail startup with a message naming the
+   missing setting (`OAUTH_CLIENT_ID required when auth mode is 'oauth'`, ...).
+2. Check the redirect URI matches the provider's configuration exactly.
+3. A `400 Missing login cookie` on the callback: see
+   [OAuth Configuration - Troubleshooting](oauth-configuration.md#troubleshooting).
 
-```bash
-# Revert to previous auth mode
-export AUTH_MODE=open  # or basic
+### Users can log in but see no collections
 
-# Restart application
-```
+Their identity changed and the permissions name the old one. `GET /api/v1/auth/me` shows
+the current principal; grant permissions to that identity or to one of its groups.
 
-### Rollback with Data Preservation
+### API clients failing with 401
 
-1. Stop application
-2. Revert environment variables
-3. (Optional) Clear invalid sessions from database:
-   ```sql
-   DELETE FROM oauth_sessions WHERE provider = 'new-provider';
-   ```
-4. Start application
+- `rat_` tokens: check the token has not been revoked or expired (`GET /api/v1/tokens`).
+- `API_KEY`: check it is set on every replica.
+- A JWT from basic mode is not accepted in any other mode; switch the client to a `rat_`
+  token.
 
----
+### API clients failing with 403
 
-## Troubleshooting Migration Issues
-
-### Users Can't Log In After Migration
-
-1. Verify OAuth configuration is correct
-2. Check provider application settings
-3. Ensure redirect URI matches exactly
-4. Check server logs for detailed errors
-
-### Existing Users Not Recognized
-
-1. Verify claim mapping:
-   ```bash
-   export OAUTH_CLAIM_USER_ID=email  # Try email instead of sub
-   ```
-2. Check if email addresses match between old and new auth
-
-### API Clients Failing
-
-1. Ensure API key authentication is enabled:
-   ```bash
-   export API_KEY_ENABLED=true
-   ```
-2. Update clients to use correct authentication method
-
-### Session Issues
-
-1. For multi-instance deployments, ensure PostgreSQL session storage:
-   ```bash
-   export OAUTH_SESSION_STORAGE=postgres
-   ```
-2. Clear any stale sessions:
-   ```sql
-   DELETE FROM oauth_sessions WHERE expires_at < NOW();
-   ```
+An access token without the `admin` scope may only use the endpoints its scopes are for
+(documents, sync, query/search, chat, `/api/v1/auth/me`, `/ws`). See
+[Access Tokens](guide/access-tokens.md).
 
 ---
 
 ## Migration Checklist
 
 Before migration:
-- [ ] Identity provider configured
-- [ ] OAuth application created with correct redirect URI
-- [ ] Client credentials saved securely
-- [ ] Staging environment tested
-- [ ] Rollback plan documented
-- [ ] Users notified of change
-
-During migration:
-- [ ] Environment variables updated
-- [ ] Application deployed
-- [ ] Authentication flow verified
-- [ ] Monitor for errors
+- [ ] Identity provider application created with the exact redirect URI (oauth)
+- [ ] `JWT_SECRET` and `ADMIN_PASSWORD` generated (basic)
+- [ ] Integrations moved to `API_KEY` or `rat_` tokens
+- [ ] Plan for re-granting collection permissions to the new identities
+- [ ] Staging tested, rollback plan written down
 
 After migration:
-- [ ] Verify all users can log in
-- [ ] Check API access still works
-- [ ] Review authentication logs
-- [ ] Clean up old configuration
-- [ ] Update documentation
+- [ ] Administrators can log in (`GET /api/v1/auth/me` shows `isAdmin: true`)
+- [ ] Regular users see the collections they should
+- [ ] Integrations still work

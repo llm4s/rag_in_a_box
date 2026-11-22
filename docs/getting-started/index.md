@@ -12,33 +12,43 @@ Everything you need to get RAG in a Box up and running.
 
 ## Quick Links
 
-- [Quick Start](/getting-started/quickstart) - 5-minute setup guide
-- [Configuration](/getting-started/configuration) - Environment variables and settings
-- [Docker Deployment](/getting-started/docker) - Production Docker setup
+- [Quick Start](/getting-started/quickstart) - run it with Docker Compose or from source
+- [Configuration](/guide/configuration) - environment variables and settings
+- [Production Deployment](/production-deployment) - Docker Compose and Kubernetes in production
+- [Helm Deployment](/guide/helm-deployment) - the Helm chart
 
 ## Requirements
 
-| Component | Minimum Version | Notes |
-|-----------|-----------------|-------|
-| Docker | 20.10+ | For container deployment |
-| PostgreSQL | 15+ | With pgvector extension |
-| Java | 21+ | For running from source |
+| Component | Version | Notes |
+|-----------|---------|-------|
+| Docker + Docker Compose | 20.10+ / v2 | For the container quick start |
+| PostgreSQL | 15+ with pgvector | Included in `docker-compose.yml` |
+| Java + sbt | JDK 21 | Only for running from source |
+| Node.js | 20+ | Only for building the admin UI from source |
 
-## Supported LLM Providers
+An API key for an LLM/embedding provider (e.g. OpenAI), or a local [Ollama](https://ollama.com).
 
-| Provider | Embedding | Chat Completion |
-|----------|-----------|-----------------|
-| OpenAI | text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002 | gpt-4o, gpt-4o-mini, gpt-4-turbo |
-| Anthropic | voyage-3 (via Voyage AI) | claude-sonnet-4-20250514, claude-3-haiku |
-| Ollama | nomic-embed-text, all-minilm | llama3, mistral, mixtral |
+## Providers
 
-## Architecture Overview
+Providers come from [llm4s](https://llm4s.org)'s provider registry, so anything llm4s supports
+can be configured:
 
-RAG in a Box follows a simple but powerful architecture:
+| Setting | Examples |
+|---------|----------|
+| `LLM_MODEL` (`provider/model`) | `openai/gpt-4o` (default), `anthropic/claude-sonnet-4-5`, `ollama/llama3.1` |
+| `EMBEDDING_PROVIDER` + `EMBEDDING_MODEL` | `openai` + `text-embedding-3-small` (default), `voyage` + `voyage-3`, `ollama` + `nomic-embed-text` |
 
-1. **Document Ingestion**: Documents are chunked and embedded
-2. **Vector Storage**: Embeddings stored in PostgreSQL with pgvector
-3. **Hybrid Search**: Combines semantic search with keyword matching
-4. **Answer Generation**: LLM synthesizes answers from retrieved context
+`GET /api/v1/config/providers` lists the providers and the models llm4s knows for each, and
+whether each one is configured.
 
-All components are included in the Docker image - just add your documents and API keys.
+## How It Works
+
+1. **Ingestion**: documents are chunked (llm4s chunkers: simple, sentence, markdown, semantic)
+   and embedded.
+2. **Storage**: chunks and embeddings live in PostgreSQL with pgvector, alongside a keyword index.
+3. **Hybrid search**: vector and keyword results are fused (RRF or weighted), optionally
+   reranked.
+4. **Answer generation**: the LLM answers from the retrieved context.
+
+Collections, users and groups can restrict who may query what (permission mode), and every
+query is logged for analytics and A/B experiments.

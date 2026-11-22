@@ -1,3 +1,10 @@
+---
+layout: page
+title: OAuth Configuration
+parent: User Guide
+nav_order: 3
+---
+
 # OAuth2/OIDC Configuration Guide
 
 This guide covers configuring OAuth2/OIDC authentication for RAG in a Box with various identity providers.
@@ -18,6 +25,11 @@ This guide covers configuring OAuth2/OIDC authentication for RAG in a Box with v
    ```
 
 3. Start the application.
+
+OAuth mode needs permission-based RAG (the PostgreSQL search index with its permission
+schema), which is the default with PostgreSQL; the server refuses to start in oauth mode
+without it. `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` and `OAUTH_REDIRECT_URI` are required,
+and startup fails with a configuration error if any of them is missing.
 
 ---
 
@@ -53,7 +65,6 @@ RAG in a Box includes pre-configured settings for major identity providers:
 |----------|--------------|-------------|
 | `OAUTH_AZURE_TENANT_ID` | Azure | Azure AD tenant ID |
 | `OAUTH_OKTA_DOMAIN` | Okta | Okta org domain (e.g., `company.okta.com`) |
-| `OAUTH_OKTA_AUTH_SERVER_ID` | Okta (optional) | Custom auth server ID (default: `default`) |
 | `OAUTH_KEYCLOAK_BASE_URL` | Keycloak | Keycloak server URL |
 | `OAUTH_KEYCLOAK_REALM` | Keycloak | Keycloak realm name |
 
@@ -74,8 +85,9 @@ RAG in a Box includes pre-configured settings for major identity providers:
 | `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
 | `OAUTH_SESSION_COOKIE_SECURE` | `true` | Require HTTPS for the session and pre-auth (login) cookies. Set `false` only for local HTTP development |
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session duration in seconds (24 hours) |
+| `OAUTH_PKCE_ENABLED` | `true` | Parsed but currently has no effect: PKCE (S256) is always used |
 | `OAUTH_STATE_TTL` | `300` | Auth state and pre-auth cookie lifetime in seconds (5 minutes) |
-| `OAUTH_SESSION_STORAGE` | `memory` | Session storage: `memory` (single instance) or `postgres` |
+| `OAUTH_SESSION_STORAGE` | `memory` | Session and login-state storage: `memory` (single instance) or `postgres` (`postgresql` is also accepted) |
 | `OAUTH_ADMIN_GROUPS` | (none) | Comma-separated groups (from the groups claim) whose members are ragbox administrators. With none, no SSO user is an administrator |
 | `OAUTH_SCOPES` | the provider preset's (e.g. `openid profile email`) | Scopes to request, space- or comma-separated; must include `openid` |
 
@@ -151,10 +163,10 @@ RAG in a Box includes pre-configured settings for major identity providers:
    export OAUTH_REDIRECT_URI=https://your-app.example.com/api/v1/oauth/callback
    ```
 
-3. **Optional: Use custom authorization server:**
-   ```bash
-   export OAUTH_OKTA_AUTH_SERVER_ID=your-auth-server-id
-   ```
+The Okta preset uses the `default` custom authorization server
+(`https://<OAUTH_OKTA_DOMAIN>/oauth2/default`) and requests the scopes
+`openid profile email groups`. There is no setting for another authorization server; to use
+one, configure Okta as a `custom` provider with that server's endpoints.
 
 ### Keycloak
 
@@ -283,7 +295,7 @@ For production multi-instance deployments, use PostgreSQL session storage:
 export OAUTH_SESSION_STORAGE=postgres
 ```
 
-This uses the same database connection pool as the main application. Required tables are created (and migrated from older releases) automatically on startup; see [OAuth Security](oauth-security.md#session-storage) for upgrade notes.
+This uses the same database connection pool as the main application. The session tables are part of the schema managed by the Flyway migrations (`src/main/resources/db/migration`), which run at startup unless `DB_MIGRATE_ON_START=false`; see [OAuth Security](oauth-security.md#session-storage).
 
 ---
 
@@ -297,8 +309,8 @@ This uses the same database connection pool as the main application. Required ta
 
 ### "Invalid token issuer" error
 
-- Verify `OAUTH_ISSUER` matches the issuer claim in tokens from your provider
-- For multi-tenant Azure AD, ensure tenant ID is correct
+- The ID token's `iss` must equal the preset's issuer (or `OAUTH_ISSUER` for `custom`)
+- For Azure AD the expected issuer is `https://login.microsoftonline.com/<tenant>/v2.0`; ensure the tenant ID is correct (multi-tenant `common`/`organizations` endpoints are not supported, because their tokens carry the user's tenant as issuer)
 
 ### Session not persisting across requests
 

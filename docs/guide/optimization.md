@@ -2,7 +2,7 @@
 layout: page
 title: Optimization
 parent: User Guide
-nav_order: 8
+nav_order: 12
 ---
 
 # Optimization Guide
@@ -16,10 +16,10 @@ RAG in a Box includes an intelligent suggestion engine that analyzes your query 
 
 The system analyzes:
 
-- **Query performance**: Latency patterns and bottlenecks
-- **Retrieval quality**: Chunk utilization and relevance
-- **User feedback**: Ratings and satisfaction trends
-- **Configuration**: Chunking, search, and embedding settings
+- **Query performance**: Latency patterns
+- **Retrieval quality**: Chunk utilization
+- **User feedback**: Ratings
+- **Configuration**: The current runtime chunking and search settings and the embedding model
 
 ---
 
@@ -27,7 +27,8 @@ The system analyzes:
 
 ### Get All Suggestions
 
-Retrieve optimization suggestions for your system:
+Retrieve optimization suggestions for your system. Like the rest of `/api/v1/analytics`,
+the suggestion endpoints are **administrator-only**.
 
 ```bash
 curl "http://localhost:8080/api/v1/analytics/suggestions" \
@@ -40,7 +41,7 @@ curl "http://localhost:8080/api/v1/analytics/suggestions" \
 |-----------|---------|-------------|
 | `from` | 7 days ago | Start of analysis period (ISO-8601) |
 | `to` | now | End of analysis period (ISO-8601) |
-| `collection` | - | Filter to specific collection |
+| `collection` | - | Only evaluate this collection pattern's per-collection rules (global suggestions are still returned) |
 | `type` | - | Filter by type: chunking, search, embedding, content |
 | `severity` | - | Filter by severity: critical, warning, info |
 
@@ -76,9 +77,11 @@ Response:
 }
 ```
 
+The full response is `{"suggestions": [...], "analyzedQueries": 120, "analyzedCollections": 3, "analysisTimestamp": "..."}`.
+
 ### Get Collection-Specific Suggestions
 
-Focus on a single collection:
+Only the suggestions for one collection pattern (`from` / `to` are accepted too):
 
 ```bash
 curl "http://localhost:8080/api/v1/analytics/suggestions/collection/docs" \
@@ -89,47 +92,43 @@ curl "http://localhost:8080/api/v1/analytics/suggestions/collection/docs" \
 
 ## Suggestion Types
 
-### Chunking Suggestions
+The engine is rule-based: it compares the period's query-log summary (see
+[Analytics](analytics.md#get-analytics-summary)) and the current runtime settings with fixed
+thresholds. These are all the rules:
 
-Related to document chunking configuration:
+### Global rules
 
-| Trigger | Suggestion |
-|---------|------------|
-| chunks_used / chunks_retrieved < 40% | Reduce chunk size for better precision |
-| chunks_used / chunks_retrieved > 90% with low ratings | Increase chunk size or topK |
-| avg_chunks_retrieved < 3 with low ratings | Chunk size too large |
-| avg_chunks_retrieved > 15 | Chunk size too small |
-| overlap = 0 | Add overlap (10-20% of chunk size) |
-| .md files with "simple" strategy | Switch to markdown strategy |
+| Type | Severity | Title | Trigger |
+|------|----------|-------|---------|
+| chunking | warning | Low Chunk Utilization | chunks used / retrieved < 40% and > 5 chunks retrieved on average |
+| chunking | info | High Chunk Utilization with Moderate Ratings | chunks used / retrieved > 90% and average rating < 4.0 |
+| chunking | warning | Low Retrieval Volume | < 3 chunks retrieved on average and average rating < 3.5 |
+| chunking | info | High Retrieval Volume | > 15 chunks retrieved on average |
+| chunking | info | No Chunk Overlap Configured | runtime `chunkOverlap` is 0 |
+| search | info | TopK May Be Too High | `topK` > 3 x average chunks used |
+| search | warning | High Retrieval Latency | p95 retrieval latency (total minus answer generation) > 500 ms |
+| embedding | warning | Low Ratings Despite Retrieval | average rating < 2.5 with > 3 chunks retrieved on average |
 
-### Search Suggestions
+### Per-collection rules
 
-Related to search parameters:
+Evaluated for each collection pattern in the summary's `topCollections` with at least 5
+queries:
 
-| Trigger | Suggestion |
-|---------|------------|
-| topK > avg_chunks_used * 3 | Reduce topK for faster queries |
-| topK == chunks_retrieved with low ratings | Increase topK |
-| p95_latency > 500ms | Optimize search configuration |
+| Type | Severity | Title | Trigger |
+|------|----------|-------|---------|
+| chunking | warning | Low Chunk Utilization in '...' | as the global rule |
+| chunking | info | Consider Markdown Strategy for '...' | the name contains `docs` or `readme` and the runtime strategy is not `markdown` |
+| content | warning | Low Ratings for '...' | the collection's average rating < 2.5 |
+| content | critical | High Zero-Result Rate for '...' | > 10% of the collection's queries returned no chunks |
+| search | warning | High Latency for '...' | estimated p95 latency > 750 ms |
 
-### Embedding Suggestions
+{: .note }
+The per-collection analysis is approximate: it reuses the global chunk averages, estimates the
+p95 latency as 1.5 x the collection's average latency, and does not yet count zero-result
+queries per collection (so the zero-result rule never fires).
 
-Related to embedding model selection:
-
-| Trigger | Suggestion |
-|---------|------------|
-| Low ratings despite retrieving chunks | Try different embedding model |
-| Expensive model with low query volume | Consider cheaper model |
-
-### Content Suggestions
-
-Related to document quality:
-
-| Trigger | Suggestion |
-|---------|------------|
-| Collection avg_rating < 2.5 | Review source documents |
-| High % of zero-result queries | Check document indexing |
-| Documents not updated in 90+ days | Consider re-ingestion |
+With fewer than 10 queries in the period, the only suggestion is an `info` "Insufficient
+Data" entry (its `suggestionType` is `info`).
 
 ---
 
@@ -214,10 +213,12 @@ The new value applies to the next query, and survives a restart (see
 
 ### Re-indexing After Changes
 
-After changing chunking settings, re-ingest documents to apply new chunking:
+Chunking changes apply to documents ingested afterwards. Ingestion sources skip unchanged
+documents (content hashes), so re-running a source does not re-chunk them; to re-chunk, re-upload
+the documents (or delete and re-ingest them).
 
 ```bash
-# Trigger re-ingestion for a source
+# Run all configured ingestion sources (admin)
 curl -X POST http://localhost:8080/api/v1/ingest/run \
   -H "Authorization: Bearer your-token"
 ```
@@ -249,9 +250,10 @@ The suggestion engine requires sufficient data for meaningful analysis:
 
 | Requirement | Value |
 |-------------|-------|
-| Minimum queries | 10 |
+| Minimum queries in the period | 10 |
 | Per-collection minimum | 5 queries |
-| Rated queries (for quality suggestions) | 3+ |
+
+Rating-based rules only fire when there are rated queries.
 
 If you don't have enough data, the system will display an "Insufficient Data" info message.
 
@@ -265,8 +267,8 @@ Check suggestions weekly to catch issues early:
 
 ```bash
 # Quick summary check
-curl "http://localhost:8080/api/v1/analytics/suggestions/summary" \
-  | jq '"\(.criticalCount) critical, \(.warningCount) warnings"'
+curl -s "http://localhost:8080/api/v1/analytics/suggestions/summary" \
+  -H "Authorization: Bearer $TOKEN" | jq '"\(.criticalCount) critical, \(.warningCount) warnings"'
 ```
 
 ### 2. Address Critical Issues First
@@ -274,7 +276,8 @@ curl "http://localhost:8080/api/v1/analytics/suggestions/summary" \
 Focus on critical severity suggestions before warnings:
 
 ```bash
-curl "http://localhost:8080/api/v1/analytics/suggestions?severity=critical"
+curl "http://localhost:8080/api/v1/analytics/suggestions?severity=critical" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 3. Test Changes Incrementally
@@ -316,7 +319,7 @@ Set up alerts for new critical suggestions:
 ```bash
 #!/bin/bash
 critical=$(curl -s "http://localhost:8080/api/v1/analytics/suggestions/summary" \
-  | jq '.criticalCount')
+  -H "Authorization: Bearer $TOKEN" | jq '.criticalCount')
 
 if [ "$critical" -gt 0 ]; then
   echo "Alert: $critical critical optimization suggestions found"
@@ -330,8 +333,8 @@ Generate weekly optimization reports:
 
 ```bash
 # Weekly optimization report
-curl "http://localhost:8080/api/v1/analytics/suggestions" \
-  | jq '{
+curl -s "http://localhost:8080/api/v1/analytics/suggestions" \
+  -H "Authorization: Bearer $TOKEN" | jq '{
     total: .suggestions | length,
     byType: .suggestions | group_by(.suggestionType) | map({type: .[0].suggestionType, count: length}),
     topIssues: .suggestions[:5] | map(.title)
@@ -345,7 +348,7 @@ Check for critical issues in deployment pipelines:
 ```bash
 # Fail if critical issues exist
 critical=$(curl -s "$RAG_URL/api/v1/analytics/suggestions?severity=critical" \
-  | jq '.suggestions | length')
+  -H "Authorization: Bearer $TOKEN" | jq '.suggestions | length')
 
 if [ "$critical" -gt 0 ]; then
   echo "Error: $critical critical RAG optimization issues detected"

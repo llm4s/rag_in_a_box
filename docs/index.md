@@ -2,65 +2,69 @@
 layout: home
 title: Home
 nav_order: 1
-description: "RAG in a Box - A turnkey RAG solution powered by LLM4S"
+description: "RAG in a Box - A turnkey RAG server and demonstrator for LLM4S"
 permalink: /
 ---
 
 # RAG in a Box
 {: .fs-9 }
 
-A turnkey RAG solution: start a Docker container, point it at documents, and immediately have a production-ready RAG system with great retrieval quality.
+A turnkey RAG server: start it with Docker Compose, point it at documents, and query them over a
+REST API or the admin UI. It is also a working demonstrator of the [LLM4S](https://llm4s.org)
+Scala library.
 {: .fs-6 .fw-300 }
 
 [Get Started](/getting-started/quickstart){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
-[View on GitHub](https://github.com/llm4s/rag-in-a-box){: .btn .fs-5 .mb-4 .mb-md-0 }
+[View on GitHub](https://github.com/llm4s/rag_in_a_box){: .btn .fs-5 .mb-4 .mb-md-0 }
 
 ---
 
-## What is RAG in a Box?
+## Features
 
-RAG in a Box is a complete Retrieval-Augmented Generation (RAG) system that works out of the box. It's designed for:
+### Ingestion
+- **Directory, URL, database, web-crawler and S3 sources**, on a schedule or on demand, with
+  incremental per-source sync (only changed documents are re-indexed)
+- **File upload** of PDF, DOCX, HTML, Markdown and more (text extracted with llm4s's Tika
+  extractor)
+- **Sync API** for external ingesters (Confluence, SharePoint, custom pipelines) with scoped
+  access tokens
+- **Ingestion policy**: allowed directory roots and SSRF-safe URL fetching
 
-- **Zero-config startup**: Just mount your documents directory and start querying
-- **Production-ready**: Built-in authentication, permissions, and observability
-- **Great retrieval quality**: Hybrid search with semantic + keyword fusion
-- **Flexible ingestion**: Built-in support for files, URLs, databases, or custom ingesters
+### Retrieval and answers
+- **Hybrid search**: pgvector similarity plus keyword search, fused with RRF or weighted fusion
+- **Optional reranking** (Cohere or LLM) and LLM query rewriting
+- **Chunking strategies**: simple, sentence, markdown and semantic, configurable per collection
+  and per file type
+- **Chat sessions** with conversation history, and Server-Sent Events streaming
+- **Runtime settings** (topK, fusion, system prompt, chunking) changeable without a restart
 
-## Key Features
+### Access control
+- **Auth modes**: open, basic (username/password with JWTs) and OAuth2/OIDC (Google, Azure AD,
+  Okta, Keycloak, custom), plus a static API key and scoped `rat_` access tokens in any mode
+- **Permission mode**: hierarchical collections with `queryableBy` users/groups and per-document
+  `readableBy`, enforced at query time
 
-### Document Ingestion
-- **File watcher**: Automatically ingest from local directories
-- **URL ingestion**: Fetch and index web content
-- **External ingesters**: Sync API for Confluence, SharePoint, custom sources
-- **Incremental sync**: Only re-index changed documents
-
-### Intelligent Search
-- **Hybrid retrieval**: Combines semantic and keyword search
-- **Permission-aware**: Documents filtered by user access
-- **Configurable chunking**: Multiple strategies for different content types
-
-### Enterprise Ready
-- **Authentication**: Open, Basic, or OAuth modes
-- **Permission model**: Users, groups, and collection-based access
-- **Analytics**: Query logging, latency metrics, feedback collection
-- **Admin UI**: Dashboard for monitoring and management
+### Operations
+- **Query analytics**: every query logged with latencies, token usage and estimated cost
+  (llm4s tracing), user feedback, and optimization suggestions
+- **A/B experiments** with Welch's t-tests and two-proportion z-tests
+- **Admin UI** (Vue) served at `/admin`, with live updates over WebSocket
+- **Production hardening**: Flyway migrations, a shared HikariCP pool, rate limiting, request
+  size limits, CORS, PBKDF2 password hashing, Prometheus metrics, health probes, Helm chart
 
 ## Quick Example
 
 ```bash
-# Start RAG in a Box with Docker
-docker run -d \
-  -p 8080:8080 \
-  -v /path/to/docs:/data/docs \
-  -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  llm4s/rag-in-a-box
+git clone https://github.com/llm4s/rag_in_a_box.git && cd rag_in_a_box
+cp .env.example .env              # set OPENAI_API_KEY
+docker compose up -d --build
 
-# Upload a document
+# Add a document
 curl -X POST http://localhost:8080/api/v1/documents \
   -H "Content-Type: application/json" \
   -d '{"content": "Your document text...", "filename": "doc.txt"}'
 
-# Query the system
+# Ask a question
 curl -X POST http://localhost:8080/api/v1/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What is this document about?"}'
@@ -68,40 +72,35 @@ curl -X POST http://localhost:8080/api/v1/query \
 
 ## Architecture
 
-RAG in a Box is powered by [LLM4S](https://llm4s.org), a comprehensive Scala framework for building LLM applications.
-
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      RAG in a Box                            │
+│                       RAG in a Box                          │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Admin UI  │  │  REST API   │  │   External Ingesters │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│   Admin UI (/admin)   │   REST API (/api/v1)   │  /ws, /metrics │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ Auth/Perms  │  │   RAG Core  │  │    Query Analytics   │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│  Rate limit · size limit · CORS · Authenticator · Authz     │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                      LLM4S Core                          ││
-│  │  Embeddings │ LLM Clients │ Vector Search │ Chunking    ││
-│  └─────────────────────────────────────────────────────────┘│
+│  Documents · Sync · Query/Chat · Ingestion · Analytics ·    │
+│  Experiments · Runtime config · Permissions                 │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────────────────────────────────┐│
-│  │  PostgreSQL │  │           pgvector Extension            ││
-│  └─────────────┘  └─────────────────────────────────────────┘│
+│                         LLM4S                               │
+│  RAG pipeline · provider registry · embeddings · chunkers · │
+│  pgvector hybrid search · reranking · tracing · permissions │
+├─────────────────────────────────────────────────────────────┤
+│        PostgreSQL + pgvector (Flyway-managed schema)        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Next Steps
 
-- [Quick Start Guide](/getting-started/quickstart) - Get up and running in 5 minutes
-- [Configuration](/guide/configuration) - Customize your deployment
-- [API Reference](/api/documents) - Complete API documentation
-- [External Ingesters](/guide/external-ingesters) - Build custom data pipelines
+- [Quick Start Guide](/getting-started/quickstart) - running in a few minutes
+- [Configuration](/guide/configuration) - every setting
+- [API Reference](/api/) - every endpoint, with its auth requirements
+- [External Ingesters](/guide/external-ingesters) - push documents with the sync API
 
 ---
 
 ## About
 
-RAG in a Box is open source software released under the MIT License. It's part of the [LLM4S](https://llm4s.org) ecosystem.
+RAG in a Box is open source software released under the MIT License. It's part of the
+[LLM4S](https://llm4s.org) ecosystem.

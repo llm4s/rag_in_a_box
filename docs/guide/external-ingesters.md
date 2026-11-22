@@ -2,7 +2,7 @@
 layout: page
 title: External Ingesters
 parent: User Guide
-nav_order: 2
+nav_order: 8
 ---
 
 # External Ingesters
@@ -32,6 +32,12 @@ The built-in URL and web-crawler ingestion only fetches public addresses (see
 ingester is the way to index intranet systems: it runs with its own network access and pushes
 the content.
 
+The examples omit credentials for brevity. Unless the server runs in open mode without
+`API_KEY`, every request needs one; see [Authentication for Ingesters](#authentication-for-ingesters).
+The `/api/v1/sync/*` endpoints are for ingesters: access tokens with the `sync:read` /
+`sync:write` scopes, and administrators. Document endpoints need `documents:read` /
+`documents:write`.
+
 ## Sync API Pattern
 
 ### 1. Get Current Document States
@@ -42,6 +48,11 @@ Check what documents are already indexed:
 # Get all document IDs with hashes and timestamps
 curl "http://localhost:8080/api/v1/sync/documents?include=hash,updatedAt"
 ```
+
+`include` takes `hash` and/or `updatedAt`; without it only `id` and `collection` are returned.
+The list is paged (`page`, `pageSize`: default 1000, max 10000); keep requesting the next
+`page` while `hasMore` is true. A collection-restricted token only sees documents in its
+collections.
 
 Response:
 ```json
@@ -83,24 +94,38 @@ curl -X PUT "http://localhost:8080/api/v1/documents/confluence-page-123" \
   }'
 ```
 
-Response:
+Response (`201 Created` for a new document, `200 OK` otherwise):
 ```json
 {
   "documentId": "confluence-page-123",
   "chunks": 5,
-  "action": "unchanged",  // or "created", "updated"
+  "action": "unchanged",
   "message": "Document unchanged (hash match)"
 }
 ```
 
+`action` is `created`, `updated` or `unchanged`.
+
 The `contentHash` parameter enables efficient change detection:
-- If the hash matches, the document is skipped (no re-chunking/embedding)
+- If the hash matches the stored one, the document is skipped (no re-chunking/embedding)
 - If the hash differs, the document is re-indexed
-- If omitted, RAG in a Box computes the hash
+- If omitted, RAG in a Box computes one (hex SHA-256 of the content). The value is stored as
+  given, so use one format consistently (the examples use `sha256:<hex>`)
+
+`collection` (default `default`) and `readableBy` (principal external IDs such as
+`user:alice`, `group:eng`) apply in permission mode; without permission mode the collection is
+only recorded in the metadata and `readableBy` is ignored.
 
 ### 3. Detect and Remove Deleted Documents
 
-After syncing all documents from your source, prune orphans:
+After syncing all documents from your source, prune orphans: every document **not** in
+`keepDocumentIds` is deleted.
+
+{: .warning }
+The prune is not limited to your source. With an unrestricted credential it deletes every
+other document in the server - other ingesters' documents, uploads, and documents from
+configured ingestion sources. Give each ingester an access token restricted to its own
+collections (then only documents inside them are pruned), and always try `dryRun` first.
 
 ```bash
 # First, preview what would be deleted (dry run)
@@ -122,7 +147,8 @@ Response:
 }
 ```
 
-Then execute the prune:
+A `POST /api/v1/sync` without a body only records the sync time (see
+[Sync Status](#sync-status)). Then execute the prune:
 
 ```bash
 curl -X POST "http://localhost:8080/api/v1/sync" \
@@ -143,7 +169,7 @@ Response:
 
 ## Batch Delete
 
-For deleting multiple specific documents at once:
+For deleting multiple specific documents at once (up to 1000 ids; `documents:write`):
 
 ```bash
 # Dry run - preview what would be deleted
@@ -186,6 +212,9 @@ Response:
   "dryRun": false
 }
 ```
+
+`DELETE /api/v1/documents` without a body answers `400`. Deleting **every** document needs
+`DELETE /api/v1/documents?all=true` with no body, and an administrator.
 
 ## Incremental Sync
 
@@ -388,28 +417,34 @@ A token restricted to `confluence` may write to `confluence` and its sub-collect
 (`confluence/ENG`, ...). Writes to other collections answer `403`, and `POST /api/v1/sync`
 with `keepDocumentIds` only prunes documents inside the token's collections.
 
-Response:
+Response (`201 Created`):
 ```json
 {
   "id": "token-uuid",
   "name": "confluence-ingester",
   "token": "rat_abc123...",
-  "scopes": ["documents:write", "sync:write", "sync:read"]
+  "scopes": ["documents:write", "sync:write", "sync:read"],
+  "collections": ["confluence"],
+  "expiresAt": null
 }
 ```
 
-Use the token in your ingester:
+Use the token in your ingester (here the collection must be inside `confluence`; without one the
+document would go to `default` and be refused):
 
 ```bash
 curl -X PUT "http://localhost:8080/api/v1/documents/doc-123" \
   -H "Authorization: Bearer rat_abc123..." \
   -H "Content-Type: application/json" \
-  -d '{"content": "..."}'
+  -d '{"content": "...", "collection": "confluence/ENG"}'
 ```
+
+In the Python and Node.js examples above, add the same `Authorization: Bearer` header to every
+request.
 
 ## Sync Status
 
-Check when the last sync completed:
+Check when the last sync completed (`POST /api/v1/sync` records it):
 
 ```bash
 curl "http://localhost:8080/api/v1/sync/status"
@@ -424,6 +459,8 @@ Response:
   "pendingDeletes": 0
 }
 ```
+
+`pendingDeletes` is always `0` (reserved).
 
 ## Best Practices
 

@@ -2,17 +2,47 @@
 layout: page
 title: Query API
 parent: API Reference
-nav_order: 3
+nav_order: 4
 ---
 
 # Query API
+{: .no_toc }
 
-Endpoints for searching documents and generating answers.
+Retrieve relevant chunks and generate answers with the configured LLM.
 {: .fs-6 .fw-300 }
 
-## Query with Answer {#query}
+## Table of Contents
+{: .no_toc .text-delta }
 
-Search for relevant documents and generate an answer using the configured LLM.
+1. TOC
+{:toc}
+
+---
+
+**Auth (all endpoints):** Authenticated; access tokens need the `query` scope. A
+collection-restricted token must pass a `collection` pattern inside its restriction (the default
+`*` is refused with `403`).
+
+## Collection Patterns
+
+| Pattern | Matches |
+|---------|---------|
+| `*` | All collections (default) |
+| `exact/name` | That collection only |
+| `parent/*` | Direct children of `parent` |
+| `parent/**` | All descendants of `parent` |
+
+## Who the Query Runs As
+
+In permission mode (PostgreSQL search index available), results are filtered by the
+authenticated caller's collection permissions and each document's `readableBy`
+(see [Permissions](/guide/permissions)). `X-User-Id` / `X-Group-Ids` are only honoured from an
+administrator credential with `AUTH_TRUSTED_PROXY_HEADERS=true`. Without permission mode every
+caller sees every document.
+
+---
+
+## Query with Answer {#query}
 
 ```
 POST /api/v1/query
@@ -22,52 +52,44 @@ POST /api/v1/query
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `question` | string | Yes | The question to answer |
-| `collection` | string | No | Collection pattern (default: `"*"`) |
-| `topK` | integer | No | Number of chunks to retrieve (default: 5) |
+| `question` | string | Yes | The question (at most 10,000 characters) |
+| `collection` | string | No | Collection pattern (default `*`) |
+| `topK` | integer | No | Chunks to retrieve (default: the runtime `topK`, initially `RAG_TOP_K` = 5) |
+| `experimentId` | string | No | Route the query through this running [experiment](/api/experiments); otherwise the single running experiment (if any) applies |
+| `overrides` | object | No | Per-request settings, see below |
 
-### Collection Patterns
+`overrides` fields: `topK`, `fusionStrategy` (`rrf`, `weighted`, `vector_only`,
+`keyword_only`), `systemPrompt`. Precedence is experiment group config, then `overrides`,
+then `topK`, then the runtime settings. `overrides.llmTemperature` and
+`overrides.similarityThreshold` (and the top-level `includeMetadata`) are accepted but
+currently ignored: llm4s 0.6.0 answers `/query` at temperature 0.0
+([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715)).
 
-| Pattern | Description |
-|---------|-------------|
-| `*` | All collections (default) |
-| `exact-name` | Exact collection match |
-| `parent/*` | Direct children of parent |
-| `parent/**` | All descendants of parent |
-
-### Permissions
-
-When permissions are enabled, results are filtered by the authenticated caller's permissions
-(see [Permissions](../guide/permissions.md#who-the-query-runs-as)). `X-User-Id` / `X-Group-Ids`
-are only honoured from an administrator credential with `AUTH_TRUSTED_PROXY_HEADERS=true`.
-
-### Example Request
+### Example
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/query \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-token" \
+  -H "Authorization: Bearer $RAGBOX_TOKEN" \
   -d '{
     "question": "How do I configure authentication?",
-    "collection": "docs/*",
+    "collection": "docs/**",
     "topK": 5
   }'
 ```
 
-### Example Response
+### Response
 
 ```json
 {
-  "answer": "To configure authentication, you can set the AUTH_MODE environment variable...",
+  "answer": "Set the AUTH_MODE environment variable...",
   "contexts": [
     {
       "content": "Authentication can be configured using...",
-      "documentId": "doc-123",
       "score": 0.92,
-      "metadata": {
-        "source": "auth-guide.md",
-        "collection": "docs/guides"
-      }
+      "metadata": { "filename": "auth-guide.md", "collection": "docs/guides" },
+      "documentId": "doc-123",
+      "chunkIndex": 0
     }
   ],
   "usage": {
@@ -92,18 +114,53 @@ curl -X POST http://localhost:8080/api/v1/query \
 `usage` is the answer completion's token usage. `metrics` comes from llm4s tracing: the
 query's embedding, search and answer-generation latencies, tokens over every completion it
 made (including query rewriting and LLM reranking, when enabled), and an estimated cost for
-models whose pricing llm4s knows. `embeddingLatencyMs` and `searchLatencyMs` are present
-when the embedding provider reports usage. The same figures are stored in the query log.
+models whose pricing llm4s knows. Optional figures are `null` when unknown. Every query
+(successful or failed) is recorded in the [query log](/api/analytics).
 
-Streaming (`POST /api/v1/query/stream`) sends the contexts and then the whole answer as one
-`answer` event: llm4s 0.6.0 has no streaming RAG answer API
-([llm4s/llm4s#2717](https://github.com/llm4s/llm4s/issues/2717), added upstream for the next release).
+---
+
+## Streaming Query {#stream}
+
+```
+POST /api/v1/query/stream
+```
+
+Same request body as [`/query`](#query). The response is `text/event-stream` with these
+events, each `data` a JSON object:
+
+| Event | Data |
+|-------|------|
+| `start` | `{"queryId", "timestamp"}` |
+| `context` | `{"context": <context item>, "index", "timestamp"}`, one per retrieved chunk |
+| `answer` | `{"answer", "timestamp"}`, the whole answer |
+| `usage` | `{"usage": {"promptTokens", "completionTokens", "totalTokens"}, "timestamp"}`, when known |
+| `complete` | `{"queryId", "totalContexts", "timestamp"}` |
+| `error` | `{"error": "query_failed", "message", "timestamp"}`, instead of the events after `start` |
+
+```
+event: start
+data: {"queryId":"5b0c...","timestamp":"2026-01-15T10:30:00Z"}
+
+event: context
+data: {"context":{"content":"...","score":0.92,"metadata":{},"documentId":"doc-123","chunkIndex":0},"index":0,"timestamp":"..."}
+
+event: answer
+data: {"answer":"Set the AUTH_MODE environment variable...","timestamp":"..."}
+
+event: complete
+data: {"queryId":"5b0c...","totalContexts":1,"timestamp":"..."}
+```
+
+The answer is not streamed token by token: llm4s 0.6.0 has no streaming RAG answer API
+([llm4s/llm4s#2717](https://github.com/llm4s/llm4s/issues/2717)), so the full answer is
+generated first and sent as one `answer` event. Validation and authorization failures are
+ordinary JSON error responses, not events.
 
 ---
 
 ## Search Only {#search}
 
-Search for relevant documents without generating an answer. Useful for retrieval-only use cases.
+Retrieve chunks without calling the LLM.
 
 ```
 POST /api/v1/search
@@ -113,45 +170,45 @@ POST /api/v1/search
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | string | Yes | The search query |
-| `collection` | string | No | Collection pattern (default: `"*"`) |
-| `topK` | integer | No | Number of chunks to retrieve (default: 5) |
+| `query` | string | Yes | The search query (at most 10,000 characters) |
+| `collection` | string | No | Collection pattern (default `*`) |
+| `topK` | integer | No | Chunks to return (default: runtime `topK`) |
 
-### Example Request
+### Example
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search \
   -H "Content-Type: application/json" \
-  -d '{
-    "query": "authentication configuration",
-    "topK": 10
-  }'
+  -H "Authorization: Bearer $RAGBOX_TOKEN" \
+  -d '{"query": "authentication configuration", "topK": 10}'
 ```
 
-### Example Response
+### Response
 
 ```json
 {
   "results": [
     {
       "content": "Authentication can be configured using...",
-      "documentId": "doc-123",
       "score": 0.92,
-      "metadata": {
-        "source": "auth-guide.md",
-        "collection": "docs/guides"
-      }
+      "metadata": { "filename": "auth-guide.md", "collection": "docs/guides" },
+      "documentId": "doc-123",
+      "chunkIndex": 0
     }
-  ]
+  ],
+  "count": 1
 }
 ```
+
+Searches are not recorded in the query log.
 
 ---
 
 ## Error Responses
 
-| Status | Error | Description |
-|--------|-------|-------------|
-| 400 | `bad_request` | Invalid query or missing required fields |
-| 400 | `config_error` | LLM not configured (for /query endpoint) |
-| 500 | `internal_error` | Search or LLM failed |
+| Status | `error` | When |
+|--------|---------|------|
+| 400 | `bad_request` | Empty or too long question/query, invalid body |
+| 400 | `configuration_error` | `/query` when no LLM could be built (check `LLM_MODEL` and the provider API key; the server log says why) |
+| 403 | `forbidden` | Token without the `query` scope, or a pattern outside its collection restriction |
+| 500 | `internal_error` | Retrieval or the LLM failed |

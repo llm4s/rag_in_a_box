@@ -2,7 +2,7 @@
 layout: page
 title: S3 Ingestion
 parent: User Guide
-nav_order: 3
+nav_order: 9
 ---
 
 # S3 Ingestion
@@ -30,7 +30,8 @@ S3 ingestion allows you to automatically pull documents from AWS S3 buckets for 
 
 ## Supported File Formats
 
-The S3 ingester extracts text from a variety of document formats:
+The S3 source uses llm4s's `S3Loader`, which extracts text with llm4s's document extraction
+(Apache PDFBox, POI and Tika). Only objects whose extension matches `patterns` are loaded:
 
 | Format | Extensions | Extraction |
 |--------|------------|------------|
@@ -142,7 +143,7 @@ patterns = ["*.md", "*.txt", "*.pdf", "*.docx", "*.doc", "*.json", "*.xml", "*.h
 ingestion {
   enabled = true
   run-on-startup = true
-  schedule = "0 0 * * *"  # Daily at midnight
+  schedule = "daily"  # every 24 hours from startup; see Configuration > Schedules
 
   sources = [
     {
@@ -173,31 +174,38 @@ ingestion {
 }
 ```
 
+Documents go into the collection named by the source's `metadata.collection`, or `default`.
+Each S3 source only removes the documents it ingested itself when objects disappear from the
+bucket (see [How sources are synced](configuration.md#how-sources-are-synced)).
+
 ## Manual Trigger
 
-Trigger S3 ingestion via the API:
+Trigger ingestion via the API (administrators only):
 
 ```bash
-# Trigger all sources
-curl -X POST "http://localhost:8080/api/v1/ingestion/run"
+# Run all sources
+curl -X POST "http://localhost:8080/api/v1/ingest/run" -H "X-API-Key: $API_KEY"
 
-# Trigger specific source
-curl -X POST "http://localhost:8080/api/v1/ingestion/run/engineering-docs"
+# Run one source
+curl -X POST "http://localhost:8080/api/v1/ingest/run/engineering-docs" -H "X-API-Key: $API_KEY"
 ```
+
+`/ingest/run` answers a list of per-source results, `/ingest/run/{source}` a single result
+(`404` for an unknown source). While a run is in progress both answer `409 Conflict`.
 
 ## Monitoring
 
 Check ingestion status:
 
 ```bash
-curl "http://localhost:8080/api/v1/ingestion/status"
+curl "http://localhost:8080/api/v1/ingest/status" -H "X-API-Key: $API_KEY"
 ```
 
 Response:
 ```json
 {
   "running": false,
-  "lastRun": "2024-01-15T00:00:00Z",
+  "lastRun": "2026-01-15T00:00:00Z",
   "lastResults": [
     {
       "sourceName": "engineering-docs",
@@ -207,12 +215,24 @@ Response:
       "documentsDeleted": 1,
       "documentsUnchanged": 150,
       "documentsFailed": 0,
-      "durationMs": 45000
+      "durationMs": 45000,
+      "error": null
     }
   ],
-  "nextScheduledRun": "2024-01-16T00:00:00Z"
+  "nextScheduledRun": "2026-01-16T00:00:00Z",
+  "sources": [
+    {
+      "name": "engineering-docs",
+      "sourceType": "s3",
+      "enabled": true,
+      "config": {"bucket": "company-documentation", "prefix": "docs/engineering/", "region": "us-west-2", "patterns": "*.md,*.pdf,*.docx"}
+    }
+  ]
 }
 ```
+
+`GET /api/v1/ingest/sources` lists the configured sources alone. Progress is also pushed to
+WebSocket clients (`/ws`, `ingestion_progress` messages).
 
 ## Best Practices
 

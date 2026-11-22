@@ -2,7 +2,7 @@
 layout: page
 title: Analytics
 parent: User Guide
-nav_order: 7
+nav_order: 11
 ---
 
 # Analytics Guide
@@ -12,112 +12,152 @@ Monitor query performance and collect feedback for RAG evaluation.
 
 ## Overview
 
-RAG in a Box automatically logs queries and provides analytics for:
+RAG in a Box logs every answered query in PostgreSQL (the `query_logs` table) and provides
+analytics for:
 
-- **Performance monitoring**: Latency tracking across pipeline stages
-- **Quality evaluation**: User feedback collection
-- **Usage insights**: Query patterns and collection usage
+- **Performance monitoring**: latency across pipeline stages, from llm4s tracing
+- **Cost and tokens**: embedding, prompt and completion tokens and an estimated cost
+- **Quality evaluation**: user ratings and relevant-chunk feedback
+- **Usage insights**: query volume and latency by collection pattern
+
+The analytics endpoints expose every user's query text, so they are **administrator-only**
+(`403` for anyone else). The [optimization suggestions](optimization.md) and
+[experiments](experimentation.md) are built on the same logs.
 
 ---
 
 ## Query Logging
 
-Every query is automatically logged with:
+`POST /api/v1/query` (and its streaming variant) and every chat message are logged; failed
+queries are logged too (`failed: true` with `errorMessage`), except requests rejected as
+invalid. `POST /api/v1/search` (retrieval only) is not logged.
+
+A log entry (`QueryLogEntry`) has:
 
 | Field | Description |
 |-------|-------------|
-| `queryText` | The user's question |
-| `collectionPattern` | Target collection(s) |
-| `userId` | User who made the query (if available) |
-| `timestamp` | When the query was made |
-| `totalLatencyMs` | End-to-end latency |
-| `chunksRetrieved` | Number of chunks found |
-| `chunksUsed` | Chunks included in context |
-| `answerTokens` | Tokens used for response |
+| `id` | Log entry id (UUID) |
+| `queryText` | The question |
+| `collectionPattern` | The collection pattern queried (`*` when none was given) |
+| `userId` | The authenticated principal (e.g. `user:alice`, `api-key`, `token:<id>`) |
+| `embeddingLatencyMs`, `searchLatencyMs`, `llmLatencyMs` | Stage latencies from llm4s tracing, when known |
+| `totalLatencyMs` | End-to-end latency measured by the server |
+| `chunksRetrieved`, `chunksUsed` | Chunks retrieved and used as context |
+| `answerTokens` | Completion tokens |
+| `promptTokens`, `embeddingTokens` | Prompt and embedding tokens |
+| `costUsd` | Estimated cost, for models whose pricing llm4s knows |
+| `userRating` | Feedback rating (1-5), once given |
+| `experimentId`, `variant`, `configSnapshot` | The experiment and group (`baseline` / `variant`) the query was routed to, and the settings it ran with |
+| `failed`, `errorMessage` | Whether answering failed, and why |
+| `createdAt` | When the query was made |
 
 ---
 
 ## Analytics API
 
+The examples assume `$TOKEN` is an administrator credential (`API_KEY`, an admin user's JWT,
+or an admin-scoped access token).
+
 ### List Query Logs
 
-Retrieve paginated query history:
+Newest first, paginated:
 
 ```bash
 curl "http://localhost:8080/api/v1/analytics/queries?page=1&pageSize=20" \
-  -H "Authorization: Bearer your-token"
+  -H "Authorization: Bearer $TOKEN"
 ```
-
-#### Query Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `from` | - | Start timestamp (ISO-8601) |
+| `from` | - | Start timestamp (ISO-8601, e.g. `2026-01-14T00:00:00Z`) |
 | `to` | - | End timestamp (ISO-8601) |
-| `collection` | - | Filter by collection |
+| `collection` | - | Only queries whose collection pattern is exactly this |
 | `page` | 1 | Page number |
-| `pageSize` | 50 | Results per page (max 100) |
+| `pageSize` | 50 | Results per page (capped at 100) |
 
-#### Example with Filters
-
-```bash
-# Last 24 hours, docs collection only
-curl "http://localhost:8080/api/v1/analytics/queries?\
-from=2024-01-14T00:00:00Z&\
-collection=docs/*&\
-pageSize=50"
-```
+Response: `{"queries": [QueryLogEntry...], "total": 1500, "page": 1, "pageSize": 20}`.
 
 ### Get Query Details
 
-Retrieve a specific query log:
-
 ```bash
-curl http://localhost:8080/api/v1/analytics/queries/query-123 \
-  -H "Authorization: Bearer your-token"
+curl http://localhost:8080/api/v1/analytics/queries/<id> \
+  -H "Authorization: Bearer $TOKEN"
 ```
+
+Returns one `QueryLogEntry`, or `404`.
 
 ### Get Analytics Summary
 
-Aggregated statistics for a time period:
+Aggregated statistics for a time period (default: the last 7 days):
 
 ```bash
-curl "http://localhost:8080/api/v1/analytics/queries/summary?\
-from=2024-01-01T00:00:00Z&\
-to=2024-01-15T00:00:00Z" \
-  -H "Authorization: Bearer your-token"
+curl "http://localhost:8080/api/v1/analytics/queries/summary?from=2026-01-01T00:00:00Z&to=2026-01-15T00:00:00Z" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Default period is the last 7 days.
+```json
+{
+  "totalQueries": 1500,
+  "averageLatencyMs": 850.0,
+  "p50LatencyMs": 720,
+  "p95LatencyMs": 1800,
+  "p99LatencyMs": 2600,
+  "averageChunksRetrieved": 4.2,
+  "averageChunksUsed": 4.0,
+  "averageRating": 4.1,
+  "ratedQueriesCount": 320,
+  "queriesWithFeedback": 320,
+  "topCollections": [
+    {"collection": "docs/**", "queryCount": 800, "averageLatencyMs": 790.5, "averageRating": 4.3}
+  ],
+  "periodStart": "2026-01-01T00:00:00Z",
+  "periodEnd": "2026-01-15T00:00:00Z",
+  "p95RetrievalLatencyMs": 240,
+  "totalCostUsd": 1.73
+}
+```
+
+`p95RetrievalLatencyMs` is the p95 of total minus answer-generation latency, over queries whose
+LLM latency was recorded; `totalCostUsd` sums the estimated costs that are known.
 
 ---
 
 ## User Feedback
 
-Collect feedback on query quality for RAGA (RAG Assessment) evaluation.
+### Rating chat messages
 
-### Submit Feedback
+The admin UI's chat rates answers with `PUT /api/v1/chat/messages/{messageId}/rate`
+(`{"rating": 1-5}`), available to the session's owner and administrators. The rating is stored
+on the message and on the query log entry of the answer.
+
+### Submitting feedback for a query log entry
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/feedback \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-token" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
-    "queryId": "query-123",
+    "queryId": "<query log id>",
     "rating": 4,
     "relevantChunks": ["chunk-1", "chunk-3"],
     "comment": "Good answer but second chunk was not relevant"
   }'
 ```
 
-### Feedback Fields
-
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `queryId` | string | Yes | Query to provide feedback for |
-| `rating` | integer | Yes | Rating from 1-5 |
-| `relevantChunks` | array | No | IDs of actually relevant chunks |
-| `comment` | string | No | Free-form feedback text |
+| `queryId` | string | Yes | Query log entry id |
+| `rating` | integer | Yes | 1-5 (anything else answers `400`) |
+| `relevantChunks` | array | No | IDs of the chunks that were actually relevant |
+| `comment` | string | No | Free-form feedback |
+
+Response: `{"success": true, "message": "Feedback recorded"}`, or `404` for an unknown id.
+Any authenticated user may call it (access tokens need the `admin` scope).
+
+{: .note }
+The `POST /api/v1/query` response does not include the query log id, so a client cannot
+attach feedback to its own query without looking the id up in the (admin-only) analytics.
+Rate chat messages instead.
 
 ### Rating Scale
 
@@ -131,52 +171,25 @@ curl -X POST http://localhost:8080/api/v1/feedback \
 
 ---
 
-## Summary Response
-
-The analytics summary provides aggregated metrics:
-
-```json
-{
-  "period": {
-    "from": "2024-01-01T00:00:00Z",
-    "to": "2024-01-15T00:00:00Z"
-  },
-  "totalQueries": 1500,
-  "averageLatencyMs": 850,
-  "p50LatencyMs": 720,
-  "p95LatencyMs": 1800,
-  "averageChunksRetrieved": 4.2,
-  "averageRating": 4.1,
-  "feedbackCount": 320,
-  "queriesByCollection": {
-    "docs/guides": 800,
-    "docs/api": 500,
-    "other": 200
-  }
-}
-```
-
----
-
 ## Performance Monitoring
 
 ### Latency Breakdown
 
-Each query log includes latency breakdown (when available):
-
 | Metric | Description |
 |--------|-------------|
-| `embeddingLatencyMs` | Time to generate query embedding |
-| `searchLatencyMs` | Time for vector search |
-| `llmLatencyMs` | Time for answer generation |
-| `totalLatencyMs` | End-to-end time |
+| `embeddingLatencyMs` | Embedding the query |
+| `searchLatencyMs` | The rest of retrieval (search, reranking, query rewriting) |
+| `llmLatencyMs` | Answer generation |
+| `totalLatencyMs` | End-to-end |
+
+The same values are returned in each query response's `metrics`.
 
 ### Identifying Bottlenecks
 
 ```bash
-# Get recent slow queries (> 2 seconds)
-curl "http://localhost:8080/api/v1/analytics/queries?\
-pageSize=100" | jq '.queries | map(select(.totalLatencyMs > 2000))'
+# Recent slow queries (> 2 seconds)
+curl -s "http://localhost:8080/api/v1/analytics/queries?pageSize=100" \
+  -H "Authorization: Bearer $TOKEN" | jq '.queries | map(select(.totalLatencyMs > 2000))'
 ```
 
 ### Typical Latency Ranges
@@ -188,120 +201,53 @@ pageSize=100" | jq '.queries | map(select(.totalLatencyMs > 2000))'
 | LLM | 500-2000ms | > 5000ms |
 | Total | 700-2500ms | > 5000ms |
 
----
-
-## RAGA Evaluation
-
-Use analytics data for RAG Assessment:
-
-### 1. Collect Ground Truth
-
-Build a test set from real queries with user feedback:
-
-```bash
-# Export highly-rated queries as ground truth
-curl "http://localhost:8080/api/v1/analytics/queries?\
-pageSize=1000" | jq '[.queries[] | select(.feedback.rating >= 4)]'
-```
-
-### 2. Track Retrieval Quality
-
-Use `relevantChunks` feedback to measure:
-
-- **Precision**: Relevant chunks / Retrieved chunks
-- **Recall**: Relevant chunks found / Total relevant
-
-### 3. Monitor Trends
-
-Track metrics over time:
-
-```bash
-# Weekly summaries
-for week in {1..4}; do
-  curl "http://localhost:8080/api/v1/analytics/queries/summary?\
-from=2024-01-$((week*7-6))T00:00:00Z&\
-to=2024-01-$((week*7))T00:00:00Z"
-done
-```
+For server-wide Prometheus metrics enable `/metrics` with `METRICS_ENABLED=true`; see
+[Configuration](configuration.md#metrics).
 
 ---
 
-## Integration Examples
+## Using the Logs for Evaluation
 
-### Dashboard Integration
-
-Fetch summary data for a monitoring dashboard:
-
-```javascript
-async function fetchAnalytics() {
-  const response = await fetch('/api/v1/analytics/queries/summary', {
-    headers: { 'Authorization': `Bearer ${token}` }
-  });
-  return response.json();
-}
-```
-
-### Alerting on Low Ratings
-
-Monitor for quality degradation:
+### Collect ground truth
 
 ```bash
-# Check average rating (alert if < 3.5)
+# Highly rated queries
+curl -s "http://localhost:8080/api/v1/analytics/queries?pageSize=100" \
+  -H "Authorization: Bearer $TOKEN" | jq '[.queries[] | select(.userRating >= 4)]'
+```
+
+### Track retrieval quality
+
+With `relevantChunks` feedback you can compute precision (relevant chunks / retrieved chunks)
+offline.
+
+### Export for analysis
+
+```bash
+for page in 1 2 3; do
+  curl -s "http://localhost:8080/api/v1/analytics/queries?from=2026-01-01T00:00:00Z&pageSize=100&page=$page" \
+    -H "Authorization: Bearer $TOKEN" \
+    | jq -r '.queries[] | [.createdAt, .queryText, .totalLatencyMs, .userRating] | @csv'
+done > queries.csv
+```
+
+### Alerting on low ratings
+
+```bash
 rating=$(curl -s "http://localhost:8080/api/v1/analytics/queries/summary" \
-  | jq '.averageRating')
-
+  -H "Authorization: Bearer $TOKEN" | jq '.averageRating // 5')
 if (( $(echo "$rating < 3.5" | bc -l) )); then
-  echo "Warning: Average rating dropped to $rating"
+  echo "Warning: average rating dropped to $rating"
 fi
-```
-
-### Export for Analysis
-
-Export query logs for external analysis:
-
-```bash
-# Export last month to CSV
-curl "http://localhost:8080/api/v1/analytics/queries?\
-from=2024-01-01T00:00:00Z&\
-pageSize=10000" | jq -r \
-  '.queries[] | [.timestamp, .queryText, .totalLatencyMs, .feedback.rating] | @csv' \
-  > queries.csv
 ```
 
 ---
 
 ## Best Practices
 
-### 1. Regular Review
-
-Review analytics weekly to catch issues early:
-- Check for latency spikes
-- Monitor feedback ratings
-- Identify problematic queries
-
-### 2. Feedback Loop
-
-Encourage users to provide feedback:
-- Make feedback easy to submit
-- Use ratings to identify improvement areas
-- Track trends over time
-
-### 3. Set Baselines
-
-Establish performance baselines:
-
-```bash
-# Capture baseline metrics
-curl "http://localhost:8080/api/v1/analytics/queries/summary" \
-  > baseline-metrics.json
-```
-
-### 4. Alert Thresholds
-
-Set up alerts for:
-
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| p95 Latency | > 3s | > 5s |
-| Average Rating | < 3.5 | < 3.0 |
-| Error Rate | > 1% | > 5% |
+- Review analytics regularly: latency spikes, ratings, failed queries.
+- Make feedback easy to give (the chat UI's rating buttons) and watch trends over time.
+- Capture a baseline summary before changing settings, or better, run an
+  [experiment](experimentation.md).
+- Suggested alert thresholds: p95 latency > 3s (warning) / > 5s (critical); average rating
+  < 3.5 / < 3.0.

@@ -2,140 +2,213 @@
 layout: page
 title: Config API
 parent: API Reference
-nav_order: 7
+nav_order: 9
 ---
 
 # Config API
+{: .no_toc }
 
-Endpoints for retrieving application configuration and statistics.
+Read the static configuration, list providers, and change the runtime settings without a
+restart. Static settings come from environment variables (see
+[Configuration](/guide/configuration)).
 {: .fs-6 .fw-300 }
 
-## Get Configuration {#get}
+## Table of Contents
+{: .no_toc .text-delta }
 
-Retrieve the current application configuration.
+1. TOC
+{:toc}
+
+---
+
+**Auth:** reads are open to any authenticated caller (access tokens need the `admin` scope);
+changes, validation and the change history are **Admin** only.
+
+## Get Configuration {#get}
 
 ```
 GET /api/v1/config
 ```
 
-### Example Response
-
 ```json
 {
-  "embedding": {
-    "provider": "openai",
-    "model": "text-embedding-3-small"
-  },
-  "llm": {
-    "model": "openai/gpt-4o",
-    "temperature": 0.1
-  },
+  "embedding": { "provider": "openai", "model": "text-embedding-3-small", "dimensions": 1536 },
+  "llm": { "model": "openai/gpt-4o", "temperature": 0.1 },
   "rag": {
     "chunkingStrategy": "sentence",
     "chunkSize": 800,
     "chunkOverlap": 150,
     "topK": 5,
-    "fusionStrategy": "rrf"
+    "fusionStrategy": "rrf",
+    "rrfK": 60,
+    "searchMode": "hybrid",
+    "fusionApplies": true,
+    "reranking": "none",
+    "queryTransform": "none",
+    "limitations": []
   },
-  "auth": {
-    "mode": "basic"
+  "database": {
+    "host": "localhost",
+    "port": 15432,
+    "database": "ragdb",
+    "tableName": "rag_embeddings",
+    "connected": true
   }
 }
 ```
+
+`rag.searchMode` is `hybrid` (vector + keyword, fused) or `vector` in permission mode, where
+llm4s search is vector-only ([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/issues/2716));
+`fusionApplies` says whether `fusionStrategy`/`rrfK` have any effect, and `limitations` lists
+settings that do not take effect and why.
+
+`PUT /api/v1/config` exists but always answers `400`: static settings need a restart with new
+environment variables. Use the [runtime settings](#runtime) for live changes.
 
 ---
 
 ## Get Providers {#providers}
 
-List available LLM and embedding providers.
-
 ```
 GET /api/v1/config/providers
 ```
 
-### Example Response
+The LLM and embedding providers registered with llm4s's provider registry, with the models
+llm4s knows for each and whether the provider is usable (its API key is set, or it needs none).
 
 ```json
 {
-  "llm": [
-    {
-      "id": "openai/gpt-4o",
-      "name": "GPT-4o",
-      "provider": "openai",
-      "available": true
-    },
-    {
-      "id": "anthropic/claude-3-opus",
-      "name": "Claude 3 Opus",
-      "provider": "anthropic",
-      "available": false,
-      "reason": "API key not configured"
-    }
+  "embeddingProviders": [
+    { "name": "openai", "models": ["text-embedding-3-large", "text-embedding-3-small"], "configured": true }
   ],
-  "embedding": [
-    {
-      "id": "openai/text-embedding-3-small",
-      "name": "text-embedding-3-small",
-      "provider": "openai",
-      "dimensions": 1536,
-      "available": true
-    }
-  ]
+  "llmProviders": [
+    { "name": "anthropic", "models": ["claude-sonnet-4-5", "..."], "configured": false },
+    { "name": "openai", "models": ["gpt-4o", "gpt-4o-mini", "..."], "configured": true }
+  ],
+  "chunkingStrategies": ["simple", "sentence", "markdown", "semantic"],
+  "fusionStrategies": ["rrf", "weighted", "vector_only", "keyword_only"]
 }
 ```
 
 ---
 
-## Get Statistics {#stats}
+## Runtime Settings {#runtime}
 
-Retrieve document and collection statistics.
+Settings that can change while the server runs. They are stored in PostgreSQL, so they survive
+restarts and are shared by replicas.
 
 ```
-GET /api/v1/stats
+GET /api/v1/config/runtime
 ```
-
-### Example Response
 
 ```json
 {
-  "totalDocuments": 150,
-  "totalChunks": 2340,
-  "collections": [
-    {
-      "name": "docs/guides",
-      "documentCount": 45,
-      "chunkCount": 720
-    },
-    {
-      "name": "docs/api",
-      "documentCount": 30,
-      "chunkCount": 480
-    }
-  ],
-  "lastIngestion": "2024-01-15T08:00:00Z"
+  "config": {
+    "topK": 5,
+    "fusionStrategy": "rrf",
+    "rrfK": 60,
+    "systemPrompt": "You are a helpful assistant...",
+    "llmTemperature": 0.1,
+    "chunkingStrategy": "sentence",
+    "chunkSize": 800,
+    "chunkOverlap": 150
+  },
+  "lastModified": "2026-01-15T10:30:00Z",
+  "hotSettings": ["topK", "fusionStrategy", "rrfK", "systemPrompt", "llmModel", "llmTemperature"],
+  "warmSettings": ["chunkingStrategy", "chunkSize", "chunkOverlap"]
 }
 ```
+
+*Hot* settings apply to the next query; *warm* settings apply to documents ingested from now
+on (existing documents keep their chunks until re-ingested).
+
+### Update {#runtime-update}
+
+```
+PUT /api/v1/config/runtime
+```
+
+Send only the fields to change:
+
+```json
+{ "topK": 8, "systemPrompt": "Answer in one paragraph." }
+```
+
+```json
+{
+  "success": true,
+  "changes": [
+    { "field": "topK", "oldValue": "5", "newValue": "8", "changeability": "hot", "effectiveImmediately": true, "note": null }
+  ],
+  "current": { ...config... },
+  "message": "..."
+}
+```
+
+Invalid values answer `400` with `error: "validation_failed"` and the failing fields in
+`details`.
+
+### Validate {#runtime-validate}
+
+```
+POST /api/v1/config/runtime/validate
+```
+
+Same body as update; nothing is changed.
+
+```json
+{
+  "valid": false,
+  "validations": [
+    { "field": "topK", "valid": false, "currentValue": "5", "proposedValue": "0", "error": "...", "warning": null }
+  ],
+  "warnings": []
+}
+```
+
+### History {#runtime-history}
+
+```
+GET /api/v1/config/runtime/history?page=1&pageSize=50
+```
+
+```json
+{
+  "changes": [
+    { "id": 12, "field": "topK", "oldValue": "5", "newValue": "8", "changedAt": "2026-01-15T10:30:00Z", "changedBy": null }
+  ],
+  "total": 12,
+  "page": 1,
+  "pageSize": 50,
+  "hasMore": false
+}
+```
+
+### Metadata {#runtime-meta}
+
+```
+GET /api/v1/config/runtime/meta
+```
+
+A description of each runtime setting:
+
+```json
+[
+  {
+    "key": "topK",
+    "value": "5",
+    "type": "hot",
+    "description": "Number of chunks to retrieve for context (a request's topK takes precedence)",
+    "requiresRestart": false
+  }
+]
+```
+
+Descriptions end with where a setting does not apply (e.g. fusion in permission mode).
 
 ---
 
-## Update Configuration
+## Related
 
-`PUT /api/v1/config` does not change settings. Use `PUT /api/v1/config/runtime` for the
-settings that can change at runtime (topK, fusion, system prompt, temperature, chunking) - see
-[Runtime Settings](../guide/configuration.md#runtime-settings); everything else is set through
-environment variables and needs a restart.
-
-```
-PUT /api/v1/config
-```
-
-### Response
-
-**Status: 400 Bad Request**
-
-```json
-{
-  "error": "bad_request",
-  "message": "Runtime configuration updates not supported. Restart with new environment variables."
-}
-```
+- [Chunking API](/api/chunking): per-collection chunking configuration and previews
+- [Visibility API](/api/visibility): detailed configuration with changeability annotations

@@ -2,7 +2,7 @@
 layout: page
 title: Experimentation
 parent: User Guide
-nav_order: 9
+nav_order: 13
 ---
 
 # Experimentation Guide
@@ -21,6 +21,10 @@ Key capabilities:
 - **Statistical analysis**: Determine if improvements are significant
 - **Experiment tracking**: All queries are tagged with experiment and configuration info
 
+Experiments apply to `POST /api/v1/query` and `POST /api/v1/query/stream`; chat messages and
+`/search` are not routed to experiment groups. All `/api/v1/experiments` endpoints are
+**administrator-only**; the examples' `your-token` stands for an administrator credential.
+
 ---
 
 ## Configuration Temperature
@@ -29,13 +33,13 @@ Parameters are categorized by how quickly changes can take effect:
 
 | Temperature | Parameters | Re-indexing? | Test Method |
 |-------------|-----------|--------------|-------------|
-| **Hot** | topK, fusionStrategy, rrfK, systemPrompt, reranking | No | Per-query override, instant |
-| **Warm** | chunkStrategy, chunkSize, overlap | Preview only | Offline comparison (sample docs) |
-| **Cold** | embeddingModel, vectorDimensions | Yes | Requires re-indexing |
+| **Hot** | topK, fusionStrategy, rrfK, systemPrompt, reranking | No | Experiment groups, per-query overrides |
+| **Warm** | chunkingStrategy, chunkSize, chunkOverlap | Preview only | Offline comparison (sample docs) |
+| **Cold** | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | Yes | Requires re-indexing |
 
 ### Hot Parameters
 
-These can be changed per-query with immediate effect:
+These can be set per experiment group with immediate effect:
 
 | Parameter | Description | Typical Range |
 |-----------|-------------|---------------|
@@ -58,24 +62,26 @@ logged config snapshot records no temperature.
 
 ### Warm Parameters
 
-These affect how documents are chunked. Changes apply to new documents only:
+These affect how documents are chunked, so they cannot be part of an experiment. Changes (runtime
+settings or per-collection configs) apply to newly ingested documents only:
 
-| Parameter | Description | Typical Range |
-|-----------|-------------|---------------|
-| `chunkStrategy` | Chunking algorithm | simple, sentence, markdown, semantic |
+| Runtime setting | Description | Typical Range |
+|-----------------|-------------|---------------|
+| `chunkingStrategy` | Chunking algorithm | simple, sentence, markdown, semantic |
 | `chunkSize` | Target chunk size (chars) | 400-1200 |
-| `overlap` | Overlap between chunks | 0-200 |
+| `chunkOverlap` | Overlap between chunks | 0-200 |
 
-Use the [Chunking Preview API]({{ site.baseurl }}/guide/chunking/) to test warm parameter changes before applying.
+Use the [Chunking Preview API](chunking.md#preview-api) to compare them on sample documents
+before applying.
 
 ### Cold Parameters
 
-These require full re-indexing of your corpus:
+These are server configuration (environment variables) and require re-indexing the corpus:
 
-| Parameter | Description |
-|-----------|-------------|
-| `embeddingModel` | Vector embedding model |
-| `vectorDimensions` | Embedding vector size |
+| Variable | Description |
+|----------|-------------|
+| `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` | Vector embedding model |
+| `EMBEDDING_DIMENSIONS` | Embedding vector size |
 
 ---
 
@@ -104,20 +110,30 @@ curl -X POST http://localhost:8080/api/v1/experiments \
   }'
 ```
 
-Response:
+Response (`201 Created`):
 
 ```json
 {
-  "success": true,
   "experiment": {
-    "id": "exp-abc123",
+    "id": "6f1c0e9a-...",
     "name": "Test higher topK",
+    "description": "Compare topK=5 vs topK=10 for retrieval quality",
     "status": "draft",
+    "baselineConfig": { "topK": 5, "fusionStrategy": "rrf" },
+    "variantConfig": { "topK": 10, "fusionStrategy": "rrf" },
     "trafficSplit": 0.5,
-    "createdAt": "2024-01-15T10:00:00Z"
-  }
+    "collection": null,
+    "createdAt": "2026-01-15T10:00:00Z",
+    "startedAt": null,
+    "endedAt": null
+  },
+  "message": "Experiment 'Test higher topK' created successfully"
 }
 ```
+
+`trafficSplit` (default 0.5) is the share of queries sent to the **variant**. `collection`
+(optional) limits the experiment to queries whose `collection` is exactly that pattern; other
+queries are not routed.
 
 ### Configuration Snapshot Fields
 
@@ -145,6 +161,7 @@ curl -X PUT http://localhost:8080/api/v1/experiments/{id}/start \
 
 **Important**: Only one experiment can be running at a time. Starting a new experiment will fail if another is already running.
 
+Start, stop, archive and delete answer `{"success": true, "message": "...", "experiment": {...}}`.
 Operations answer **404 Not Found** for an unknown experiment and **409 Conflict** when its status
 does not allow them (starting one that is not a draft, stopping one that is not running,
 archiving a running one, deleting one that is not a draft, or starting while another runs).
@@ -190,9 +207,13 @@ curl "http://localhost:8080/api/v1/experiments?status=completed" \
   -H "Authorization: Bearer your-token"
 ```
 
+Newest first, as `{"experiments": [...], "total": 3}`. Parameters: `status` (`draft`,
+`running`, `completed`, `archived`; anything else answers `400`), `limit` and `offset`.
+`GET /api/v1/experiments/{id}` returns one experiment.
+
 ### Get Running Experiment
 
-Get the currently running experiment (if any):
+Get the currently running experiment (`404` if none is running):
 
 ```bash
 curl http://localhost:8080/api/v1/experiments/running \
@@ -209,7 +230,9 @@ When an experiment is running, queries are automatically routed based on the tra
 - **trafficSplit: 0.2**: 80% baseline, 20% variant
 - **trafficSplit: 0.9**: 10% baseline, 90% variant
 
-The routing is deterministic per query - each query is assigned to either baseline or variant randomly based on the split percentage.
+Each query is assigned to baseline or variant at random, with the variant's probability equal to
+`trafficSplit`. A request may name an experiment with `experimentId`; it is routed only if that
+experiment is running.
 
 ### Query Tracking
 
@@ -253,9 +276,11 @@ Manual overrides are useful for:
 - Debugging specific queries
 - Exploring parameter effects
 
-The overrides are applied (topK, fusionStrategy and systemPrompt; `llmTemperature` is not, see
-above), and the query is logged with your custom `experimentId` and the configuration it ran with.
-A running experiment's group config takes precedence over request overrides.
+The overrides `topK`, `fusionStrategy` and `systemPrompt` are applied; `llmTemperature` (see
+above) and `similarityThreshold` are accepted but ignored, and `rrfK` and `reranking` can only be
+set through an experiment. The query is logged with your custom `experimentId` and the
+configuration it ran with. A running experiment's group config takes precedence over request
+overrides.
 
 ---
 
@@ -420,24 +445,28 @@ Aim for at least 100 queries per variant for meaningful statistics:
 
 ```bash
 # Check query counts
-curl http://localhost:8080/api/v1/experiments/{id}/results \
-  | jq '{baseline: .baseline.queryCount, variant: .variant.queryCount}'
+curl -s http://localhost:8080/api/v1/experiments/{id}/results \
+  -H "Authorization: Bearer your-token" | jq '{baseline: .baseline.queryCount, variant: .variant.queryCount}'
 ```
 
 ### 4. Encourage User Feedback
 
-Results are more meaningful with user ratings. Enable feedback in your application:
+Results are more meaningful with user ratings. Ratings are attached to query log entries with
+`POST /api/v1/feedback` (see [Analytics](analytics.md#user-feedback)):
 
 ```bash
-# Submit feedback for a query
 curl -X POST http://localhost:8080/api/v1/feedback \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-token" \
   -d '{
-    "queryId": "query-123",
+    "queryId": "<query log id>",
     "rating": 4,
     "comment": "Good answer, but could include more examples"
   }'
 ```
+
+The `/query` response does not return the query log id, so the id has to be looked up in
+`GET /api/v1/analytics/queries` (filter by `experimentId`/`variant` client-side).
 
 ### 5. Document Your Experiments
 
@@ -590,18 +619,14 @@ If the tests are not significant (`pValue` of 0.05 or more):
 
 ### No Rating Data
 
-Without user feedback, analysis is limited to latency metrics. Enable feedback collection:
-
-```bash
-# After each query, prompt users and submit feedback
-curl -X POST http://localhost:8080/api/v1/feedback \
-  -d '{"queryId": "...", "rating": 4}'
-```
+Without user feedback, analysis is limited to latency and error rate. Submit ratings with
+`POST /api/v1/feedback` (see [Analytics](analytics.md#user-feedback)).
 
 ### Results Not Updating
 
 Results are calculated from `query_logs`. Check that:
 
 1. Queries are being logged (check `/api/v1/analytics/queries`)
-2. Queries have the experiment ID attached
-3. The experiment status is correct
+2. Queries have the experiment ID attached (they go to `/api/v1/query`, not chat, and match the
+   experiment's `collection` if it has one)
+3. The experiment status is `running`

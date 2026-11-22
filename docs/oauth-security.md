@@ -1,3 +1,10 @@
+---
+layout: page
+title: OAuth Security
+parent: User Guide
+nav_order: 4
+---
+
 # OAuth Security Guide
 
 This document covers security features and best practices for OAuth2/OIDC authentication in RAG in a Box.
@@ -12,7 +19,7 @@ RAG in a Box enforces PKCE for all OAuth flows. PKCE prevents authorization code
 2. **Code Challenge**: SHA-256 hash of the verifier, sent with the authorization request
 3. **Verification**: Provider validates the original verifier when exchanging the code
 
-PKCE is always enabled and cannot be disabled.
+PKCE (`S256`) is always used and cannot be disabled (the `OAUTH_PKCE_ENABLED` setting is parsed but has no effect).
 
 ### State Parameter and Browser Binding (Login CSRF Protection)
 
@@ -62,13 +69,13 @@ ID tokens are validated using industry-standard checks:
 | Check | Description |
 |-------|-------------|
 | Signature | Verified against provider's JWKS public keys |
-| Issuer | Must match configured `OAUTH_ISSUER` |
+| Issuer | Must match the provider preset's issuer (or `OAUTH_ISSUER` for `custom`) |
 | Audience | Must include configured `OAUTH_CLIENT_ID` |
 | Expiration | Token must not be expired |
 | Not Before | Token must be valid (if `nbf` claim present) |
 | Nonce | Must equal the nonce sent in the authorization request (browser logins) |
 
-JWKS keys are cached and refreshed periodically to handle key rotation.
+JWKS keys are cached (up to 10 keys for 24 hours, with at most 10 JWKS fetches per minute); a token signed with a key id that is not in the cache triggers a fetch, which is how key rotation is picked up.
 
 ### User Identity
 
@@ -119,10 +126,10 @@ Selected with `OAUTH_SESSION_STORAGE` (`memory` | `postgres`, default `memory`).
 - Sessions and in-flight login states persisted to the application database
 - Survives application restarts
 - Supports horizontal scaling
-- Tables (`oauth_sessions`, `oauth_auth_state`) are created and migrated on startup
+- Tables (`oauth_sessions`, `oauth_auth_state`) are part of the Flyway-managed schema (`V1__baseline.sql`), applied at startup unless `DB_MIGRATE_ON_START=false`
 
 **Upgrading an existing `oauth_sessions` table**: older releases stored groups as a
-comma-joined `TEXT` column. On startup the column is converted in place to `TEXT[]`,
+comma-joined `TEXT` column. The baseline migration converts the column in place to `TEXT[]`,
 splitting existing values on commas exactly as they were previously read, so live sessions
 keep working. Because those legacy rows may already contain a comma-injected group split,
 operators who want to be strict can force everyone to log in again with
@@ -256,13 +263,10 @@ Validate user claims match expected values:
 
 ### Security Events to Log
 
-The application logs these security-relevant events:
-
-- Login attempts (success/failure)
-- Session creation/deletion
-- Token validation failures
-- Invalid state parameter attempts
-- JWKS refresh operations
+The OIDC components log (logger `org.llm4s.ragbox.auth.*`) login initiation, callback
+handling, token validation and state failures, and session cleanup. Every HTTP request is
+also logged by the request logger (`org.llm4s.ragbox.http`) with credentials redacted; set
+`LOG_FORMAT=json` for structured logs.
 
 ### Alerting Recommendations
 
@@ -299,9 +303,9 @@ Consider logging:
 
 Identity providers rotate signing keys periodically. RAG in a Box handles this by:
 
-1. Caching JWKS keys for performance
-2. Refreshing cache on signature verification failure
-3. Supporting multiple keys during rotation period
+1. Caching JWKS keys by key id (`kid`) for performance (up to 10 keys, 24 hours)
+2. Fetching the JWKS again when a token names a key id that is not cached (rate limited to 10 fetches a minute)
+3. Accepting any key the provider currently publishes, so old and new keys both work during a rotation
 
 ### Client Secret Rotation
 
@@ -319,7 +323,7 @@ To rotate client secrets without downtime:
 ### Suspected Token Compromise
 
 1. Rotate client secret immediately
-2. Invalidate all sessions (clear session table)
+2. Invalidate all sessions (with `OAUTH_SESSION_STORAGE=postgres`: `DELETE FROM oauth_sessions;`; with in-memory storage, restart the server)
 3. Review access logs for unauthorized activity
 4. Notify affected users
 
