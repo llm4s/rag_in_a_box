@@ -5,7 +5,7 @@ import com.typesafe.config.{Config, ConfigFactory}
 import org.llm4s.chunking.ChunkerFactory
 import org.llm4s.security.Secret
 import org.llm4s.vectorstore.FusionStrategy
-import org.llm4s.ragbox.auth.{ClaimMappingConfig, OAuthConfig, OAuthSessionConfig, OidcProviderConfig, OidcProviders}
+import org.llm4s.ragbox.auth.{ClaimMappingConfig, OAuthConfig, OAuthSessionConfig, OAuthSessionStorage, OidcProviderConfig, OidcProviders}
 import org.llm4s.ragbox.ingestion.IngestionConfig
 
 import scala.util.Try
@@ -554,7 +554,10 @@ object AppConfig {
         claimMapping = claimMapping,
         session = sessionConfig,
         pkceEnabled = Try(config.getBoolean("security.auth.oauth.pkce-enabled")).getOrElse(true),
-        stateTtl = Try(config.getInt("security.auth.oauth.state-ttl")).getOrElse(300)
+        stateTtl = Try(config.getInt("security.auth.oauth.state-ttl")).getOrElse(300),
+        sessionStorage = getOptionalString(config, "security.auth.oauth.session-storage")
+          .map(OAuthSessionStorage.fromString(_).fold(e => throw new IllegalArgumentException(e), identity))
+          .getOrElse(OAuthSessionStorage.Memory)
       ))
     }
   }

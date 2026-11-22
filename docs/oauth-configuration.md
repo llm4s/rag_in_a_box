@@ -72,9 +72,10 @@ RAG in a Box includes pre-configured settings for major identity providers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OAUTH_SESSION_COOKIE_NAME` | `ragbox_session` | Session cookie name |
-| `OAUTH_SESSION_COOKIE_SECURE` | `true` | Require HTTPS for cookies |
+| `OAUTH_SESSION_COOKIE_SECURE` | `true` | Require HTTPS for the session and pre-auth (login) cookies. Set `false` only for local HTTP development |
 | `OAUTH_SESSION_MAX_AGE` | `86400` | Session duration in seconds (24 hours) |
-| `OAUTH_STATE_TTL` | `300` | Auth state lifetime in seconds (5 minutes) |
+| `OAUTH_STATE_TTL` | `300` | Auth state and pre-auth cookie lifetime in seconds (5 minutes) |
+| `OAUTH_SESSION_STORAGE` | `memory` | Session storage: `memory` (single instance) or `postgres` |
 | `OAUTH_SCOPES` | `openid profile email` | OAuth scopes to request |
 
 ---
@@ -199,7 +200,7 @@ RAG in a Box maps OIDC token claims to internal user attributes. Default mapping
 
 | Internal Attribute | Default Claim | Description |
 |--------------------|---------------|-------------|
-| User ID | `sub` | Unique user identifier |
+| User ID | `sub` | Unique user identifier (see below) |
 | Email | `email` | User's email address |
 | Name | `name` | Display name |
 | Groups | `groups` | Group/role membership |
@@ -217,6 +218,17 @@ export OAUTH_CLAIM_GROUPS=roles
 
 This is useful when your provider uses non-standard claim names.
 
+### User Identity
+
+- With the default `OAUTH_CLAIM_USER_ID=sub`, users are identified as `<issuer>|<sub>`
+  (for example `https://accounts.google.com|1234567890`), because `sub` is only unique
+  within one issuer. Grant permissions to that identifier.
+- `OAUTH_CLAIM_USER_ID=email` identifies users by email address, but a login is only
+  accepted when the ID token has `email_verified: true`; otherwise it is rejected with
+  `403 Forbidden`.
+- Any other claim (e.g. `oid` for Azure AD) is used verbatim; a token without it is
+  rejected. Only choose claims your provider guarantees to be unique and immutable.
+
 ---
 
 ## API Endpoints
@@ -225,23 +237,26 @@ OAuth authentication exposes these endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/oauth/login` | GET | Initiates OAuth flow, returns redirect URL |
+| `/api/v1/oauth/login` | GET | Initiates OAuth flow: sets the pre-auth cookie and redirects (302) to the provider |
 | `/api/v1/oauth/callback` | GET | Handles provider callback |
 | `/api/v1/oauth/logout` | POST | Ends session |
 | `/api/v1/oauth/userinfo` | GET | Returns current user information |
 
 ### Login Flow
 
-1. Client calls `GET /api/v1/oauth/login?redirect=/dashboard`
-2. Server returns JSON with authorization URL:
-   ```json
-   {"authorizationUrl": "https://provider.example.com/authorize?..."}
-   ```
-3. Client redirects user to authorization URL
-4. User authenticates with provider
-5. Provider redirects to callback URL with authorization code
-6. Server exchanges code for tokens, creates session
-7. Server redirects user to original destination (`/dashboard`)
+1. The browser navigates to `GET /api/v1/oauth/login` (a link or `window.location`, not
+   `fetch`/XHR - the response is a redirect that must be followed by the browser)
+2. Server responds `302 Found` to the provider's authorization URL (including `state`,
+   `nonce` and the PKCE challenge) and sets a short-lived HttpOnly `ragbox_oauth_state`
+   cookie that binds the login to this browser
+3. User authenticates with provider
+4. Provider redirects to `OAUTH_REDIRECT_URI` (`/api/v1/oauth/callback`) with `code` and `state`
+5. Server checks the pre-auth cookie matches `state`, exchanges the code (PKCE), validates
+   the ID token (including `nonce`), invalidates any previous session, creates a new session
+6. Server clears the pre-auth cookie, sets the session cookie and redirects to `/admin/`
+
+A callback without the pre-auth cookie (for example, a link opened in a different browser,
+or after `OAUTH_STATE_TTL` has elapsed) is rejected with `400`; start the login again.
 
 ---
 
@@ -259,7 +274,7 @@ For production multi-instance deployments, use PostgreSQL session storage:
 export OAUTH_SESSION_STORAGE=postgres
 ```
 
-This uses the same database connection pool as the main application. Required tables are created automatically on startup.
+This uses the same database connection pool as the main application. Required tables are created (and migrated from older releases) automatically on startup; see [OAuth Security](oauth-security.md#session-storage) for upgrade notes.
 
 ---
 
@@ -279,6 +294,9 @@ This uses the same database connection pool as the main application. Required ta
 ### Session not persisting across requests
 
 - Check that `OAUTH_SESSION_COOKIE_SECURE=false` for HTTP (development only)
+- A `400 Missing login cookie` on the callback means the pre-auth cookie was not sent:
+  check the cookie `Secure` setting matches your scheme, that the login and callback use the
+  same host, and that the login completed within `OAUTH_STATE_TTL`
 - Verify cookies are being set in browser
 - For multi-instance deployments, use PostgreSQL session storage
 

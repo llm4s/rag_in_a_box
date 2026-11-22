@@ -52,7 +52,11 @@ class OidcServiceSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
           response.authorizationUrl should include("response_type=code")
           response.authorizationUrl should include("code_challenge=")
           response.authorizationUrl should include("code_challenge_method=S256")
+          response.authorizationUrl should include(s"state=${response.state}")
+          response.authorizationUrl should include("nonce=")
           response.state should not be empty
+          response.browserBinding should not be empty
+          response.browserBinding should not equal response.state
       }
     }
 
@@ -94,6 +98,124 @@ class OidcServiceSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
         yield
           storedState should not be empty
           storedState.get.redirectAfterLogin shouldBe Some("/admin/dashboard")
+          // Nonce is stored with the state and sent in the authorization request
+          storedState.get.nonce should not be empty
+          response.authorizationUrl should include(s"nonce=${storedState.get.nonce}")
+          // Only a hash of the browser binding is stored server-side
+          storedState.get.browserBindingHash should not be empty
+          storedState.get.browserBindingHash should not equal response.browserBinding
+      }
+    }
+  }
+
+  "OidcService.handleCallback" should {
+
+    "create a session keyed on issuer + subject when state, browser binding and nonce all match" in {
+      withService { (mockServer, service, registry, _) =>
+        for
+          login <- service.initiateLogin(None)
+          _ = mockServer.nextIdToken.set(Some(mockServer.generateIdToken(
+            subject = "user-1",
+            email = Some("user@example.com"),
+            groups = List("x,admins"),
+            nonce = Some(nonceFrom(login.authorizationUrl))
+          )))
+          result <- service.handleCallback("auth-code", login.state, login.browserBinding)
+          sessions <- registry.getStoredSessions
+        yield
+          result shouldBe a[Right[?, ?]]
+          val session = result.toOption.get
+          session.userId shouldBe s"${mockServer.issuer}|user-1"
+          session.groups shouldBe List("x,admins")
+          sessions.keySet shouldBe Set(session.sessionId)
+          // PKCE verifier was sent to the token endpoint
+          mockServer.tokenRequests.get.head.get("code_verifier") should not be empty
+      }
+    }
+
+    "reject a callback whose browser binding does not match the state (login CSRF)" in {
+      withService { (mockServer, service, registry, _) =>
+        for
+          attackerLogin <- service.initiateLogin(None)
+          victimLogin <- service.initiateLogin(None)
+          _ = mockServer.nextIdToken.set(Some(mockServer.generateIdToken(
+            subject = "attacker",
+            nonce = Some(nonceFrom(attackerLogin.authorizationUrl))
+          )))
+          // Victim's browser carries its own binding cookie, but the attacker's state
+          result <- service.handleCallback("attacker-code", attackerLogin.state, victimLogin.browserBinding)
+          sessions <- registry.getStoredSessions
+        yield
+          result.left.toOption.get shouldBe a[OidcError.InvalidState]
+          sessions shouldBe empty
+          mockServer.tokenRequests.get shouldBe empty
+      }
+    }
+
+    "reject a replayed state" in {
+      withService { (mockServer, service, _, _) =>
+        for
+          login <- service.initiateLogin(None)
+          _ = mockServer.nextIdToken.set(Some(mockServer.generateIdToken(
+            subject = "user-1",
+            nonce = Some(nonceFrom(login.authorizationUrl))
+          )))
+          first <- service.handleCallback("code", login.state, login.browserBinding)
+          second <- service.handleCallback("code", login.state, login.browserBinding)
+        yield
+          first shouldBe a[Right[?, ?]]
+          second.left.toOption.get shouldBe a[OidcError.InvalidState]
+      }
+    }
+
+    "reject an ID token whose nonce does not match the stored nonce" in {
+      withService { (mockServer, service, registry, _) =>
+        for
+          login <- service.initiateLogin(None)
+          _ = mockServer.nextIdToken.set(Some(mockServer.generateIdToken(
+            subject = "user-1",
+            nonce = Some("some-other-nonce")
+          )))
+          result <- service.handleCallback("code", login.state, login.browserBinding)
+          sessions <- registry.getStoredSessions
+        yield
+          result.left.toOption.get shouldBe a[OidcError.InvalidNonce]
+          sessions shouldBe empty
+      }
+    }
+
+    "reject an ID token with no nonce" in {
+      withService { (mockServer, service, _, _) =>
+        for
+          login <- service.initiateLogin(None)
+          _ = mockServer.nextIdToken.set(Some(mockServer.generateIdToken(subject = "user-1")))
+          result <- service.handleCallback("code", login.state, login.browserBinding)
+        yield result.left.toOption.get shouldBe a[OidcError.InvalidNonce]
+      }
+    }
+  }
+
+  "OidcService.getAuthorization" should {
+
+    "authorize using the stored session identity" in {
+      withService { (mockServer, service, registry, principals) =>
+        val now = System.currentTimeMillis()
+        for
+          _ <- registry.createSession(OAuthSessionData(
+            sessionId = "sess-1",
+            userId = s"${mockServer.issuer}|user-1",
+            email = Some("user@example.com"),
+            name = None,
+            groups = List("g1"),
+            provider = mockServer.issuer,
+            expiresAt = now + 60000,
+            createdAt = now
+          ))
+          auth <- service.getAuthorization("sess-1")
+        yield
+          auth should not be empty
+          principals.getCreatedUsers shouldBe List(s"${mockServer.issuer}|user-1")
+          principals.getCreatedGroups shouldBe List("g1")
       }
     }
   }
@@ -185,7 +307,9 @@ class OidcServiceSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
           state = "test-state-123",
           codeVerifier = "test-verifier",
           redirectAfterLogin = Some("/dashboard"),
-          createdAt = System.currentTimeMillis()
+          createdAt = System.currentTimeMillis(),
+          nonce = "test-nonce",
+          browserBindingHash = "test-binding-hash"
         )
         _ <- sessionRegistry.storeAuthState(authState)
         retrieved <- sessionRegistry.getAndRemoveAuthState("test-state-123")
@@ -217,4 +341,41 @@ class OidcServiceSpec extends AsyncWordSpec with AsyncIOSpec with Matchers:
     import org.http4s.ember.client.EmberClientBuilder
     EmberClientBuilder.default[IO].build.use { client =>
       OidcServiceImpl.create(config, client, tokenValidator, sessionRegistry, claimMapper)
+    }
+
+  private def nonceFrom(authorizationUrl: String): String =
+    val query = authorizationUrl.substring(authorizationUrl.indexOf('?') + 1)
+    query.split("&").collectFirst {
+      case kv if kv.startsWith("nonce=") =>
+        java.net.URLDecoder.decode(kv.stripPrefix("nonce="), "UTF-8")
+    }.getOrElse(fail("no nonce in authorization URL"))
+
+  /** Runs a test against a real OidcServiceImpl wired to the mock OIDC server. */
+  private def withService[A](
+      test: (MockOidcServer, OidcService[IO], InMemorySessionRegistry, MockPrincipalStore) => IO[A]
+  ): IO[A] =
+    import org.http4s.ember.client.EmberClientBuilder
+    (for
+      mockServer <- MockOidcServer.resource(testPort)
+      client <- EmberClientBuilder.default[IO].build
+    yield (mockServer, client)).use { (mockServer, client) =>
+      val providerConfig = OidcProviderConfig(
+        clientId = "test-client-id",
+        clientSecret = "test-secret",
+        redirectUri = "http://localhost/callback",
+        authorizationEndpoint = mockServer.authorizationEndpoint,
+        tokenEndpoint = mockServer.tokenEndpoint,
+        userinfoEndpoint = mockServer.userinfoEndpoint,
+        jwksUri = mockServer.jwksUri,
+        issuer = mockServer.issuer
+      )
+      val oauthConfig = OAuthConfig(provider = providerConfig)
+      val principals = MockPrincipalStore()
+      for
+        registry <- InMemorySessionRegistry.create
+        validator <- OidcTokenValidatorImpl.create(providerConfig)
+        mapper <- ClaimMapperImpl.create(principals)
+        service <- OidcServiceImpl.create(oauthConfig, client, validator, registry, mapper)
+        result <- test(mockServer, service, registry, principals)
+      yield result
     }

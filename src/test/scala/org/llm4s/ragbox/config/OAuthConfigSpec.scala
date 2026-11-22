@@ -140,6 +140,33 @@ class OAuthConfigSpec extends AnyFlatSpec with Matchers {
     config.cookieMaxAge shouldBe 86400
   }
 
+  "OAuthSessionConfig" should "default the pre-auth binding cookie name" in {
+    OAuthSessionConfig().preAuthCookieName shouldBe "ragbox_oauth_state"
+  }
+
+  "OAuthSessionStorage.fromString" should "parse memory and postgres case-insensitively" in {
+    OAuthSessionStorage.fromString("memory") shouldBe Right(OAuthSessionStorage.Memory)
+    OAuthSessionStorage.fromString("Postgres") shouldBe Right(OAuthSessionStorage.Postgres)
+    OAuthSessionStorage.fromString("postgresql") shouldBe Right(OAuthSessionStorage.Postgres)
+    OAuthSessionStorage.fromString("redis").isLeft shouldBe true
+  }
+
+  "OAuthConfig" should "default to in-memory session storage" in {
+    OAuthConfig(OidcProviders.google("id", "secret", "http://localhost/cb")).sessionStorage shouldBe
+      OAuthSessionStorage.Memory
+  }
+
+  "SessionRegistry.create" should "build an in-memory registry for memory storage" in {
+    import cats.effect.unsafe.implicits.global
+    SessionRegistry.create(OAuthSessionStorage.Memory, None).unsafeRunSync() shouldBe a[InMemorySessionRegistry]
+  }
+
+  it should "fail for postgres storage without a database pool" in {
+    import cats.effect.unsafe.implicits.global
+    val result = SessionRegistry.create(OAuthSessionStorage.Postgres, None).attempt.unsafeRunSync()
+    result.left.toOption.get shouldBe a[OidcError.ConfigurationError]
+  }
+
   "OAuthConfig" should "combine all configuration components" in {
     val providerConfig = OidcProviders.google("id", "secret", "http://localhost/cb")
     val claimMapping = ClaimMappingConfig()

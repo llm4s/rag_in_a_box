@@ -33,7 +33,7 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           )
           result <- validator.validate(token)
         yield
-          result shouldBe a[Right[_, _]]
+          result shouldBe a[Right[?, ?]]
           val validatedToken = result.toOption.get
           validatedToken.subject shouldBe "user123"
           validatedToken.email shouldBe Some("user@example.com")
@@ -60,7 +60,7 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           token = mockServer.generateExpiredIdToken(subject = "user123")
           result <- validator.validate(token)
         yield
-          result shouldBe a[Left[_, _]]
+          result shouldBe a[Left[?, ?]]
           result.left.toOption.get shouldBe a[OidcError.TokenExpired]
       }
     }
@@ -86,7 +86,7 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           )
           result <- validator.validate(token)
         yield
-          result shouldBe a[Left[_, _]]
+          result shouldBe a[Left[?, ?]]
           // The error type may vary based on which validation fails first
           result.left.toOption.get shouldBe a[OidcError]
       }
@@ -113,7 +113,7 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           )
           result <- validator.validate(token)
         yield
-          result shouldBe a[Left[_, _]]
+          result shouldBe a[Left[?, ?]]
       }
     }
 
@@ -138,7 +138,7 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           )
           result <- validator.validate(token)
         yield
-          result shouldBe a[Right[_, _]]
+          result shouldBe a[Right[?, ?]]
           val validatedToken = result.toOption.get
           validatedToken.subject shouldBe "user123"
           validatedToken.email shouldBe None
@@ -176,11 +176,77 @@ class OidcTokenValidatorSpec extends AsyncWordSpec with AsyncIOSpec with Matcher
           )
           result <- validator.validate(token)
         yield
-          result shouldBe a[Right[_, _]]
+          result shouldBe a[Right[?, ?]]
           val validatedToken = result.toOption.get
           validatedToken.subject shouldBe "custom-user"
           validatedToken.email shouldBe Some("custom@example.com")
           validatedToken.groups should contain theSameElementsAs List("group1", "group2")
       }
     }
+    "extract issuer and email_verified" in {
+      MockOidcServer.resource().use { mockServer =>
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer))
+          verified <- validator.validate(
+            mockServer.generateIdToken(subject = "u1", email = Some("a@b.c"), emailVerified = Some(true))
+          )
+          unverified <- validator.validate(
+            mockServer.generateIdToken(subject = "u2", email = Some("a@b.c"), emailVerified = Some(false))
+          )
+          absent <- validator.validate(mockServer.generateIdToken(subject = "u3", email = Some("a@b.c")))
+        yield
+          verified.toOption.get.issuer shouldBe mockServer.issuer
+          verified.toOption.get.emailVerified shouldBe true
+          unverified.toOption.get.emailVerified shouldBe false
+          absent.toOption.get.emailVerified shouldBe false
+      }
+    }
+
+    "accept a token whose nonce matches the expected nonce" in {
+      MockOidcServer.resource().use { mockServer =>
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer))
+          result <- validator.validate(
+            mockServer.generateIdToken(subject = "u1", nonce = Some("nonce-abc")),
+            expectedNonce = Some("nonce-abc")
+          )
+        yield result shouldBe a[Right[?, ?]]
+      }
+    }
+
+    "reject a token whose nonce does not match" in {
+      MockOidcServer.resource().use { mockServer =>
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer))
+          result <- validator.validate(
+            mockServer.generateIdToken(subject = "u1", nonce = Some("attacker-nonce")),
+            expectedNonce = Some("nonce-abc")
+          )
+        yield result.left.toOption.get shouldBe a[OidcError.InvalidNonce]
+      }
+    }
+
+    "reject a token with no nonce when one is expected" in {
+      MockOidcServer.resource().use { mockServer =>
+        for
+          validator <- OidcTokenValidatorImpl.create(configFor(mockServer))
+          result <- validator.validate(
+            mockServer.generateIdToken(subject = "u1"),
+            expectedNonce = Some("nonce-abc")
+          )
+        yield result.left.toOption.get shouldBe a[OidcError.InvalidNonce]
+      }
+    }
   }
+
+  private def configFor(mockServer: MockOidcServer): OidcProviderConfig =
+    OidcProviderConfig(
+      clientId = "test-client-id",
+      clientSecret = "test-secret",
+      redirectUri = "http://localhost/callback",
+      authorizationEndpoint = mockServer.authorizationEndpoint,
+      tokenEndpoint = mockServer.tokenEndpoint,
+      userinfoEndpoint = mockServer.userinfoEndpoint,
+      jwksUri = mockServer.jwksUri,
+      issuer = mockServer.issuer
+    )

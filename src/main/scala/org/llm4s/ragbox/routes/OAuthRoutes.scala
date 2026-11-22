@@ -16,15 +16,27 @@ import org.llm4s.ragbox.model.Codecs.given
  * HTTP routes for OAuth2/OIDC authentication.
  *
  * Endpoints:
- * - GET  /api/v1/oauth/login     - Initiate OAuth flow
+ * - GET  /api/v1/oauth/login     - Initiate OAuth flow (302 to the provider)
  * - GET  /api/v1/oauth/callback  - Handle provider callback
  * - POST /api/v1/oauth/logout    - End session
  * - GET  /api/v1/oauth/userinfo  - Get current user info
+ *
+ * Login CSRF / session fixation protection: `/login` sets a short-lived HttpOnly,
+ * SameSite=Lax pre-auth cookie holding a random browser-binding value whose hash is
+ * stored with the OAuth state. `/callback` requires that cookie, and the service
+ * rejects the callback unless it matches the state. On success any session id the
+ * browser already presented is invalidated and a fresh one is issued.
+ *
+ * @param stateTtlSeconds lifetime of the pre-auth cookie; should equal `OAuthConfig.stateTtl`
  */
 class OAuthRoutes(
     oidcService: OidcService[IO],
-    sessionConfig: OAuthSessionConfig
+    sessionConfig: OAuthSessionConfig,
+    stateTtlSeconds: Int = 300
 ):
+
+  /** Pre-auth cookie is only needed by the OAuth endpoints */
+  private val PreAuthCookiePath = "/api/v1/oauth"
 
   private object RedirectAfterParam extends OptionalQueryParamDecoderMatcher[String]("redirect_after")
   private object CodeParam extends QueryParamDecoderMatcher[String]("code")
@@ -39,8 +51,9 @@ class OAuthRoutes(
     // ============================================================
     case GET -> Root / "api" / "v1" / "oauth" / "login" :? RedirectAfterParam(redirectAfter) =>
       for
-        response <- oidcService.initiateLogin(redirectAfter)
-        result <- Ok(response.asJson)
+        login <- oidcService.initiateLogin(redirectAfter)
+        authUri <- IO.fromEither(Uri.fromString(login.authorizationUrl))
+        result <- Found(Location(authUri)).map(_.addCookie(createPreAuthCookie(login.browserBinding)))
       yield result
 
     // ============================================================
@@ -53,45 +66,24 @@ class OAuthRoutes(
       errorOpt match
         case Some(error) =>
           val desc = errorDescOpt.getOrElse("Authentication failed")
-          BadRequest(ErrorResponse.badRequest(s"OAuth error: $error - $desc").asJson)
+          BadRequest(ErrorResponse.badRequest(s"OAuth error: $error - $desc").asJson).map(_.addCookie(clearPreAuthCookie()))
 
         case None =>
-          oidcService.handleCallback(code, state).flatMap {
-            case Right(sessionData) =>
-              // Create session cookie
-              val cookie = createSessionCookie(sessionData.sessionId)
+          req.cookies.find(_.name == sessionConfig.preAuthCookieName).map(_.content) match
+            case None =>
+              BadRequest(
+                ErrorResponse.badRequest("Missing login cookie: start the login again from /api/v1/oauth/login").asJson
+              ).map(_.addCookie(clearPreAuthCookie()))
 
-              // Check if there's a redirect_after URL stored in state
-              // For now, redirect to admin UI root
-              val redirectUri = Uri.unsafeFromString("/admin/")
-
-              // Redirect with session cookie
-              SeeOther(Location(redirectUri)).map(_.addCookie(cookie))
-
-            case Left(OidcError.InvalidState(msg)) =>
-              BadRequest(ErrorResponse.badRequest(s"Invalid state: $msg").asJson)
-
-            case Left(OidcError.StateExpired(msg)) =>
-              BadRequest(ErrorResponse.badRequest(s"State expired: $msg").asJson)
-
-            case Left(OidcError.TokenExpired(msg)) =>
-              Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
-                .map(_.withEntity(ErrorResponse.unauthorized(s"Token expired: $msg").asJson))
-
-            case Left(OidcError.InvalidToken(msg)) =>
-              Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
-                .map(_.withEntity(ErrorResponse.unauthorized(s"Invalid token: $msg").asJson))
-
-            case Left(error) =>
-              InternalServerError(
-                ErrorResponse.internalError(s"Authentication failed: ${error.message}").asJson
-              )
-          }
+            case Some(browserBinding) =>
+              oidcService.handleCallback(code, state, browserBinding)
+                .flatMap(result => callbackResponse(req, result))
+                .map(_.addCookie(clearPreAuthCookie()))
 
     // Handle callback without code (error case)
     case GET -> Root / "api" / "v1" / "oauth" / "callback" :? ErrorParam(Some(error)) +& ErrorDescParam(errorDescOpt) =>
       val desc = errorDescOpt.getOrElse("Authentication failed")
-      BadRequest(ErrorResponse.badRequest(s"OAuth error: $error - $desc").asJson)
+      BadRequest(ErrorResponse.badRequest(s"OAuth error: $error - $desc").asJson).map(_.addCookie(clearPreAuthCookie()))
 
     // ============================================================
     // POST /api/v1/oauth/logout - End session
@@ -140,6 +132,68 @@ class OAuthRoutes(
             .map(_.withEntity(ErrorResponse.unauthorized("No session cookie").asJson))
   }
 
+  private def callbackResponse(
+      req: Request[IO],
+      result: Either[OidcError, OAuthSessionData]
+  ): IO[Response[IO]] =
+    result match
+      case Right(sessionData) =>
+        // Session fixation: invalidate any session id the browser already carried
+        val previousSession = req.cookies.find(_.name == sessionConfig.cookieName).map(_.content)
+        val rotate = previousSession.filter(_ != sessionData.sessionId).fold(IO.unit)(oidcService.logout)
+
+        // For now, redirect to admin UI root
+        rotate *> SeeOther(Location(Uri.unsafeFromString("/admin/"))).map(_.addCookie(createSessionCookie(sessionData.sessionId)))
+
+      case Left(OidcError.InvalidState(msg)) =>
+        BadRequest(ErrorResponse.badRequest(s"Invalid state: $msg").asJson)
+
+      case Left(OidcError.StateExpired(msg)) =>
+        BadRequest(ErrorResponse.badRequest(s"State expired: $msg").asJson)
+
+      case Left(OidcError.TokenExpired(msg)) =>
+        Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
+          .map(_.withEntity(ErrorResponse.unauthorized(s"Token expired: $msg").asJson))
+
+      case Left(OidcError.InvalidToken(msg)) =>
+        Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
+          .map(_.withEntity(ErrorResponse.unauthorized(s"Invalid token: $msg").asJson))
+
+      case Left(OidcError.InvalidNonce(msg)) =>
+        Unauthorized(`WWW-Authenticate`(Challenge("Bearer", "ragbox")))
+          .map(_.withEntity(ErrorResponse.unauthorized(s"Invalid token: $msg").asJson))
+
+      case Left(OidcError.IdentityError(msg)) =>
+        Forbidden(ErrorResponse("forbidden", s"Login rejected: $msg").asJson)
+
+      case Left(error) =>
+        InternalServerError(
+          ErrorResponse.internalError(s"Authentication failed: ${error.message}").asJson
+        )
+
+  private def createPreAuthCookie(browserBinding: String): ResponseCookie =
+    ResponseCookie(
+      name = sessionConfig.preAuthCookieName,
+      content = browserBinding,
+      maxAge = Some(stateTtlSeconds.toLong),
+      path = Some(PreAuthCookiePath),
+      secure = sessionConfig.cookieSecure,
+      httpOnly = true,
+      // Lax (not Strict): the cookie must accompany the top-level redirect back from the IdP
+      sameSite = Some(SameSite.Lax)
+    )
+
+  private def clearPreAuthCookie(): ResponseCookie =
+    ResponseCookie(
+      name = sessionConfig.preAuthCookieName,
+      content = "",
+      maxAge = Some(0),
+      path = Some(PreAuthCookiePath),
+      secure = sessionConfig.cookieSecure,
+      httpOnly = true,
+      sameSite = Some(SameSite.Lax)
+    )
+
   private def createSessionCookie(sessionId: String): ResponseCookie =
     ResponseCookie(
       name = sessionConfig.cookieName,
@@ -162,5 +216,9 @@ class OAuthRoutes(
     )
 
 object OAuthRoutes:
-  def apply(oidcService: OidcService[IO], sessionConfig: OAuthSessionConfig): OAuthRoutes =
-    new OAuthRoutes(oidcService, sessionConfig)
+  def apply(
+      oidcService: OidcService[IO],
+      sessionConfig: OAuthSessionConfig,
+      stateTtlSeconds: Int = 300
+  ): OAuthRoutes =
+    new OAuthRoutes(oidcService, sessionConfig, stateTtlSeconds)
