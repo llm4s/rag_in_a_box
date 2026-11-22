@@ -149,7 +149,7 @@ object RagboxApp {
       chunkingService = ChunkingService(config, runtimeConfigManager)
       suggestionService = SuggestionService(queryLogRegistry, config, runtimeConfigManager)
       experimentRegistry <- Resource.eval(ExperimentRegistry(pool))
-      experimentService = ExperimentService(experimentRegistry, queryLogRegistry, pool)
+      experimentService = ExperimentService(experimentRegistry, pool)
       chatSessionRegistry <- Resource.eval(ChatSessionRegistry(pool))
       oidc <- oidcComponents(config, pool, ragService, oidcHttpClient)
       limiters <- Resource.eval(RateLimitMiddleware.createLimiters(RateLimitMiddleware.Config.from(config.production.rateLimit)))

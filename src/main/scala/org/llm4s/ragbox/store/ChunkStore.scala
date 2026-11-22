@@ -41,22 +41,10 @@ trait ChunkStore {
    * Get total chunk count.
    */
   def count(): IO[Int]
-
-  /**
-   * Get chunk count for a specific document.
-   */
-  def countByDocument(documentId: String): IO[Int]
-
   /**
    * Get chunk count for a specific collection.
    */
   def countByCollection(collection: String): IO[Int]
-
-  /**
-   * Get average chunk size.
-   */
-  def avgChunkSize(): IO[Double]
-
   /**
    * Get average chunk size for a collection.
    */
@@ -66,12 +54,6 @@ trait ChunkStore {
    * Delete all chunks for a document.
    */
   def deleteByDocument(documentId: String): IO[Unit]
-
-  /**
-   * Delete all chunks for a collection.
-   */
-  def deleteByCollection(collection: String): IO[Unit]
-
   /**
    * Clear all chunks.
    */

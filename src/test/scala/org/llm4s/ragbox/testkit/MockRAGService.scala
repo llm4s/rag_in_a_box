@@ -220,9 +220,6 @@ class MockRAGService(
       pendingDeletes = 0
     )
 
-  override def listDocumentIds: IO[Seq[String]] =
-    documentRegistry.listIds()
-
   override def listDocumentEntries: IO[Seq[DocumentEntry]] =
     documentRegistry.listEntries()
 

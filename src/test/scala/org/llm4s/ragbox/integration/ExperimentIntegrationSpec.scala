@@ -36,7 +36,7 @@ class ExperimentIntegrationSpec extends AnyFlatSpec with Matchers with PgVectorF
       for {
         logs <- QueryLogRegistry(live.dataSource)
         registry <- ExperimentRegistry(live.dataSource)
-      } yield Stack(live, logs, ExperimentService(registry, logs, live.dataSource))
+      } yield Stack(live, logs, ExperimentService(registry, live.dataSource))
     }
 
   private def ingestAnimals(service: RAGService): IO[Unit] =

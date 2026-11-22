@@ -1,6 +1,6 @@
 package org.llm4s.ragbox.config
 
-import cats.effect.{IO, Resource}
+import cats.effect.IO
 import com.typesafe.config.{Config, ConfigFactory}
 import org.llm4s.chunking.ChunkerFactory
 import org.llm4s.security.Secret
@@ -140,11 +140,6 @@ final case class AppConfig(
 
     errors.toList
   }
-
-  /**
-   * Check if configuration is valid.
-   */
-  def isValid: Boolean = validate().isEmpty
 }
 
 final case class ServerConfig(
@@ -628,12 +623,6 @@ object AppConfig {
     val config = ConfigFactory.load()
     parseConfig(config)
   }
-
-  /**
-   * Load configuration as a cats-effect Resource.
-   */
-  def loadResource: Resource[IO, AppConfig] =
-    Resource.eval(load)
 
   private[config] def parseConfig(config: Config): AppConfig = {
     AppConfig(

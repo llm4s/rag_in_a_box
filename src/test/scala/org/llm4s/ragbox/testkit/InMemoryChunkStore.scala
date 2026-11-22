@@ -75,17 +75,8 @@ class InMemoryChunkStore extends ChunkStore {
   override def count(): IO[Int] =
     IO.pure(chunks.values.flatten.size)
 
-  override def countByDocument(documentId: String): IO[Int] =
-    IO.pure(chunks.getOrElse(documentId, Seq.empty).size)
-
   override def countByCollection(collection: String): IO[Int] = IO {
     chunks.values.flatten.count(_.metadata.get("collection").contains(collection))
-  }
-
-  override def avgChunkSize(): IO[Double] = IO {
-    val allChunks = chunks.values.flatten.toSeq
-    if (allChunks.isEmpty) 0.0
-    else allChunks.map(_.contentLength).sum.toDouble / allChunks.size
   }
 
   override def avgChunkSizeByCollection(collection: String): IO[Double] = IO {
@@ -96,14 +87,6 @@ class InMemoryChunkStore extends ChunkStore {
 
   override def deleteByDocument(documentId: String): IO[Unit] =
     IO(chunks.remove(documentId)).void
-
-  override def deleteByCollection(collection: String): IO[Unit] = IO {
-    chunks.keys.foreach { docId =>
-      val remaining = chunks.getOrElse(docId, Seq.empty).filterNot(_.metadata.get("collection").contains(collection))
-      if (remaining.isEmpty) chunks.remove(docId)
-      else chunks.update(docId, remaining)
-    }
-  }
 
   override def clear(): IO[Unit] =
     IO(chunks.clear())

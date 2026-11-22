@@ -239,18 +239,6 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
     }
   }
 
-  override def countByDocument(documentId: String): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
-    val sql = "SELECT COUNT(*) FROM chunk_registry WHERE document_id = ?"
-    val stmt = connection.prepareStatement(sql)
-    try {
-      stmt.setString(1, documentId)
-      val rs = stmt.executeQuery()
-      if (rs.next()) rs.getInt(1) else 0
-    } finally {
-      stmt.close()
-    }
-  }
-
   override def countByCollection(collection: String): IO[Int] = ConnectionPool.withConnection(dataSource) { connection =>
     // Handle "default" as the pseudo-collection for chunks without explicit collection
     val (sql, useParam) = if (collection == "default") {
@@ -263,16 +251,6 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
       if (useParam) stmt.setString(1, collection)
       val rs = stmt.executeQuery()
       if (rs.next()) rs.getInt(1) else 0
-    } finally {
-      stmt.close()
-    }
-  }
-
-  override def avgChunkSize(): IO[Double] = ConnectionPool.withConnection(dataSource) { connection =>
-    val stmt = connection.createStatement()
-    try {
-      val rs = stmt.executeQuery("SELECT AVG(content_length) FROM chunk_registry")
-      if (rs.next()) rs.getDouble(1) else 0.0
     } finally {
       stmt.close()
     }
@@ -300,20 +278,6 @@ class PgChunkStore(dataSource: DataSource) extends ChunkStore {
     val stmt = connection.prepareStatement(sql)
     try {
       stmt.setString(1, documentId)
-      stmt.executeUpdate()
-    } finally {
-      stmt.close()
-    }
-  }
-
-  override def deleteByCollection(collection: String): IO[Unit] = ConnectionPool.withConnection(dataSource) { connection =>
-    // "default" is the pseudo-collection of chunks without one, as in countByCollection
-    val (sql, useParam) =
-      if (collection == "default") ("DELETE FROM chunk_registry WHERE collection IS NULL", false)
-      else ("DELETE FROM chunk_registry WHERE collection = ?", true)
-    val stmt = connection.prepareStatement(sql)
-    try {
-      if (useParam) stmt.setString(1, collection)
       stmt.executeUpdate()
     } finally {
       stmt.close()

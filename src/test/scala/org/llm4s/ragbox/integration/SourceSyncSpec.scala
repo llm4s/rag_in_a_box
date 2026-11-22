@@ -58,7 +58,7 @@ class SourceSyncSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         // Syncing beta - which never listed alpha's files - leaves alpha's documents alone
         ingestion.runSource("beta").unsafeRunSync().map(counts) shouldBe Some((0, 0, 1, 0, None))
         ownedBy(service, "alpha") should have size 2
-        service.listDocumentIds.unsafeRunSync() should have size 3
+        service.getDocumentRegistry.listIds().unsafeRunSync() should have size 3
 
         // ...and so does a second full run: nothing is re-ingested or deleted
         ingestion.runAll().unsafeRunSync().map(counts) shouldBe Seq((0, 0, 2, 0, None), (0, 0, 1, 0, None))
@@ -70,7 +70,7 @@ class SourceSyncSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         ingestion.runSource("alpha").unsafeRunSync().map(counts) shouldBe Some((0, 0, 1, 1, None))
         ownedBy(service, "alpha") should have size 1
         ownedBy(service, "beta") should have size 1
-        service.listDocumentIds.unsafeRunSync() should have size 2
+        service.getDocumentRegistry.listIds().unsafeRunSync() should have size 2
       }
     }.unsafeRunSync()
   }
@@ -155,7 +155,7 @@ class SourceSyncSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         Files.delete(alpha.resolve("a1.txt"))
         ingestion.runAll().unsafeRunSync().map(_.documentsDeleted) shouldBe Seq(1)
 
-        service.listDocumentIds.unsafeRunSync() shouldBe Seq("api-doc")
+        service.getDocumentRegistry.listIds().unsafeRunSync() shouldBe Seq("api-doc")
       }
     }.unsafeRunSync()
   }

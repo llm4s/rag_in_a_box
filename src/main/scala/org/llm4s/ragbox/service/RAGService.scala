@@ -655,12 +655,6 @@ class RAGService(
     documentRegistry.markSyncComplete()
 
   /**
-   * List all registered document IDs.
-   */
-  def listDocumentIds: IO[Seq[String]] =
-    documentRegistry.listIds()
-
-  /**
    * List all document entries (full details for sync).
    */
   def listDocumentEntries: IO[Seq[org.llm4s.ragbox.registry.DocumentEntry]] =
@@ -684,12 +678,6 @@ class RAGService(
    */
   def findOrphanedDocuments(keepIds: Set[String]): IO[Seq[String]] =
     documentRegistry.findOrphans(keepIds)
-
-  /**
-   * List document IDs in a specific collection.
-   */
-  def listDocumentIdsByCollection(collection: String): IO[Seq[String]] =
-    documentRegistry.listIdsByCollection(collection)
 
   /**
    * List all unique collection names.

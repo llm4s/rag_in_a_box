@@ -10,7 +10,7 @@ import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry._
 import org.llm4s.ragbox.service.{ExperimentService, RAGService}
 import org.llm4s.ragbox.store.PgChunkStore
-import org.llm4s.ragbox.testkit.{FakeEmbeddings, InMemoryQueryLogRegistry, PgVectorFixture, TestFixtures}
+import org.llm4s.ragbox.testkit.{FakeEmbeddings, PgVectorFixture, TestFixtures}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -243,7 +243,7 @@ class PersistenceSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     run(pool(db).use { ds =>
       for {
         registry <- ExperimentRegistry(ds)
-        service = ExperimentService(registry, InMemoryQueryLogRegistry(), ds)
+        service = ExperimentService(registry, ds)
         drafts <- (1 to 8).toList.traverse(i => registry.create(draft(s"exp $i")))
         // Bypass the service's up-front check so the database constraint is what decides
         results <- drafts.parTraverse(e => registry.start(e.id).attempt)
