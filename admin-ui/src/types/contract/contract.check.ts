@@ -96,5 +96,9 @@ conforms<Api.ChunkSizeDistribution>()(contract.ChunkSizeDistribution, true)
 conforms<Api.DetailedCollectionStats>()(contract.DetailedCollectionStats, true)
 conforms<Api.VisibilityStats>()(contract.DetailedStatsResponse, true)
 
+// Pipeline config and query metrics
+conforms<Api.RAGConfigInfo>()(contract.RAGConfigInfo, true)
+conforms<Api.QueryMetrics>()(contract.QueryMetrics, true)
+
 // Errors
 conforms<Api.ApiErrorBody>()(contract.ErrorResponse, true)
