@@ -75,15 +75,17 @@ export default defineConfig(({ mode }) => {
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks: {
-          // Split vendor chunks
-          'vendor-vue': ['vue', 'vue-router', 'pinia'],
-          'vendor-vuetify': ['vuetify'],
-          'vendor-axios': ['axios'],
-          'vendor-chartjs': ['chart.js', 'vue-chartjs'],
-          'vendor-swagger': ['swagger-ui-dist']
+        // Split vendor chunks (Vite 8 / Rolldown: codeSplitting.groups replaces manualChunks)
+        codeSplitting: {
+          groups: [
+            { name: 'vendor-vue', test: /[\\/]node_modules[\\/](@vue|vue|vue-router|pinia)[\\/]/ },
+            { name: 'vendor-vuetify', test: /[\\/]node_modules[\\/]vuetify[\\/]/ },
+            { name: 'vendor-axios', test: /[\\/]node_modules[\\/]axios[\\/]/ },
+            { name: 'vendor-chartjs', test: /[\\/]node_modules[\\/](chart\.js|vue-chartjs|@kurkle)[\\/]/ },
+            { name: 'vendor-swagger', test: /[\\/]node_modules[\\/]swagger-ui-dist[\\/]/ }
+          ]
         }
       }
     }

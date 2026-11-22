@@ -2,6 +2,12 @@ import sbt._
 
 val llm4sVersion = "0.6.0"
 
+def isLicenseOrNotice(name: String): Boolean = {
+  val lower = name.toLowerCase
+  lower.contains("license") || lower.contains("notice") || lower.startsWith("dependencies") ||
+  lower.endsWith(".txt") || lower.endsWith(".md")
+}
+
 // Code coverage settings (ThisBuild scope for scoverage)
 ThisBuild / coverageEnabled := false
 ThisBuild / coverageMinimumStmtTotal := 20  // Minimum 20% statement coverage (baseline)
@@ -13,7 +19,7 @@ lazy val root = (project in file("."))
   .settings(
     name := "rag-in-a-box",
     organization := "org.llm4s",
-    version := "0.1.0-SNAPSHOT",
+    // version is derived from git tags by sbt-dynver (tag v0.2.0 -> 0.2.0)
     scalaVersion := "3.7.1",
 
     // Compiler options for Scala 3
@@ -46,17 +52,12 @@ lazy val root = (project in file("."))
 
       // Configuration
       "com.typesafe" % "config" % "1.4.3",
-      "com.github.pureconfig" %% "pureconfig-core" % "0.17.8",
 
       // Logging
-      "ch.qos.logback" % "logback-classic" % "1.4.14",
+      "ch.qos.logback" % "logback-classic" % "1.5.38",
       "org.typelevel" %% "log4cats-slf4j" % "2.7.0",
-      // JSON structured logging
-      "ch.qos.logback.contrib" % "logback-json-classic" % "0.1.5",
-      "ch.qos.logback.contrib" % "logback-jackson" % "0.1.5",
-      "com.fasterxml.jackson.core" % "jackson-databind" % "2.17.0",
-      // Conditional processing in logback.xml
-      "org.codehaus.janino" % "janino" % "3.1.12",
+      // JSON structured logging (LOG_FORMAT=json)
+      "net.logstash.logback" % "logstash-logback-encoder" % "9.0",
 
       // Database connection pooling
       "com.zaxxer" % "HikariCP" % "5.1.0",
@@ -78,18 +79,25 @@ lazy val root = (project in file("."))
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
       // Discard signature files from signed JARs (BouncyCastle, etc.)
-      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".SF")) => MergeStrategy.discard
-      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".DSA")) => MergeStrategy.discard
-      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".RSA")) => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(n => n.endsWith(".SF") || n.endsWith(".DSA") || n.endsWith(".RSA")) =>
+        MergeStrategy.discard
       // ServiceLoader registrations: each llm4s provider module ships its own
       // META-INF/services/org.llm4s.llmconnect.spi.Llm4sProviderModule, so these must be merged
       case PathList("META-INF", "services", _ @ _*) => MergeStrategy.filterDistinctLines
-      case PathList("META-INF", xs @ _*) => MergeStrategy.first
-      case PathList("reference.conf") => MergeStrategy.concat
+      // Module descriptors are irrelevant on the fat JAR's classpath
       case PathList("module-info.class") => MergeStrategy.discard
+      case PathList("META-INF", "versions", _, "module-info.class") => MergeStrategy.discard
+      // Per-library build metadata and license/notice files are not needed at runtime
+      case PathList("META-INF", "maven", _ @ _*) => MergeStrategy.discard
+      case PathList("META-INF", "INDEX.LIST") => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(_.endsWith(".kotlin_module")) => MergeStrategy.discard
+      case PathList("META-INF", xs @ _*) if xs.lastOption.exists(isLicenseOrNotice) => MergeStrategy.discard
+      case PathList(name) if isLicenseOrNotice(name) && !name.endsWith(".txt") => MergeStrategy.discard
+      case "reference.conf" => MergeStrategy.concat
+      case x if x.endsWith("io.netty.versions.properties") => MergeStrategy.first
       case x if x.endsWith(".proto") => MergeStrategy.first
-      case x if x.contains("io.netty.versions.properties") => MergeStrategy.first
-      case x => MergeStrategy.first
+      // Anything else that conflicts with different content must be handled explicitly above
+      case _ => MergeStrategy.deduplicate
     },
 
     // Copy admin-ui dist to resources during build
