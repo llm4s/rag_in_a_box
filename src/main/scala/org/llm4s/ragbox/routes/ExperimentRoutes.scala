@@ -8,6 +8,7 @@ import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
+import org.llm4s.ragbox.registry.{ExperimentAlreadyRunningError, ExperimentRegistry}
 import org.llm4s.ragbox.service.ExperimentService
 
 /**
@@ -21,6 +22,8 @@ import org.llm4s.ragbox.service.ExperimentService
 object ExperimentRoutes {
 
   object StatusQueryParam extends OptionalQueryParamDecoderMatcher[String]("status")
+  object LimitParam extends OptionalQueryParamDecoderMatcher[Int]("limit")
+  object OffsetParam extends OptionalQueryParamDecoderMatcher[Int]("offset")
 
   def routes(experimentService: ExperimentService): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
@@ -35,10 +38,14 @@ object ExperimentRoutes {
         ).asJson)
       } yield response
 
-    // GET /api/v1/experiments - List all experiments
-    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) =>
+    // GET /api/v1/experiments?status=&limit=&offset= - List experiments, newest first
+    case GET -> Root / "api" / "v1" / "experiments" :? StatusQueryParam(status) +& LimitParam(limit) +& OffsetParam(offset) =>
       for {
-        experiments <- experimentService.listExperiments(status)
+        experiments <- experimentService.listExperiments(
+          status,
+          math.min(math.max(limit.getOrElse(ExperimentRegistry.DefaultListLimit), 0), ExperimentRegistry.MaxListLimit),
+          math.max(offset.getOrElse(0), 0)
+        )
         response <- Ok(experiments.asJson)
       } yield response
 
@@ -64,14 +71,11 @@ object ExperimentRoutes {
 
     // PUT /api/v1/experiments/:id/start - Start an experiment
     case PUT -> Root / "api" / "v1" / "experiments" / id / "start" =>
-      for {
-        result <- experimentService.startExperiment(id)
-        response <- if (result.success) {
-          Ok(result.asJson)
-        } else {
-          BadRequest(result.asJson)
-        }
-      } yield response
+      experimentService.startExperiment(id).flatMap { result =>
+        if (result.success) Ok(result.asJson) else BadRequest(result.asJson)
+      }.recoverWith { case e: ExperimentAlreadyRunningError =>
+        Conflict(ExperimentOperationResponse(success = false, message = e.getMessage, experiment = None).asJson)
+      }
 
     // PUT /api/v1/experiments/:id/stop - Stop an experiment
     case PUT -> Root / "api" / "v1" / "experiments" / id / "stop" =>

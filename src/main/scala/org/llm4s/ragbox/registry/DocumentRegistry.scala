@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.registry
 
 import cats.effect.IO
+import cats.syntax.all._
 import java.time.Instant
 
 /**
@@ -114,6 +115,16 @@ trait DocumentRegistry {
    * Get document count in a specific collection.
    */
   def countByCollection(collection: String): IO[Int]
+
+  /**
+   * Document count per collection, keyed like [[listCollections]] ("default" for documents with
+   * no collection). Implementations backed by a database should override this with a single
+   * query; the default issues one count per collection.
+   */
+  def countsByCollection(): IO[Map[String, Int]] =
+    listCollections().flatMap { collections =>
+      collections.toList.traverse(c => countByCollection(c).map(c -> _)).map(_.toMap)
+    }
 
   /**
    * Clear all document entries.

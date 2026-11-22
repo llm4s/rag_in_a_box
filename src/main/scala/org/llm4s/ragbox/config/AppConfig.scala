@@ -35,6 +35,10 @@ final case class AppConfig(
   def validate(): List[String] = {
     val errors = scala.collection.mutable.ListBuffer.empty[String]
 
+    if (database.poolSize < 1) {
+      errors += s"DB_POOL_SIZE must be at least 1 (got ${database.poolSize})"
+    }
+
     // JWT secret is required when auth mode is Basic
     if (security.auth.mode == AuthMode.Basic) {
       if (!security.auth.jwtSecretExplicitlySet) {
@@ -100,7 +104,8 @@ final case class DatabaseConfig(
   user: String,
   password: Secret,
   tableName: String,
-  url: Option[String]
+  url: Option[String],
+  poolSize: Int = DatabaseConfig.DefaultPoolSize
 ) {
   /**
    * DATABASE_URL parsed once. None when no (non-blank) URL is configured;
@@ -140,6 +145,12 @@ final case class DatabaseConfig(
 
   /** Effective password: from DATABASE_URL userinfo if present, otherwise database.password. */
   def effectivePassword: Secret = validUrl.flatMap(_.password).map(Secret(_)).getOrElse(password)
+}
+
+object DatabaseConfig {
+
+  /** Default size of the shared HikariCP pool (`database.pool-size` / `DB_POOL_SIZE`). */
+  val DefaultPoolSize: Int = 10
 }
 
 final case class EmbeddingConfig(
@@ -382,7 +393,8 @@ object AppConfig {
         user = config.getString("database.user"),
         password = Secret(config.getString("database.password")),
         tableName = config.getString("database.table-name"),
-        url = getOptionalString(config, "database.url")
+        url = getOptionalString(config, "database.url"),
+        poolSize = getOptionalInt(config, "database.pool-size").getOrElse(DatabaseConfig.DefaultPoolSize)
       ),
       embedding = EmbeddingConfig(
         provider = config.getString("embedding.provider"),

@@ -4,7 +4,9 @@ import cats.effect.{IO, Resource}
 import com.dimafeng.testcontainers.GenericContainer
 import com.dimafeng.testcontainers.scalatest.TestContainerForAll
 import org.llm4s.rag.permissions.pg.PgSearchIndex
+import com.zaxxer.hikari.HikariDataSource
 import org.llm4s.ragbox.config.{ApiKeysConfig, AppConfig, DatabaseConfig, EmbeddingConfig}
+import org.llm4s.ragbox.db.ConnectionPool
 import org.llm4s.ragbox.service.RAGService
 import org.llm4s.security.Secret
 import org.scalatest.TestSuite
@@ -76,6 +78,20 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     Resource.fromAutoCloseable(IO.blocking(DriverManager.getConnection(db.connectionString, User, Password)))
 
   /**
+   * The application's connection pool over `db`, as `Main` creates it. Pass `maxPoolSize` to
+   * test behaviour under a small pool.
+   */
+  def pool(db: DatabaseConfig, maxPoolSize: Int = DatabaseConfig.DefaultPoolSize): Resource[IO, HikariDataSource] =
+    ConnectionPool.create(
+      db,
+      Some(ConnectionPool.PoolConfig(
+        maximumPoolSize = maxPoolSize,
+        minimumIdle = math.min(1, maxPoolSize),
+        connectionTimeoutMs = 10000
+      ))
+    )
+
+  /**
    * An app config over `db` that embeds with [[FakeEmbeddings]] and has no LLM configured.
    */
   def testConfig(db: DatabaseConfig): AppConfig =
@@ -86,28 +102,30 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     )
 
   /**
-   * A permission-mode RAGService over `db`, built the way `Main` builds one: a `PgSearchIndex`
-   * with its schema initialised, then `RAGService.createWithPermissions`.
+   * A permission-mode RAGService over `db`, built the way `Main` builds one: a connection pool,
+   * a `PgSearchIndex` over that pool with its schema initialised, then
+   * `RAGService.createWithPermissions`.
    *
    * Pass the same `embeddings` to several services to count embedding work across them.
    */
   def permissionService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
     for {
+      ds <- pool(db)
       index <- Resource.make(
         IO.blocking {
           val si = PgSearchIndex
-            .fromJdbcUrl(db.connectionString, db.effectiveUser, db.effectivePassword, db.tableName)
+            .fromDataSource(ds, db.tableName)
             .fold(e => throw new IllegalStateException(e.message), identity)
           si.initializeSchema().fold(e => throw new IllegalStateException(e.message), identity)
           si
         }
       )(si => IO.blocking(si.close()))
       service <- Resource.make(
-        RAGService.createWithPermissions(testConfig(db), index, embeddings.registry)
+        RAGService.createWithPermissions(testConfig(db), ds, index, embeddings.registry)
       )(_.close())
     } yield service
 
   /** A RAGService over `db` without permissions (no `SearchIndex`), as `Main` falls back to. */
   def plainService(db: DatabaseConfig, embeddings: FakeEmbeddings = FakeEmbeddings()): Resource[IO, RAGService] =
-    Resource.make(RAGService.create(testConfig(db), embeddings.registry))(_.close())
+    pool(db).flatMap(ds => Resource.make(RAGService.create(testConfig(db), ds, embeddings.registry))(_.close()))
 }
