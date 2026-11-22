@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.integration
 
 import cats.effect.IO
+import cats.effect.std.CountDownLatch
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all._
 import org.llm4s.ragbox.config.DatabaseConfig
@@ -150,13 +151,57 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     schema(db) shouldBe before
   }
 
+  /**
+   * Run [[Migrations.migrate]] from `n` instances at once, released together from a latch so that
+   * they all reach Flyway's "is there a history table yet?" check at the same moment.
+   */
+  private def migrateConcurrently(db: DatabaseConfig, n: Int): List[Migrations.Result] =
+    run(CountDownLatch[IO](1).flatMap { start =>
+      val instances = (1 to n).toList.parTraverse(_ => start.await *> Migrations.migrate(dataSource(db)))
+      (instances, IO.sleep(50.millis) *> start.release).parTupled.map(_._1)
+    })
+
+  private val ConcurrentInstances = 12
+  private val ConcurrentRounds = 20
+
+  // Issue #52: these used to fail intermittently with "Unable to baseline ... already exists, and
+  // is empty" (one instance created the empty history table while another, having seen no history
+  // table and a now non-empty schema, decided to baseline). Twenty rounds of twelve instances
+  // make the race close to certain without Migrations' own lock.
   it should "apply each migration once when several instances start together" in withContainers { pg =>
-    val db = freshDatabase(pg, migrate = false)
-    val results = run((1 to 4).toList.parTraverse(_ => Migrations.migrate(dataSource(db))))
-    results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2", "V3")
-    history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
-    schema(db) shouldBe freshSchema
+    (1 to ConcurrentRounds).foreach { round =>
+      withClue(s"round $round: ") {
+        val db = freshDatabase(pg, migrate = false)
+        val results = migrateConcurrently(db, ConcurrentInstances)
+        results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2", "V3")
+        results.flatMap(_.schemaVersion).distinct shouldBe Seq("3")
+        history(db) shouldBe Seq(("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
+        schema(db) shouldBe freshSchema
+      }
+    }
   }
+
+  it should "need no more than two pooled connections per instance, and release its lock" in withContainers { pg =>
+    val db = freshDatabase(pg, migrate = false)
+    // Two is what `--migrate-only` gives it: the lock is held on Flyway's main connection
+    val results = run((1 to 3).toList.parTraverse(_ => pool(db, maxPoolSize = 2).use(Migrations.migrate)))
+    results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2", "V3")
+    lockIsFree(db) shouldBe true
+  }
+
+  it should "let a migration waiting for the lock be cancelled" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val waited = run(connect(db).use { holder =>
+      IO.blocking(Using.resource(holder.createStatement())(_.execute(s"SELECT pg_advisory_lock(${Migrations.LockKey})"))) *>
+        Migrations.migrate(dataSource(db)).timeout(2.seconds).attempt
+    })
+    waited.left.map(_.getClass.getSimpleName) shouldBe Left("TimeoutException")
+    lockIsFree(db) shouldBe true
+  }
+
+  /** Whether no session holds the migration lock. */
+  private def lockIsFree(db: DatabaseConfig): Boolean =
+    rows(db, s"SELECT pg_try_advisory_lock(${Migrations.LockKey}) AND pg_advisory_unlock(${Migrations.LockKey})")(_.getBoolean(1)).head
 
   // ============================================================
   // Databases created before Flyway
@@ -219,6 +264,19 @@ class MigrationSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
 
       migrate(db).applied shouldBe empty
     }
+
+  it should "be baselined once when several instances adopt it together" in withContainers { pg =>
+    (1 to ConcurrentRounds).foreach { round =>
+      withClue(s"round $round: ") {
+        val db = freshDatabase(pg, migrate = false)
+        execute(db, resource("db/legacy/in-code-ddl.sql"))
+        val results = migrateConcurrently(db, ConcurrentInstances)
+        results.flatMap(_.applied).map(_.takeWhile(_ != ' ')).sorted shouldBe Seq("V1", "V2", "V3")
+        history(db) shouldBe Seq(("0", "BASELINE", true), ("1", "SQL", true), ("2", "SQL", true), ("3", "SQL", true))
+        schema(db) shouldBe freshSchema
+      }
+    }
+  }
 
   it should "upgrade an early release's schema and fix its data as the old startup code did" in withContainers { pg =>
     val db = freshDatabase(pg, migrate = false)
