@@ -35,6 +35,9 @@ print(f"Uploaded: {result['documentId']}, {result['chunks']} chunks")
 result = client.query("What is PostgreSQL?")
 print(f"Answer: {result.answer}")
 print(f"Sources: {len(result.contexts)} contexts")
+
+# Rate the answer (only the caller who asked, or an admin, may)
+client.feedback(result.query_id, rating=5, comment="Spot on")
 ```
 
 ## Authentication
@@ -106,9 +109,14 @@ for doc in docs:
 
 ## Sync and Prune
 
-After upserting all documents, you can prune orphaned documents:
+After upserting all documents, you can prune orphaned documents. Pruning is scoped to one
+**sync source**: name your ingester with `source`, which every upsert records and `sync` prunes,
+so it never deletes uploads or other ingesters' documents (without a `source` the server's
+default source `api` is used):
 
 ```python
+client = RagBoxClient("http://localhost:8080", api_key="rat_...", source="confluence")
+
 # Upsert your current documents
 doc_ids = []
 for doc in my_documents:
@@ -116,7 +124,7 @@ for doc in my_documents:
     doc_ids.append(doc.id)
 
 # Preview, then prune documents that are no longer in your source
-# (deletes every document not in keep_ids, within the token's collections)
+# (deletes this source's documents not in keep_ids, within the token's collections)
 preview = client.sync(keep_ids=doc_ids, dry_run=True)
 print(f"Would prune: {preview['prunedIds']}")
 result = client.sync(keep_ids=doc_ids)
@@ -124,14 +132,15 @@ print(f"Pruned {result['prunedCount']} orphaned documents")
 ```
 
 The sync endpoints are for ingesters: administrators, or `rat_` tokens with the `sync:read` /
-`sync:write` scopes.
+`sync:write` scopes. `client.sync(keep_ids, scope="all")` prunes every document, whatever its
+source (administrators only).
 
 ## API Reference
 
 ### RagBoxClient
 
 ```python
-client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None, session=None)
+client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None, session=None, source=None)
 ```
 
 #### Document Operations
@@ -154,14 +163,15 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `query(question, top_k, collection, include_metadata, similarity_threshold)` | `POST /api/v1/query` | Query with answer generation |
+| `query(question, top_k, collection, include_metadata, similarity_threshold)` | `POST /api/v1/query` | Query with answer generation; `QueryResult.query_id` is the query-log id |
+| `feedback(query_id, rating, comment, relevant_chunks)` | `POST /api/v1/feedback` | Rate one of your queries' answers |
 | `search(query, top_k, collection)` | `POST /api/v1/search` | Search without LLM |
 
 #### Sync Operations
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `sync(keep_ids, dry_run)` | `POST /api/v1/sync` | Mark sync complete, optionally prune |
+| `sync(keep_ids, dry_run, source, scope)` | `POST /api/v1/sync` | Mark sync complete, optionally prune the source's documents (`scope="all"`: every document, admin only) |
 | `sync_status()` | `GET /api/v1/sync/status` | Get sync status |
 | `synced_documents(include_hash, include_updated_at, since)` | `GET /api/v1/sync/documents` | Synced documents as `SyncedDocument` (follows the pages) |
 | `list_synced_documents(since)` | `GET /api/v1/sync/documents` | Synced document IDs |

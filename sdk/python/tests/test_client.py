@@ -288,3 +288,64 @@ def test_sync_dry_run(client):
         match=[matchers.json_params_matcher({"keepDocumentIds": ["a"], "dryRun": True})],
     )
     assert client.sync(keep_ids=["a"], dry_run=True)["prunedIds"] == ["x"]
+
+
+# ---------------------------------------------------------------- query ids, feedback, sync sources (#54)
+
+
+@responses.activate
+def test_query_returns_query_id_for_feedback(client):
+    responses.post(f"{BASE}/api/v1/query", json={"answer": "a", "contexts": [], "queryId": "q-123"})
+    responses.post(
+        f"{BASE}/api/v1/feedback",
+        json={"success": True, "message": "Feedback recorded"},
+        match=[matchers.json_params_matcher({"queryId": "q-123", "rating": 5, "comment": "great"})],
+    )
+    result = client.query("q?")
+    assert result.query_id == "q-123"
+    assert client.feedback(result.query_id, 5, comment="great")["success"] is True
+
+
+@responses.activate
+def test_feedback_on_someone_elses_query_raises_not_found(client):
+    responses.post(
+        f"{BASE}/api/v1/feedback",
+        status=404,
+        json={"error": "not_found", "message": "Query q-1 not found"},
+    )
+    with pytest.raises(RagBoxError) as err:
+        client.feedback("q-1", 3, relevant_chunks=["c1"])
+    assert err.value.status_code == 404
+    assert responses.calls[0].request.body is not None
+
+
+@responses.activate
+def test_client_source_is_sent_on_upsert_and_sync(monkeypatch):
+    monkeypatch.delenv("RAGBOX_API_KEY", raising=False)
+    client = RagBoxClient(BASE, source="confluence")
+    doc = Document(id="d", content="text")
+    responses.put(
+        f"{BASE}/api/v1/documents/d",
+        status=201,
+        json={"documentId": "d", "chunks": 1, "action": "created", "message": "ok"},
+        match=[matchers.json_params_matcher({"content": "text", "contentHash": doc.content_hash(), "source": "confluence"})],
+    )
+    responses.post(
+        f"{BASE}/api/v1/sync",
+        json={"message": "Sync completed", "prunedCount": 0, "dryRun": False, "scope": "source", "source": "confluence"},
+        match=[matchers.json_params_matcher({"keepDocumentIds": ["d"], "source": "confluence"})],
+    )
+    client.upsert(doc)
+    assert client.sync(keep_ids=["d"])["source"] == "confluence"
+
+
+@responses.activate
+def test_sync_scope_all_sends_no_source(monkeypatch):
+    monkeypatch.delenv("RAGBOX_API_KEY", raising=False)
+    client = RagBoxClient(BASE, source="confluence")
+    responses.post(
+        f"{BASE}/api/v1/sync",
+        json={"message": "Dry run", "prunedCount": 0, "prunedIds": [], "dryRun": True, "scope": "all"},
+        match=[matchers.json_params_matcher({"keepDocumentIds": [], "dryRun": True, "scope": "all"})],
+    )
+    assert client.sync(keep_ids=[], dry_run=True, scope="all")["scope"] == "all"

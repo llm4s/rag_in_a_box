@@ -230,4 +230,69 @@ class CollectionPermissionRoutesSpec extends AnyFlatSpec with Matchers with Befo
       .withContentType(`Content-Type`(MediaType.application.json))
     routes.orNotFound.run(request).unsafeRunSync()
   }
+
+  // ============================================================
+  // Nested collection paths (#54): raw and encoded slashes everywhere
+  // ============================================================
+
+  private def nested(): Unit = {
+    val create = Request[IO](Method.POST, uri"/api/v1/collections")
+      .withEntity("""{"path": "eng/backend"}""")
+      .withContentType(`Content-Type`(MediaType.application.json))
+    routes.orNotFound.run(create).unsafeRunSync().status shouldBe Status.Created
+  }
+
+  private def run(method: Method, path: String, body: Option[String] = None): Response[IO] = {
+    val base = Request[IO](method, Uri.unsafeFromString(path))
+    val request = body.fold(base)(b => base.withEntity(b).withContentType(`Content-Type`(MediaType.application.json)))
+    routes.orNotFound.run(request).unsafeRunSync()
+  }
+
+  "Nested collection paths" should "be accepted with raw slashes by every collection endpoint" in {
+    nested()
+    run(Method.GET, "/api/v1/collections/eng/backend").as[String].unsafeRunSync() should include("\"path\":\"eng/backend\"")
+    run(Method.GET, "/api/v1/collections/eng/backend/stats").status shouldBe Status.Ok
+    val put = run(Method.PUT, "/api/v1/collections/eng/backend/permissions", Some("""{"queryableBy": ["user:alice"]}"""))
+    put.status shouldBe Status.Ok
+    put.as[String].unsafeRunSync() should include("\"path\":\"eng/backend\"")
+    run(Method.DELETE, "/api/v1/collections/eng/backend").status shouldBe Status.NoContent
+    run(Method.GET, "/api/v1/collections/eng/backend").status shouldBe Status.NotFound
+  }
+
+  it should "be accepted with encoded slashes by every collection endpoint" in {
+    nested()
+    run(Method.GET, "/api/v1/collections/eng%2Fbackend").as[String].unsafeRunSync() should include("\"path\":\"eng/backend\"")
+    val stats = run(Method.GET, "/api/v1/collections/eng%2Fbackend/stats")
+    stats.status shouldBe Status.Ok
+    stats.as[String].unsafeRunSync() should include("\"path\":\"eng/backend\"")
+    run(Method.PUT, "/api/v1/collections/eng%2Fbackend/permissions", Some("""{"queryableBy": []}""")).status shouldBe Status.Ok
+    run(Method.DELETE, "/api/v1/collections/eng%2Fbackend").status shouldBe Status.NoContent
+    run(Method.GET, "/api/v1/collections/eng%2Fbackend").status shouldBe Status.NotFound
+  }
+
+  it should "leave the config endpoints, even nested, to CollectionConfigRoutes" in {
+    nested()
+    for (path <- Seq("/api/v1/collections/eng/backend/config", "/api/v1/collections/eng%2Fbackend/config"))
+      routes.run(Request[IO](Method.GET, Uri.unsafeFromString(path))).value.unsafeRunSync() shouldBe None
+    routes.run(Request[IO](Method.POST, uri"/api/v1/collections/eng/backend/config/preview")).value.unsafeRunSync() shouldBe None
+  }
+
+  "A collection whose last level is a sub-resource name" should "be addressed by encoding the slash before it" in {
+    val create = Request[IO](Method.POST, uri"/api/v1/collections")
+      .withEntity("""{"path": "eng/stats"}""")
+      .withContentType(`Content-Type`(MediaType.application.json))
+    routes.orNotFound.run(create).unsafeRunSync().status shouldBe Status.Created
+    run(Method.GET, "/api/v1/collections/eng%2Fstats").as[String].unsafeRunSync() should include("\"path\":\"eng/stats\"")
+    // Raw, the trailing segment is the sub-resource: the statistics of `eng`, which does not exist
+    run(Method.GET, "/api/v1/collections/eng/stats").as[String].unsafeRunSync() should not include "\"path\":\"eng/stats\""
+  }
+
+  "Changing a nested collection" should "be admin-only" in {
+    nested()
+    val asAlice = CollectionPermissionRoutes.routes(mockCollectionStore, mockPrincipalStore).asPrincipal(user("alice")).orNotFound
+    asAlice.run(Request[IO](Method.DELETE, uri"/api/v1/collections/eng/backend")).unsafeRunSync().status shouldBe Status.Forbidden
+    asAlice.run(Request[IO](Method.PUT, uri"/api/v1/collections/eng/backend/permissions")
+      .withEntity("""{"queryableBy": []}""").withContentType(`Content-Type`(MediaType.application.json)))
+      .unsafeRunSync().status shouldBe Status.Forbidden
+  }
 }

@@ -213,7 +213,9 @@ class OAuthRoutes(
       maxAge = Some(0),
       path = Some("/"),
       secure = sessionConfig.cookieSecure,
-      httpOnly = true
+      httpOnly = true,
+      // The same attributes as the cookie it replaces (createSessionCookie)
+      sameSite = Some(SameSite.Lax)
     )
 
 object OAuthRoutes:

@@ -32,7 +32,9 @@ trait QueryLogRegistryBase {
    * @param variant The experiment group (`baseline` or `variant`) the query was routed to
    * @param failed Whether the query failed (its latency is then the time to failure)
    * @param errorMessage Why it failed
-   * @return The generated query log ID
+   * @param id The id to log the query under (a new UUID when absent). Routes choose it up front
+   *           so they can return it (`queryId`) before or without waiting for the log.
+   * @return The query log ID
    */
   def logQuery(
     queryText: String,
@@ -52,7 +54,8 @@ trait QueryLogRegistryBase {
     costUsd: Option[Double] = None,
     variant: Option[String] = None,
     failed: Boolean = false,
-    errorMessage: Option[String] = None
+    errorMessage: Option[String] = None,
+    id: Option[String] = None
   ): IO[String]
 
   /**

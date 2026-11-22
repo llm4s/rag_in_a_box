@@ -147,9 +147,10 @@ final class DocumentIngestion(
     documentId: String,
     content: String,
     metadata: Map[String, String],
-    providedHash: Option[String]
+    providedHash: Option[String],
+    sourceId: Option[String] = None
   ): IO[DocumentUpsertResponse] =
-    upsertFrom(None, documentId, content, metadata, providedHash)
+    upsertFrom(sourceId, documentId, content, metadata, providedHash)
 
   /**
    * Upsert a document on behalf of an ingestion source, recording the source as its owner.

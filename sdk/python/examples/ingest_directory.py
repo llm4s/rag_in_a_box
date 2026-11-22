@@ -74,6 +74,12 @@ def main():
         help="Recursively scan subdirectories (default: true)"
     )
     parser.add_argument(
+        "--source",
+        default=None,
+        help="Sync source name for these documents (default: the server's 'api'); "
+             "the prune only removes this source's documents"
+    )
+    parser.add_argument(
         "--no-prune",
         action="store_true",
         help="Don't prune documents not found in directory"
@@ -105,7 +111,7 @@ def main():
     print(f"Connecting to: {args.url}")
 
     # Connect to RAG in a Box
-    client = RagBoxClient(args.url, api_key=args.api_key)
+    client = RagBoxClient(args.url, api_key=args.api_key, source=args.source)
 
     # Check health
     try:

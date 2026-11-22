@@ -16,7 +16,8 @@ object QueryLogging {
     response: QueryResponse,
     experimentId: Option[String] = None,
     configSnapshot: Option[QueryConfigSnapshot] = None,
-    variant: Option[String] = None
+    variant: Option[String] = None,
+    id: Option[String] = None
   ): IO[String] = {
     val metrics = response.metrics
     registry.logQuery(
@@ -35,7 +36,8 @@ object QueryLogging {
       promptTokens = metrics.flatMap(_.promptTokens),
       embeddingTokens = metrics.flatMap(_.embeddingTokens),
       costUsd = metrics.flatMap(_.costUsd),
-      variant = variant
+      variant = variant,
+      id = id
     )
   }
 
@@ -53,7 +55,8 @@ object QueryLogging {
     error: Throwable,
     experimentId: Option[String] = None,
     configSnapshot: Option[QueryConfigSnapshot] = None,
-    variant: Option[String] = None
+    variant: Option[String] = None,
+    id: Option[String] = None
   ): IO[String] =
     registry.logQuery(
       queryText = queryText,
@@ -70,6 +73,7 @@ object QueryLogging {
       configSnapshot = configSnapshot,
       variant = variant,
       failed = true,
-      errorMessage = Some(Option(error.getMessage).getOrElse(error.getClass.getSimpleName))
+      errorMessage = Some(Option(error.getMessage).getOrElse(error.getClass.getSimpleName)),
+      id = id
     )
 }

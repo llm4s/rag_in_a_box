@@ -21,8 +21,8 @@ The query log, analytics summaries, feedback and optimization suggestions. See t
 ---
 
 **Auth:** everything under `/api/v1/analytics` is **Admin** only (the query log contains every
-user's questions). `POST /api/v1/feedback` is open to any authenticated caller (access tokens
-need the `admin` scope).
+user's questions). `POST /api/v1/feedback` is for the user who asked the query, or an
+administrator (access tokens need the `query` scope).
 
 Time parameters (`from`, `to`) are ISO-8601 instants such as `2026-01-01T00:00:00Z`.
 
@@ -130,7 +130,7 @@ POST /api/v1/feedback
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `queryId` | string | Yes | Query-log id |
+| `queryId` | string | Yes | The `queryId` of the `POST /query` response, or of the query stream's `start`/`complete` events |
 | `rating` | integer | Yes | 1 to 5 |
 | `relevantChunks` | string[] | No | Chunks the user found relevant |
 | `comment` | string | No | Free-text comment |
@@ -139,12 +139,8 @@ POST /api/v1/feedback
 { "success": true, "message": "Feedback recorded" }
 ```
 
-`400` for a rating outside 1 to 5, `404` for an unknown `queryId`.
-
-{: .note }
-`/query` responses do not include the query-log id, so outside chat (where
-`PUT /api/v1/chat/messages/{id}/rate` records feedback on the linked entry) the id has to come
-from the admin-only query log.
+`400` for a rating outside 1 to 5. `404` for an unknown `queryId`, and also for a query someone
+else asked (unless the caller is an administrator), so query ids are not revealed.
 
 ---
 

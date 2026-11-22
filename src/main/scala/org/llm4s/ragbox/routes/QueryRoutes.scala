@@ -50,6 +50,8 @@ object QueryRoutes {
           case Some(errorResponse) => errorResponse
           case None =>
             for {
+              // The query-log id, returned as `queryId` for POST /feedback
+              queryId <- IO.randomUUID.map(_.toString)
               startTime <- IO.realTimeInstant
               collectionPattern = body.collection.getOrElse("*")
               userId: Option[String] = Some(PermissionContext.userId(principal))
@@ -58,10 +60,10 @@ object QueryRoutes {
               plan <- planQuery(ragService, experimentService, body)
               result <- runQuery(ragService, principal, body.question, collectionPattern, plan).attempt
               endTime <- IO.realTimeInstant
-              _ <- logOutcome(queryLogRegistry, body.question, collectionPattern, userId,
+              _ <- logOutcome(queryLogRegistry, queryId, body.question, collectionPattern, userId,
                 (endTime.toEpochMilli - startTime.toEpochMilli).toInt, plan, result)
               // A failure is answered by ErrorHandling (400 invalid / no LLM, else a generic 500)
-              resp <- IO.fromEither(result).flatMap(queryResponse => Ok(queryResponse.asJson))
+              resp <- IO.fromEither(result).flatMap(queryResponse => Ok(queryResponse.copy(queryId = Some(queryId)).asJson))
             } yield resp
         }
       } yield response
@@ -96,6 +98,7 @@ object QueryRoutes {
           .orElse(Authz.patternDenied(principal, body.collection.getOrElse("*"))) match {
           case Some(errorResponse) => errorResponse
           case None =>
+            // The query-log id: the `start`/`complete` events' queryId, for POST /feedback
             val queryId = UUID.randomUUID().toString
             val collectionPattern = body.collection.getOrElse("*")
             val userId: Option[String] = Some(PermissionContext.userId(principal))
@@ -112,7 +115,7 @@ object QueryRoutes {
               val queryStream = Stream.eval {
                 runQuery(ragService, principal, body.question, collectionPattern, plan).attempt.flatTap { result =>
                   IO.realTimeInstant.flatMap { endTime =>
-                    logOutcome(queryLogRegistry, body.question, collectionPattern, userId,
+                    logOutcome(queryLogRegistry, queryId, body.question, collectionPattern, userId,
                       (endTime.toEpochMilli - startTime.toEpochMilli).toInt, plan, result)
                   }
                 }
@@ -244,6 +247,7 @@ object QueryRoutes {
    */
   private def logOutcome(
     queryLogRegistry: QueryLogRegistryBase,
+    queryId: String,
     question: String,
     collectionPattern: String,
     userId: Option[String],
@@ -262,7 +266,8 @@ object QueryRoutes {
           response = queryResponse,
           experimentId = plan.experimentId,
           configSnapshot = plan.snapshot,
-          variant = plan.variant
+          variant = plan.variant,
+          id = Some(queryId)
         ).void
       case Left(_: InvalidRequestError) => IO.unit
       case Left(e) =>
@@ -275,7 +280,8 @@ object QueryRoutes {
           error = e,
           experimentId = plan.experimentId,
           configSnapshot = plan.snapshot,
-          variant = plan.variant
+          variant = plan.variant,
+          id = Some(queryId)
         ).void
     }).attempt.void
 

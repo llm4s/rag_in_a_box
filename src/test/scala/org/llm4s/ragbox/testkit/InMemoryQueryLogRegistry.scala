@@ -39,11 +39,12 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
     costUsd: Option[Double] = None,
     variant: Option[String] = None,
     failed: Boolean = false,
-    errorMessage: Option[String] = None
+    errorMessage: Option[String] = None,
+    id: Option[String] = None
   ): IO[String] = IO {
-    val id = UUID.randomUUID().toString
+    val logId = id.getOrElse(UUID.randomUUID().toString)
     val entry = QueryLogEntry(
-      id = id,
+      id = logId,
       queryText = queryText,
       collectionPattern = collectionPattern,
       userId = userId,
@@ -65,8 +66,8 @@ class InMemoryQueryLogRegistry extends QueryLogRegistryBase {
       embeddingTokens = embeddingTokens,
       costUsd = costUsd
     )
-    logs.update(id, entry)
-    id
+    logs.update(logId, entry)
+    logId
   }
 
   /**

@@ -82,7 +82,8 @@ sub-collections** (`confluence/ENG` also allows `confluence/ENG/api`):
 - queries must name a collection inside the restriction (`confluence/ENG`,
   `confluence/ENG/*`, `confluence/ENG/**`); `*` and other collections answer `403`
 - `POST /api/v1/sync` with `keepDocumentIds` only prunes documents inside the allowed
-  collections
+  collections (and, like any prune, only the documents of its `source`; `scope: all` needs an
+  administrator)
 
 ### Data visibility
 

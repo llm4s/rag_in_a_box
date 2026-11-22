@@ -132,6 +132,10 @@ on the message and on the query log entry of the answer.
 
 ### Submitting feedback for a query log entry
 
+`POST /api/v1/query` returns the query's log id as `queryId` (the query stream sends it in its
+`start` and `complete` events). Only the user who asked the query, or an administrator, may rate
+it; anyone else gets `404`, as for an unknown id. Access tokens need the `query` scope.
+
 ```bash
 curl -X POST http://localhost:8080/api/v1/feedback \
   -H "Content-Type: application/json" \
@@ -146,7 +150,7 @@ curl -X POST http://localhost:8080/api/v1/feedback \
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `queryId` | string | Yes | Query log entry id |
+| `queryId` | string | Yes | The `queryId` of the `/query` response (the query log entry id) |
 | `rating` | integer | Yes | 1-5 (anything else answers `400`) |
 | `relevantChunks` | array | No | IDs of the chunks that were actually relevant |
 | `comment` | string | No | Free-form feedback |

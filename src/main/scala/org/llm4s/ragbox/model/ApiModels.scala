@@ -93,13 +93,16 @@ final case class UrlIngestionRequest(
  * @param collection Optional collection path (e.g., "acme/engineering")
  * @param readableBy Optional list of principals who can read this document.
  *                   Format: "user:alice@example.com" or "group:managers"
+ * @param source The ingester (sync source) the document belongs to; `POST /sync` prunes one
+ *               source's documents at a time. Defaults to `api` (see `DocumentRoutes.DefaultSyncSource`).
  */
 final case class DocumentUpsertRequest(
   content: String,
   metadata: Option[Map[String, String]] = None,
   contentHash: Option[String] = None,
   collection: Option[String] = None,
-  readableBy: Option[Seq[String]] = None
+  readableBy: Option[Seq[String]] = None,
+  source: Option[String] = None
 ) derives Codec.AsObject
 
 /**
@@ -116,12 +119,18 @@ final case class DocumentUpsertResponse(
  * Request to prune documents not in the provided list.
  * Used for garbage collection after sync.
  *
- * @param keepDocumentIds List of document IDs to keep (all others will be deleted)
+ * @param keepDocumentIds Document IDs to keep; the other documents in scope are deleted
  * @param dryRun If true, returns what would be deleted without actually deleting
+ * @param source With the default scope, the sync source whose documents are pruned (default
+ *               `api`: documents written by `PUT /documents/{id}` without a `source`)
+ * @param scope `source` (the default): only `source`'s documents are pruned. `all` (admin
+ *              only, explicit opt-in): every document, whoever wrote it, as before #54
  */
 final case class SyncPruneRequest(
   keepDocumentIds: Seq[String],
-  dryRun: Option[Boolean] = None
+  dryRun: Option[Boolean] = None,
+  source: Option[String] = None,
+  scope: Option[String] = None
 ) derives Codec.AsObject
 
 /**
@@ -131,7 +140,9 @@ final case class SyncPruneResponse(
   message: String,
   prunedCount: Int,
   prunedIds: Option[Seq[String]] = None,  // Only included when dryRun=true
-  dryRun: Boolean = false
+  dryRun: Boolean = false,
+  scope: Option[String] = None,  // "source" or "all", when the request pruned
+  source: Option[String] = None  // the source pruned (scope "source")
 ) derives Codec.AsObject
 
 /**
@@ -252,7 +263,8 @@ final case class QueryResponse(
   answer: String,
   contexts: Seq[ContextItem],
   usage: Option[UsageInfo] = None,
-  metrics: Option[QueryMetrics] = None
+  metrics: Option[QueryMetrics] = None,
+  queryId: Option[String] = None
 ) derives Codec.AsObject
 
 /**

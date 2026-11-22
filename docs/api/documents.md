@@ -38,6 +38,7 @@ POST /api/v1/documents
 | `metadata` | object | No | Key-value metadata pairs |
 | `collection` | string | No | Collection path (e.g., "docs/guides") |
 | `readableBy` | string[] | No | Principals who can read this document |
+| `source` | string | No | The sync source (ingester) the document belongs to, default `api`. `POST /sync` prunes one source's documents at a time (see [Sync](/api/sync#prune)). 1-128 letters, digits or `._:/-` |
 
 ### Example
 

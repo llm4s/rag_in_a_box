@@ -61,7 +61,8 @@ object Authz {
 
   /**
    * Access tokens without the `admin` scope may only use the endpoints their scopes are for
-   * (documents, sync, query/search, chat, `/auth/me`, `/ws`); every other path answers 403
+   * (documents, sync, query/search and feedback on their queries, chat, `/auth/me`, `/ws`);
+   * every other path answers 403
    * before any route runs. The routes then check the specific scope.
    */
   def tokenAllowlist(routes: AuthedRoutes[Principal, IO]): AuthedRoutes[Principal, IO] =
@@ -75,7 +76,7 @@ object Authz {
     }
 
   private val TokenPaths = Seq(
-    "/api/v1/documents", "/api/v1/stats", "/api/v1/sync", "/api/v1/query", "/api/v1/search",
+    "/api/v1/documents", "/api/v1/stats", "/api/v1/sync", "/api/v1/query", "/api/v1/search", "/api/v1/feedback",
     "/api/v1/chat", "/api/v1/auth/me", "/ws"
   )
 

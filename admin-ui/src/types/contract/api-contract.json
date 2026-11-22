@@ -218,6 +218,15 @@
     "type" : "hot",
     "value" : "5"
   },
+  "ContextItem" : {
+    "chunkIndex" : 0,
+    "content" : "Solar panels convert light.",
+    "documentId" : "doc-1",
+    "metadata" : {
+      "collection" : "docs"
+    },
+    "score" : 0.92
+  },
   "DetailedCollectionStats" : {
     "avgChunkSize" : 450.0,
     "avgChunksPerDoc" : 3.0,
@@ -442,6 +451,37 @@
     "promptTokens" : 1200,
     "searchLatencyMs" : 8
   },
+  "QueryResponse" : {
+    "answer" : "An answer.",
+    "contexts" : [
+      {
+        "chunkIndex" : 0,
+        "content" : "Solar panels convert light.",
+        "documentId" : "doc-1",
+        "metadata" : {
+          "collection" : "docs"
+        },
+        "score" : 0.92
+      }
+    ],
+    "metrics" : {
+      "chunksRetrieved" : 5,
+      "chunksUsed" : 5,
+      "completionTokens" : 80,
+      "costUsd" : 0.0042,
+      "embeddingLatencyMs" : 12,
+      "embeddingTokens" : 7,
+      "llmLatencyMs" : 900,
+      "promptTokens" : 1200,
+      "searchLatencyMs" : 8
+    },
+    "queryId" : "5f0c7a9e-1b2d-4c3e-8f40-123456789abc",
+    "usage" : {
+      "completionTokens" : 80,
+      "promptTokens" : 1200,
+      "totalTokens" : 1280
+    }
+  },
   "RAGConfigInfo" : {
     "chunkOverlap" : 150,
     "chunkSize" : 800,
@@ -605,5 +645,10 @@
         "suggestion" : "Use smaller chunks"
       }
     ]
+  },
+  "UsageInfo" : {
+    "completionTokens" : 80,
+    "promptTokens" : 1200,
+    "totalTokens" : 1280
   }
 }
