@@ -24,7 +24,7 @@ Ingest documents from Amazon S3 with multi-format support.
 S3 ingestion allows you to automatically pull documents from AWS S3 buckets for indexing. It supports:
 
 - **Multi-format extraction**: PDF, DOCX, DOC, HTML, Markdown, and more
-- **Incremental sync**: Only re-index changed files (via S3 ETags)
+- **Incremental sync**: only changed files are re-indexed (by content hash, which persists across restarts), and files removed from the bucket are removed from the index
 - **Flexible authentication**: IAM roles, environment variables, or explicit credentials
 - **Pattern filtering**: Include only specific file types
 

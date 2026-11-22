@@ -268,6 +268,21 @@ ingestion {
 }
 ```
 
+### How sources are synced
+
+- **Each source syncs only its own documents.** ragbox records which source ingested each
+  document. When a directory, web or S3 source no longer lists a document, that source's next
+  run removes it. Other sources' documents, and documents uploaded through the API, are never
+  removed. URL and database sources add and update documents but never remove them.
+- **Unchanged documents are not re-embedded,** including after a restart. Content hashes are
+  kept in PostgreSQL. Documents deleted at a source while the server was down are removed on
+  that source's next run.
+- **Source names must stay stable.** A source's `name` identifies its documents. If you rename
+  a source, its previously ingested documents are no longer removed automatically.
+- **One run at a time.** While a run is in progress, `POST /api/v1/ingest/run` and
+  `POST /api/v1/ingest/run/{source}` return `409 Conflict`, and a scheduled run that comes due
+  is skipped.
+
 ---
 
 ## Example Configurations

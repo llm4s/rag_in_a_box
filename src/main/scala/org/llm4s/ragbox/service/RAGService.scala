@@ -180,7 +180,7 @@ class RAGService(
       ingestWithPermissions(metadata.getOrElse("collection", DefaultCollection), documentId, content, metadata)
     } else {
       val contentHash = computeContentHash(content)
-      ingestAndRegister(documentId, content, contentHash, metadata).map { result =>
+      ingestAndRegister(documentId, content, contentHash, metadata, sourceId = None).map { result =>
         DocumentUploadResponse(documentId, result.chunks, s"Successfully ingested ${result.chunks} chunks")
       }
     }
@@ -296,30 +296,60 @@ class RAGService(
     metadata: Map[String, String],
     providedHash: Option[String]
   ): IO[DocumentUpsertResponse] =
+    upsertFrom(None, documentId, content, metadata, providedHash)
+
+  /**
+   * Upsert a document on behalf of an ingestion source, recording the source as its owner.
+   *
+   * Change detection uses the persistent registry's content hash, so an unchanged document is
+   * not re-embedded - also after a restart. The owner is what lets a source's sync remove only
+   * its own documents (see [[listSourceDocumentIds]]).
+   */
+  def upsertSourceDocument(
+    sourceId: String,
+    documentId: String,
+    content: String,
+    metadata: Map[String, String]
+  ): IO[DocumentUpsertResponse] =
+    upsertFrom(Some(sourceId), documentId, content, metadata, None)
+
+  /** IDs of the documents an ingestion source owns. */
+  def listSourceDocumentIds(sourceId: String): IO[Seq[String]] =
+    documentRegistry.listIdsBySource(sourceId)
+
+  private def upsertFrom(
+    sourceId: Option[String],
+    documentId: String,
+    content: String,
+    metadata: Map[String, String],
+    providedHash: Option[String]
+  ): IO[DocumentUpsertResponse] =
     if (hasPermissions) {
       upsertWithPermissions(
         collectionPath = metadata.getOrElse("collection", DefaultCollection),
         documentId = documentId,
         content = content,
         metadata = metadata,
-        providedHash = providedHash
+        providedHash = providedHash,
+        sourceId = sourceId
       )
     } else {
-      upsertWithoutPermissions(documentId, content, metadata, providedHash)
+      upsertWithoutPermissions(documentId, content, metadata, providedHash, sourceId)
     }
 
   private def upsertWithoutPermissions(
     documentId: String,
     content: String,
     metadata: Map[String, String],
-    providedHash: Option[String]
+    providedHash: Option[String],
+    sourceId: Option[String]
   ): IO[DocumentUpsertResponse] = {
     val contentHash = providedHash.getOrElse(computeContentHash(content))
 
     documentRegistry.get(documentId).flatMap {
       case Some(existing) if existing.contentHash == contentHash =>
         // Content unchanged - skip re-indexing
-        IO.pure(DocumentUpsertResponse(
+        claimForSource(existing, sourceId).as(DocumentUpsertResponse(
           documentId = documentId,
           chunks = existing.chunkCount,
           action = "unchanged",
@@ -330,15 +360,25 @@ class RAGService(
         // Content changed - delete and re-index
         for {
           _ <- deleteDocument(documentId).attempt // Ignore errors if doesn't exist
-          result <- ingestAndRegister(documentId, content, contentHash, metadata)
+          result <- ingestAndRegister(documentId, content, contentHash, metadata, sourceId)
         } yield result.copy(action = "updated")
 
       case None =>
         // New document
-        ingestAndRegister(documentId, content, contentHash, metadata)
+        ingestAndRegister(documentId, content, contentHash, metadata, sourceId)
           .map(_.copy(action = "created"))
     }
   }
+
+  /**
+   * An unchanged document a source lists becomes that source's, so the source's sync removes it
+   * once it is gone - without re-embedding anything. Upserts not from a source change no owner.
+   */
+  private def claimForSource(existing: DocumentEntry, sourceId: Option[String]): IO[Unit] =
+    sourceId match {
+      case Some(_) if existing.sourceId != sourceId => documentRegistry.put(existing.copy(sourceId = sourceId))
+      case _ => IO.unit
+    }
 
   /**
    * Helper to ingest and register a document.
@@ -347,14 +387,15 @@ class RAGService(
     documentId: String,
     content: String,
     contentHash: String,
-    metadata: Map[String, String]
+    metadata: Map[String, String],
+    sourceId: Option[String]
   ): IO[DocumentUpsertResponse] =
     rag.flatMap { r =>
       IO.fromEither(
         r.ingestText(content, documentId, metadata)
           .left.map(e => new RuntimeException(e.message))
       ).flatMap { chunkCount =>
-        recordIngest(documentId, content, contentHash, chunkCount, metadata, metadata.get("collection"), Set.empty)
+        recordIngest(documentId, content, contentHash, chunkCount, metadata, metadata.get("collection"), Set.empty, sourceId)
           .as(DocumentUpsertResponse(
             documentId = documentId,
             chunks = chunkCount,
@@ -375,7 +416,8 @@ class RAGService(
     chunkCount: Int,
     metadata: Map[String, String],
     collection: Option[String],
-    readableBy: Set[Int]
+    readableBy: Set[Int],
+    sourceId: Option[String]
   ): IO[Unit] = {
     val now = Instant.now()
 
@@ -410,7 +452,8 @@ class RAGService(
         collection = collection,
         indexedAt = now,
         updatedAt = now,
-        readableBy = readableBy
+        readableBy = readableBy,
+        sourceId = sourceId
       ))
     } yield ()
   }
@@ -651,7 +694,7 @@ class RAGService(
     metadata: Map[String, String] = Map.empty,
     readableBy: Set[PrincipalId] = Set.empty
   ): IO[DocumentUploadResponse] =
-    ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, computeContentHash(content))
+    ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, computeContentHash(content), None)
 
   private def ingestIntoCollection(
     collectionPath: String,
@@ -659,7 +702,8 @@ class RAGService(
     content: String,
     metadata: Map[String, String],
     readableBy: Set[PrincipalId],
-    contentHash: String
+    contentHash: String,
+    sourceId: Option[String]
   ): IO[DocumentUploadResponse] =
     for {
       path <- parseCollectionPath(collectionPath)
@@ -678,7 +722,8 @@ class RAGService(
         chunkCount = chunkCount,
         metadata = metadata ++ registeredCollection.map("collection" -> _),
         collection = registeredCollection,
-        readableBy = readableBy.map(_.value)
+        readableBy = readableBy.map(_.value),
+        sourceId = sourceId
       )
     } yield DocumentUploadResponse(
       documentId = documentId,
@@ -699,6 +744,7 @@ class RAGService(
    * @param metadata Optional metadata
    * @param readableBy Set of principal IDs who can read this document
    * @param providedHash Optional pre-computed content hash
+   * @param sourceId The ingestion source upserting the document, recorded as its owner
    * @return Upsert response with action taken
    */
   def upsertWithPermissions(
@@ -707,13 +753,14 @@ class RAGService(
     content: String,
     metadata: Map[String, String] = Map.empty,
     readableBy: Set[PrincipalId] = Set.empty,
-    providedHash: Option[String] = None
+    providedHash: Option[String] = None,
+    sourceId: Option[String] = None
   ): IO[DocumentUpsertResponse] = {
     val contentHash = providedHash.getOrElse(computeContentHash(content))
 
     def ingest(action: String): IO[DocumentUpsertResponse] =
       // Register the caller's hash, so the next upsert with the same hash is unchanged
-      ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, contentHash)
+      ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, contentHash, sourceId)
         .map(result => DocumentUpsertResponse(
           documentId = result.documentId,
           chunks = result.chunks,
@@ -727,7 +774,7 @@ class RAGService(
             existing.collection.getOrElse(DefaultCollection) == path.value &&
             existing.readableBy == readableBy.map(_.value) =>
         // Content, collection and access list unchanged - skip re-indexing
-        IO.pure(DocumentUpsertResponse(
+        claimForSource(existing, sourceId).as(DocumentUpsertResponse(
           documentId = documentId,
           chunks = existing.chunkCount,
           action = "unchanged",

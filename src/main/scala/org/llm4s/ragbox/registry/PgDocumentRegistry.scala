@@ -64,6 +64,11 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       stmt.execute(
         "ALTER TABLE document_registry ADD COLUMN IF NOT EXISTS readable_by INTEGER[] NOT NULL DEFAULT '{}'"
       )
+      // Ingestion source that owns the document, so each source's sync removes only its own
+      stmt.execute("ALTER TABLE document_registry ADD COLUMN IF NOT EXISTS source_id TEXT")
+      stmt.execute(
+        "CREATE INDEX IF NOT EXISTS idx_document_registry_source_id ON document_registry(source_id)"
+      )
       // Create collection index after ensuring column exists
       stmt.execute(
         """CREATE INDEX IF NOT EXISTS idx_document_registry_collection
@@ -102,15 +107,16 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
 
   override def put(entry: DocumentEntry): IO[Unit] = IO {
     val sql =
-      """INSERT INTO document_registry (document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by)
-        |VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?)
+      """INSERT INTO document_registry (document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by, source_id)
+        |VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
         |ON CONFLICT (document_id) DO UPDATE SET
         |    content_hash = EXCLUDED.content_hash,
         |    chunk_count = EXCLUDED.chunk_count,
         |    metadata = EXCLUDED.metadata,
         |    collection = EXCLUDED.collection,
         |    updated_at = EXCLUDED.updated_at,
-        |    readable_by = EXCLUDED.readable_by""".stripMargin
+        |    readable_by = EXCLUDED.readable_by,
+        |    source_id = EXCLUDED.source_id""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try {
       stmt.setString(1, entry.documentId)
@@ -121,6 +127,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       stmt.setTimestamp(6, Timestamp.from(entry.indexedAt))
       stmt.setTimestamp(7, Timestamp.from(entry.updatedAt))
       stmt.setArray(8, connection.createArrayOf("integer", entry.readableBy.toSeq.sorted.map(Int.box).toArray))
+      stmt.setString(9, entry.sourceId.orNull)
       stmt.executeUpdate()
     } finally {
       stmt.close()
@@ -234,6 +241,21 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
     val stmt = connection.prepareStatement(sql)
     try {
       if (useParam) stmt.setString(1, collection)
+      val rs = stmt.executeQuery()
+      val ids = scala.collection.mutable.ArrayBuffer.empty[String]
+      while (rs.next()) {
+        ids += rs.getString("document_id")
+      }
+      ids.toSeq
+    } finally {
+      stmt.close()
+    }
+  }
+
+  override def listIdsBySource(sourceId: String): IO[Seq[String]] = IO {
+    val stmt = connection.prepareStatement("SELECT document_id FROM document_registry WHERE source_id = ?")
+    try {
+      stmt.setString(1, sourceId)
       val rs = stmt.executeQuery()
       val ids = scala.collection.mutable.ArrayBuffer.empty[String]
       while (rs.next()) {
@@ -363,7 +385,8 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       updatedAt = rs.getTimestamp("updated_at").toInstant,
       readableBy = Option(rs.getArray("readable_by"))
         .map(_.getArray.asInstanceOf[Array[java.lang.Integer]].map(_.intValue).toSet)
-        .getOrElse(Set.empty)
+        .getOrElse(Set.empty),
+      sourceId = Option(rs.getString("source_id"))
     )
   }
 }
@@ -372,7 +395,7 @@ object PgDocumentRegistry {
 
   /** Columns read into a [[DocumentEntry]] by `rowToEntry`. */
   private val EntryColumns =
-    "document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by"
+    "document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by, source_id"
 
   /**
    * Create and initialize a PostgreSQL document registry.

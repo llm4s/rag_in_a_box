@@ -56,6 +56,8 @@ class IngestionScheduler(
             s"${res.sourceName}: added=${res.documentsAdded}, updated=${res.documentsUpdated}, unchanged=${res.documentsUnchanged}"
           }.mkString(", ")
           IO(logger.info(s"Ingestion complete: $summary"))
+        case Left(_: IngestionAlreadyRunning) =>
+          IO(logger.info("Skipping scheduled ingestion: a run is already in progress"))
         case Left(e) =>
           IO(logger.error(s"Ingestion failed: ${e.getMessage}", e))
       }
