@@ -11,7 +11,7 @@ import org.http4s.server.middleware.CORS
 import org.http4s.server.websocket.WebSocketBuilder2
 import org.llm4s.ragbox.auth._
 import org.llm4s.ragbox.config.{AppConfig, AuthMode, RuntimeConfigManager}
-import org.llm4s.ragbox.ingestion.{IngestionEvent, IngestionScheduler, IngestionService}
+import org.llm4s.ragbox.ingestion.{IngestionEvent, IngestionLock, IngestionScheduler, IngestionService}
 import org.llm4s.ragbox.middleware.{Authenticator, RateLimitMiddleware, RequestLogger, RequestSizeMiddleware}
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, ExperimentRegistry, PgCollectionConfigRegistry, QueryLogRegistry}
 import org.llm4s.ragbox.routes._
@@ -151,7 +151,10 @@ object RagboxApp {
       tokenRegistry <- Resource.make(AccessTokenRegistry(pool))(_.close())
       authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
       hub <- Resource.eval(BroadcastHub.create)
-      ingestionService = IngestionService(ragService, config.ingestion, broadcastIngestion(hub, ragService))
+      // Runs are coordinated with other replicas through advisory locks on dedicated connections
+      ingestionService = IngestionService(
+        ragService, config.ingestion, broadcastIngestion(hub, ragService), IngestionLock.forDatabase(config.database)
+      )
       chunkingService = ChunkingService(config, runtimeConfigManager)
       suggestionService = SuggestionService(queryLogRegistry, config, runtimeConfigManager)
       experimentRegistry <- Resource.eval(ExperimentRegistry(pool))

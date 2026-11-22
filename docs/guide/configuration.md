@@ -51,7 +51,7 @@ PostgreSQL with pgvector is required for vector storage.
 | `PG_PASSWORD` | `rag` | Database password |
 | `PG_TABLE_NAME` | `rag_embeddings` | Table for vector embeddings |
 | `DATABASE_URL` | - | Alternative: full connection URL (overrides the settings above) |
-| `DB_POOL_SIZE` | `10` | Size of the connection pool shared by every component |
+| `DB_POOL_SIZE` | `10` | Size of the connection pool shared by every component (ingestion locks use their own connections, see [Several replicas](#several-replicas)) |
 | `DB_MIGRATE_ON_START` | `true` | Apply pending schema migrations at startup (see below) |
 | `PERMISSIONS_REQUIRED` | `false` | Fail startup if permission-based RAG cannot be initialized (see below) |
 
@@ -526,6 +526,33 @@ while `INGEST_DIR` is set, and two unnamed sources of the same `type`, which are
 An invalid schedule or time zone fails startup. A run that is still going when the next one is due delays
 nothing: the missed slot is skipped. `GET /api/v1/ingest/status` reports `nextScheduledRun`.
 Runs can always be started with `POST /api/v1/ingest/run`.
+
+### Several replicas
+
+Replicas sharing a database coordinate their ingestion runs, so `INGEST_SCHEDULE` and
+`INGEST_ON_STARTUP` can be set on every replica:
+
+- Each source has a cluster-wide lock, a PostgreSQL session-level advisory lock. A run takes
+  the locks of every source it will sync before it starts, all or nothing: a run of all
+  sources (scheduled, at startup, or `POST /api/v1/ingest/run`) takes every enabled source's,
+  a run of one source (`POST /api/v1/ingest/run/{source}`) only that source's, and a one-shot
+  `POST /api/v1/ingest/directory` that of its path.
+- A run that finds a lock held, by another replica or another run on the same one, does
+  nothing: a scheduled or startup run is skipped with an info log; an API call answers
+  `409 Conflict`. So replicas whose schedules fire together run each source once, single sources
+  run in parallel on different replicas, and a run of all sources is refused while any of them
+  is running elsewhere. One-shot `POST /api/v1/ingest/url` runs are not coordinated (they only
+  upsert).
+- Locks are released when a run ends, however it ends (success, failure, cancellation). They
+  live in the database session, so a replica that crashes or loses its connection loses its
+  locks with it.
+- Each running run holds its lock on a **dedicated connection**, opened when the run starts and
+  closed when it ends, outside the `DB_POOL_SIZE` pool (so a long run never ties up a pooled
+  connection). Allow for them in PostgreSQL's `max_connections`: per replica, `DB_POOL_SIZE`
+  plus one for a run of the configured sources plus one per concurrent one-shot directory
+  ingest. Connection poolers in transaction mode (e.g. PgBouncer `pool_mode = transaction`) do
+  not keep session-level locks; connect ragbox to PostgreSQL directly or in session mode.
+- `GET /api/v1/ingest/status` reports `running` for the replica that answers.
 
 ### Advanced Configuration (HOCON)
 

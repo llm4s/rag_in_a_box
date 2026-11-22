@@ -126,6 +126,40 @@ class IngestionServiceSpec extends AnyFlatSpec with Matchers {
     service.runAll().unsafeRunSync().map(_.sourceName) shouldBe Seq("db")
   }
 
+  it should "run nothing, and leave its flag clear, when the cluster-wide lock is held elsewhere" in {
+    val requested = new java.util.concurrent.ConcurrentLinkedQueue[Seq[String]]()
+    val heldElsewhere: IngestionLock = ids =>
+      cats.effect.Resource.eval(IO(requested.add(ids)).as(Left(ids.last)))
+    val events = new java.util.concurrent.ConcurrentLinkedQueue[IngestionEvent]()
+    val config = oneFileSource()
+    val service = IngestionService(new MockRAGService(), config, e => IO(events.add(e)).void, heldElsewhere)
+    val routes = IngestionRoutes.routes(service).asAdmin.orNotFound
+
+    val all = service.runAll().attempt.unsafeRunSync()
+    val one = service.runSource("docs").attempt.unsafeRunSync()
+    val dir = service.ingestDirectory(config.sources.head.asInstanceOf[DirectorySourceConfig].path).attempt.unsafeRunSync()
+    val response = routes.run(Request[IO](Method.POST, uri"/api/v1/ingest/run")).unsafeRunSync()
+
+    all shouldBe Left(IngestionAlreadyRunning.elsewhere("docs"))
+    one shouldBe Left(IngestionAlreadyRunning.elsewhere("docs"))
+    dir.left.toOption.get shouldBe a[IngestionAlreadyRunning]
+    response.status shouldBe Status.Conflict
+    response.as[String].unsafeRunSync() should include("already being ingested by another run")
+    service.getStatus.unsafeRunSync().running shouldBe false
+    events shouldBe empty
+
+    import scala.jdk.CollectionConverters._
+    requested.asScala.toList.take(2) shouldBe List(Seq("docs"), Seq("docs"))
+    requested.asScala.toList(2).head should startWith("api:directory:")
+  }
+
+  "IngestionLock.key" should "be stable, in its own range, and differ between sources" in {
+    IngestionLock.key("docs") shouldBe (0x72616769L << 32 | ("docs".hashCode.toLong & 0xffffffffL))
+    (IngestionLock.key("docs") >>> 32) shouldBe 0x72616769L
+    IngestionLock.key("docs") should not be IngestionLock.key("other")
+    (IngestionLock.key("x") >>> 32) should not be (org.llm4s.ragbox.db.Migrations.LockKey >>> 32)
+  }
+
   "s3Loader" should "keep the source's extensions and metadata when static credentials are configured" in {
     val config = S3SourceConfig(
       name = "bucket-docs",

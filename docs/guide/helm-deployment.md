@@ -199,9 +199,13 @@ extraVolumeMounts:
     readOnly: true
 ```
 
-List values may also be comma-separated strings. The schedule runs in every replica: with
-more than one, consider triggering runs from outside instead (e.g. a CronJob calling `POST /api/v1/ingest/run`) or
-run a single replica for scheduled ingestion.
+List values may also be comma-separated strings. The schedule and startup ingestion are safe with
+any `replicaCount`: every replica runs the schedule, but replicas coordinate through PostgreSQL
+advisory locks, so each source is synced by one replica at a time and the others skip the run
+(an info log, "Skipping scheduled ingestion"). See
+[Configuration: Several replicas](configuration.md#several-replicas). Triggering runs from
+outside instead (e.g. a CronJob calling `POST /api/v1/ingest/run`, with no `schedule`) still
+works if you prefer it; a call that lands while a run is in progress gets `409 Conflict`.
 
 ### Extra environment variables
 

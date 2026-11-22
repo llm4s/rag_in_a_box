@@ -1,7 +1,6 @@
 package org.llm4s.ragbox.db
 
 import cats.effect.{IO, Resource}
-import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
 
 import java.io.PrintWriter
@@ -11,7 +10,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
 import javax.sql.DataSource
 import scala.concurrent.duration._
-import scala.util.Using
 import scala.jdk.CollectionConverters._
 
 /**
@@ -89,40 +87,11 @@ object Migrations {
 
   /**
    * A connection from `dataSource` holding [[LockKey]] while the resource is in use, waiting for
-   * the lock while another instance migrates. Waiting polls `pg_try_advisory_lock` rather than
-   * blocking in `pg_advisory_lock`, so a waiting migration can be cancelled.
-   *
-   * The lock is session-level, so it is released explicitly: a pooled connection's session
-   * outlives `close()`. If the unlock fails, the connection is evicted from a Hikari pool so its
-   * session, and the lock, end with it.
+   * the lock while another instance migrates ([[AdvisoryLock.waitFor]]: cancellable, and released
+   * explicitly or by evicting the connection).
    */
   private def locked(dataSource: DataSource): Resource[IO, Connection] =
-    Resource.make(IO.blocking(dataSource.getConnection()))(conn => IO.blocking(conn.close()))
-      .flatMap { conn =>
-        def acquire: IO[Unit] =
-          IO.blocking(advisory(conn, "pg_try_advisory_lock")).flatMap { locked =>
-            if (locked) IO.unit else IO.sleep(LockRetryInterval) *> acquire
-          }
-        Resource.makeFull[IO, Unit](poll => poll(acquire)) { _ =>
-          IO.blocking(advisory(conn, "pg_advisory_unlock")).attempt.flatMap {
-            case Right(true) => IO.unit
-            case _ => IO.blocking(dataSource match {
-              case pool: HikariDataSource => pool.evictConnection(conn)
-              case _ => ()
-            })
-          }
-        }.map(_ => conn)
-      }
-
-  /** Call the advisory lock function `fn` with [[LockKey]] on `conn`; its boolean result. */
-  private def advisory(conn: Connection, fn: String): Boolean =
-    Using.resource(conn.prepareStatement(s"SELECT $fn(?)")) { stmt =>
-      stmt.setLong(1, LockKey)
-      Using.resource(stmt.executeQuery()) { rs =>
-        rs.next()
-        rs.getBoolean(1)
-      }
-    }
+    AdvisoryLock.waitFor(dataSource, LockKey, LockRetryInterval)
 
   /**
    * `underlying`, except that the first connection asked for is `first` (the one holding the

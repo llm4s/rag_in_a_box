@@ -82,10 +82,13 @@ object IngestionRoutes {
     if (resp.error.isEmpty) Ok(resp.asJson) else InternalServerError(resp.asJson)
   }
 
-  /** A request the ingestion policy refuses (400), or a run while one is in progress (409). */
+  /**
+   * A request the ingestion policy refuses (400), or a run while one is in progress (409): on this
+   * instance, or for a source another instance is syncing.
+   */
   private val rejected: PartialFunction[Throwable, IO[Response[IO]]] = {
     case IngestionRequestRejected(reason) => BadRequest(ErrorResponse.badRequest(reason).asJson)
-    case _: IngestionAlreadyRunning => Conflict(ErrorResponse("conflict", IngestionAlreadyRunning.Message).asJson)
+    case e: IngestionAlreadyRunning => Conflict(ErrorResponse("conflict", e.getMessage).asJson)
   }
 
   private def toIngestResponse(result: org.llm4s.ragbox.ingestion.IngestionResult): IngestResponse =
