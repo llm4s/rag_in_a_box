@@ -14,7 +14,7 @@ import org.llm4s.ragbox.middleware.UserContextMiddleware
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
 import org.llm4s.ragbox.registry.QueryLogRegistryBase
-import org.llm4s.ragbox.service.{ExperimentService, RAGService}
+import org.llm4s.ragbox.service.{ExperimentService, InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
 
 import java.util.UUID
@@ -109,6 +109,8 @@ object QueryRoutes {
               resp <- result match {
                 case Right(queryResponse) =>
                   Ok(queryResponse.asJson)
+                case Left(e: InvalidRequestError) =>
+                  BadRequest(ErrorResponse.badRequest(e.message).asJson)
                 case Left(e) if e.getMessage != null && e.getMessage.contains("LLM client required") =>
                   BadRequest(ErrorResponse.configError(
                     "LLM client not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."
@@ -153,6 +155,8 @@ object QueryRoutes {
             searchIO.attempt.flatMap {
               case Right(searchResponse) =>
                 Ok(searchResponse.asJson)
+              case Left(e: InvalidRequestError) =>
+                BadRequest(ErrorResponse.badRequest(e.message).asJson)
               case Left(e) =>
                 InternalServerError(ErrorResponse.internalError(
                   "Search failed",

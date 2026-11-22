@@ -14,7 +14,7 @@ import java.time.format.DateTimeParseException
 import org.llm4s.rag.permissions._
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.model.Codecs._
-import org.llm4s.ragbox.service.RAGService
+import org.llm4s.ragbox.service.{InvalidRequestError, RAGService}
 import org.llm4s.ragbox.validation.InputValidation
 
 import java.util.UUID
@@ -97,15 +97,15 @@ object DocumentRoutes {
               ("filename" -> body.filename) ++
               body.collection.map("collection" -> _).toMap
             val ingestIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
-              // Permission-aware ingestion when SearchIndex is available
-              case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
+              // Permission-aware ingestion when SearchIndex is available; no collection means the default one
+              case (true, readableByOpt, collectionOpt, Some(principals)) =>
                 for {
                   readableBy <- readableByOpt match {
                     case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
                     case _ => IO.pure(Set.empty[PrincipalId])
                   }
                   response <- ragService.ingestWithPermissions(
-                    collectionPath = collectionPath,
+                    collectionPath = collectionOpt.getOrElse(RAGService.DefaultCollection),
                     documentId = documentId,
                     content = body.content,
                     metadata = metadata,
@@ -123,6 +123,8 @@ object DocumentRoutes {
             ingestIO.attempt.flatMap {
               case Right(uploadResponse) =>
                 Created(uploadResponse.asJson)
+              case Left(e: InvalidRequestError) =>
+                BadRequest(ErrorResponse.badRequest(e.message).asJson)
               case Left(e) =>
                 InternalServerError(ErrorResponse.internalError(
                   "Failed to ingest document",
@@ -176,15 +178,15 @@ object DocumentRoutes {
             val metadata = body.metadata.getOrElse(Map.empty) ++
               body.collection.map("collection" -> _).toMap
             val upsertIO = (ragService.hasPermissions, body.readableBy, body.collection, ragService.principals) match {
-              // Permission-aware upsert when SearchIndex is available and collection specified
-              case (true, readableByOpt, Some(collectionPath), Some(principals)) =>
+              // Permission-aware upsert when SearchIndex is available; no collection means the default one
+              case (true, readableByOpt, collectionOpt, Some(principals)) =>
                 for {
                   readableBy <- readableByOpt match {
                     case Some(ids) if ids.nonEmpty => resolvePrincipals(ids, principals)
                     case _ => IO.pure(Set.empty[PrincipalId])
                   }
                   response <- ragService.upsertWithPermissions(
-                    collectionPath = collectionPath,
+                    collectionPath = collectionOpt.getOrElse(RAGService.DefaultCollection),
                     documentId = id,
                     content = body.content,
                     metadata = metadata,
@@ -209,6 +211,8 @@ object DocumentRoutes {
                   case "unchanged" => Ok(upsertResponse.asJson)
                   case _ => Ok(upsertResponse.asJson)
                 }
+              case Left(e: InvalidRequestError) =>
+                BadRequest(ErrorResponse.badRequest(e.message).asJson)
               case Left(e) =>
                 InternalServerError(ErrorResponse.internalError(
                   s"Failed to upsert document $id",

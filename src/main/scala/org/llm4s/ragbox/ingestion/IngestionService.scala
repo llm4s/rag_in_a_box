@@ -1,20 +1,18 @@
 package org.llm4s.ragbox.ingestion
 
-import cats.effect.IO
-import cats.effect.unsafe.implicits.global
+import cats.effect.{IO, Resource}
 import cats.syntax.all._
 import org.llm4s.rag.RAG
-import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadStats, SyncStats}
+import org.llm4s.rag.loader.{CrawlerConfig, DirectoryLoader, UrlLoader, WebCrawlerLoader, DocumentLoader, LoadResult}
 import org.llm4s.rag.loader.s3.S3Loader
-import org.llm4s.ragbox.model._
+import org.llm4s.ragbox.service.RAGService
 
 import java.io.File
-import java.sql.{Connection, DriverManager, ResultSet}
+import java.sql.{DriverManager, ResultSet}
 import java.time.Instant
-import java.util.{Properties, UUID}
+import java.util.Properties
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.duration._
-import scala.util.Using
 
 /**
  * Result of an ingestion operation.
@@ -48,11 +46,18 @@ final case class IngestionStatus(
 
 /**
  * Service for managing document ingestion from configured sources.
+ *
+ * In permission mode every document is written through [[RAGService.upsertDocument]], which
+ * puts it in a collection (the default one unless the source's metadata names another), so
+ * that permission-filtered queries can retrieve it. `RAG.sync` / `RAG.ingest` would write it
+ * with no collection, where no query can see it.
  */
 class IngestionService(
-  rag: IO[RAG],
+  ragService: RAGService,
   config: IngestionConfig
 ) {
+
+  private def rag: IO[RAG] = ragService.rag
 
   private val status: AtomicReference[IngestionStatus] = new AtomicReference(
     IngestionStatus(
@@ -191,35 +196,8 @@ class IngestionService(
         maxDepth = config.maxDepth
       )
 
-      IO.fromEither(
-        r.sync(loader).map { stats =>
-          IngestionResult(
-            sourceName = config.name,
-            sourceType = "directory",
-            documentsAdded = stats.added,
-            documentsUpdated = stats.updated,
-            documentsDeleted = stats.deleted,
-            documentsUnchanged = stats.unchanged,
-            documentsFailed = 0,
-            startTime = startTime,
-            endTime = Instant.now()
-          )
-        }.left.map(e => new RuntimeException(e.message))
-      ).handleError { e =>
-        IngestionResult(
-          sourceName = config.name,
-          sourceType = "directory",
-          documentsAdded = 0,
-          documentsUpdated = 0,
-          documentsDeleted = 0,
-          documentsUnchanged = 0,
-          documentsFailed = 0,
-          startTime = startTime,
-          endTime = Instant.now(),
-          error = Some(e.getMessage)
-        )
-      }
-    }
+      syncLoader(r, loader, config.name, "directory", startTime)
+    }.handleError(failedResult(config.name, "directory", startTime))
   }
 
   /**
@@ -235,35 +213,8 @@ class IngestionService(
         metadata = config.metadata + ("source" -> config.name)
       )
 
-      IO.fromEither(
-        r.ingest(loader).map { stats =>
-          IngestionResult(
-            sourceName = config.name,
-            sourceType = "url",
-            documentsAdded = stats.successful,
-            documentsUpdated = 0,
-            documentsDeleted = 0,
-            documentsUnchanged = 0,
-            documentsFailed = stats.failed,
-            startTime = startTime,
-            endTime = Instant.now()
-          )
-        }.left.map(e => new RuntimeException(e.message))
-      ).handleError { e =>
-        IngestionResult(
-          sourceName = config.name,
-          sourceType = "url",
-          documentsAdded = 0,
-          documentsUpdated = 0,
-          documentsDeleted = 0,
-          documentsUnchanged = 0,
-          documentsFailed = 0,
-          startTime = startTime,
-          endTime = Instant.now(),
-          error = Some(e.getMessage)
-        )
-      }
-    }
+      ingestLoader(r, loader, config.name, "url", startTime)
+    }.handleError(failedResult(config.name, "url", startTime))
   }
 
   /**
@@ -276,77 +227,52 @@ class IngestionService(
     config: DatabaseSourceConfig,
     startTime: Instant
   ): IO[IngestionResult] = {
-    IO.blocking {
-      // Load JDBC driver (PostgreSQL is bundled, others need to be on classpath)
-      Class.forName("org.postgresql.Driver")
+    val rows: Resource[IO, ResultSet] =
+      for {
+        conn <- Resource.fromAutoCloseable(IO.blocking {
+          // Load JDBC driver (PostgreSQL is bundled, others need to be on classpath)
+          Class.forName("org.postgresql.Driver")
+          val props = new Properties()
+          if (config.user.nonEmpty) props.setProperty("user", config.user)
+          if (config.password.nonEmpty) props.setProperty("password", config.password)
+          DriverManager.getConnection(config.url, props)
+        })
+        stmt <- Resource.fromAutoCloseable(IO.blocking(conn.prepareStatement(config.query)))
+        rs <- Resource.fromAutoCloseable(IO.blocking(stmt.executeQuery()))
+      } yield rs
 
-      val props = new Properties()
-      if (config.user.nonEmpty) props.setProperty("user", config.user)
-      if (config.password.nonEmpty) props.setProperty("password", config.password)
-
-      var added = 0
-      var updated = 0
-      var failed = 0
-
-      Using(DriverManager.getConnection(config.url, props)) { conn =>
-        Using(conn.prepareStatement(config.query)) { stmt =>
-          Using(stmt.executeQuery()) { rs =>
-            val ragInstance = rag.unsafeRunSync()
-
-            while (rs.next()) {
-              val docId = rs.getString(config.idColumn)
-              val content = rs.getString(config.contentColumn)
-
-              if (docId != null && content != null && content.nonEmpty) {
-                val metadata = config.metadata +
-                  ("source" -> config.name) +
-                  ("source_type" -> "database") +
-                  ("db_id" -> docId)
-
-                try {
-                  ragInstance.ingestText(content, s"${config.name}:$docId", metadata) match {
-                    case Right(chunks) =>
-                      added += 1
-                    case Left(e) =>
-                      failed += 1
-                  }
-                } catch {
-                  case e: Exception =>
-                    failed += 1
-                }
-              } else {
-                failed += 1
-              }
-            }
-          }
-        }
-      }
-
-      IngestionResult(
-        sourceName = config.name,
-        sourceType = "database",
-        documentsAdded = added,
-        documentsUpdated = updated,
-        documentsDeleted = 0,
-        documentsUnchanged = 0,
-        documentsFailed = failed,
-        startTime = startTime,
-        endTime = Instant.now()
-      )
-    }.handleError { e =>
-      IngestionResult(
-        sourceName = config.name,
-        sourceType = "database",
-        documentsAdded = 0,
-        documentsUpdated = 0,
-        documentsDeleted = 0,
-        documentsUnchanged = 0,
-        documentsFailed = 0,
-        startTime = startTime,
-        endTime = Instant.now(),
-        error = Some(e.getMessage)
-      )
+    // Each row is written as it is read, so a large table is never held in memory
+    def ingestRow(r: RAG, docId: String, content: String): IO[Option[String]] = {
+      val metadata = config.metadata +
+        ("source" -> config.name) +
+        ("source_type" -> "database") +
+        ("db_id" -> docId)
+      val documentId = s"${config.name}:$docId"
+      if (ragService.hasPermissions)
+        ragService.upsertDocument(documentId, content, metadata, None).map(r => Some(r.action))
+      else
+        IO.blocking(r.ingestText(content, documentId, metadata)).map(_.toOption.as("created"))
     }
+
+    (rag, IO.pure(Counts())).tupled.flatMap { case (r, initial) =>
+      rows.use { rs =>
+        def loop(counts: Counts): IO[Counts] =
+          IO.blocking {
+            if (rs.next()) Some((Option(rs.getString(config.idColumn)), Option(rs.getString(config.contentColumn))))
+            else None
+          }.flatMap {
+            case None => IO.pure(counts)
+            case Some((Some(docId), Some(content))) if content.nonEmpty =>
+              ingestRow(r, docId, content).attempt.flatMap {
+                case Right(Some(action)) => loop(counts.record(action))
+                case _ => loop(counts.fail)
+              }
+            case Some(_) => loop(counts.fail)
+          }
+        loop(initial)
+      }
+    }.map(_.toResult(config.name, "database", startTime))
+      .handleError(failedResult(config.name, "database", startTime))
   }
 
   /**
@@ -379,35 +305,8 @@ class IngestionService(
         metadata = config.metadata + ("source" -> config.name)
       )
 
-      IO.fromEither(
-        r.sync(loader).map { stats =>
-          IngestionResult(
-            sourceName = config.name,
-            sourceType = "web",
-            documentsAdded = stats.added,
-            documentsUpdated = stats.updated,
-            documentsDeleted = stats.deleted,
-            documentsUnchanged = stats.unchanged,
-            documentsFailed = 0,
-            startTime = startTime,
-            endTime = Instant.now()
-          )
-        }.left.map(e => new RuntimeException(e.message))
-      ).handleError { e =>
-        IngestionResult(
-          sourceName = config.name,
-          sourceType = "web",
-          documentsAdded = 0,
-          documentsUpdated = 0,
-          documentsDeleted = 0,
-          documentsUnchanged = 0,
-          documentsFailed = 0,
-          startTime = startTime,
-          endTime = Instant.now(),
-          error = Some(e.getMessage)
-        )
-      }
-    }
+      syncLoader(r, loader, config.name, "web", startTime)
+    }.handleError(failedResult(config.name, "web", startTime))
   }
 
   /**
@@ -442,35 +341,8 @@ class IngestionService(
           )
       }
 
-      IO.fromEither(
-        r.sync(loader).map { stats =>
-          IngestionResult(
-            sourceName = config.name,
-            sourceType = "s3",
-            documentsAdded = stats.added,
-            documentsUpdated = stats.updated,
-            documentsDeleted = stats.deleted,
-            documentsUnchanged = stats.unchanged,
-            documentsFailed = 0,
-            startTime = startTime,
-            endTime = Instant.now()
-          )
-        }.left.map(e => new RuntimeException(e.message))
-      ).handleError { e =>
-        IngestionResult(
-          sourceName = config.name,
-          sourceType = "s3",
-          documentsAdded = 0,
-          documentsUpdated = 0,
-          documentsDeleted = 0,
-          documentsUnchanged = 0,
-          documentsFailed = 0,
-          startTime = startTime,
-          endTime = Instant.now(),
-          error = Some(e.getMessage)
-        )
-      }
-    }
+      syncLoader(r, loader, config.name, "s3", startTime)
+    }.handleError(failedResult(config.name, "s3", startTime))
   }
 
   /**
@@ -493,21 +365,7 @@ class IngestionService(
         metadata = metadata + ("source" -> "api")
       )
 
-      IO.fromEither(
-        r.sync(loader).map { stats =>
-          IngestionResult(
-            sourceName = path,
-            sourceType = "directory",
-            documentsAdded = stats.added,
-            documentsUpdated = stats.updated,
-            documentsDeleted = stats.deleted,
-            documentsUnchanged = stats.unchanged,
-            documentsFailed = 0,
-            startTime = startTime,
-            endTime = Instant.now()
-          )
-        }.left.map(e => new RuntimeException(e.message))
-      )
+      syncLoader(r, loader, path, "directory", startTime)
     }
   }
 
@@ -526,11 +384,59 @@ class IngestionService(
         metadata = metadata + ("source" -> "api")
       )
 
+      ingestLoader(r, loader, "url-ingest", "url", startTime)
+    }
+  }
+
+  /**
+   * Sync a loader: add new documents, re-index changed ones and remove ones it no longer lists.
+   *
+   * In permission mode each document is upserted through [[RAGService]] instead, which puts it
+   * in a collection; documents the loader no longer lists are not removed there yet.
+   */
+  private def syncLoader(
+    r: RAG,
+    loader: DocumentLoader,
+    sourceName: String,
+    sourceType: String,
+    startTime: Instant
+  ): IO[IngestionResult] =
+    if (ragService.hasPermissions) upsertLoader(loader, sourceName, sourceType, startTime)
+    else
+      IO.fromEither(
+        r.sync(loader).map { stats =>
+          IngestionResult(
+            sourceName = sourceName,
+            sourceType = sourceType,
+            documentsAdded = stats.added,
+            documentsUpdated = stats.updated,
+            documentsDeleted = stats.deleted,
+            documentsUnchanged = stats.unchanged,
+            documentsFailed = 0,
+            startTime = startTime,
+            endTime = Instant.now()
+          )
+        }.left.map(e => new RuntimeException(e.message))
+      )
+
+  /**
+   * Ingest every document a loader lists (no change detection or removal, outside permission
+   * mode). In permission mode each document is upserted through [[RAGService]].
+   */
+  private def ingestLoader(
+    r: RAG,
+    loader: DocumentLoader,
+    sourceName: String,
+    sourceType: String,
+    startTime: Instant
+  ): IO[IngestionResult] =
+    if (ragService.hasPermissions) upsertLoader(loader, sourceName, sourceType, startTime)
+    else
       IO.fromEither(
         r.ingest(loader).map { stats =>
           IngestionResult(
-            sourceName = "url-ingest",
-            sourceType = "url",
+            sourceName = sourceName,
+            sourceType = sourceType,
             documentsAdded = stats.successful,
             documentsUpdated = 0,
             documentsDeleted = 0,
@@ -541,7 +447,71 @@ class IngestionService(
           )
         }.left.map(e => new RuntimeException(e.message))
       )
+
+  /**
+   * Upsert each document a loader lists through [[RAGService.upsertDocument]], one at a time.
+   * A listing failure fails the run: what the source holds is unknown.
+   */
+  private def upsertLoader(
+    loader: DocumentLoader,
+    sourceName: String,
+    sourceType: String,
+    startTime: Instant
+  ): IO[IngestionResult] =
+    IO.blocking(loader.load()).flatMap { results =>
+      def loop(counts: Counts): IO[Counts] =
+        IO.blocking(Option.when(results.hasNext)(results.next())).flatMap {
+          case None => IO.pure(counts)
+          case Some(LoadResult.Success(doc)) if doc.content.trim.isEmpty => loop(counts)
+          case Some(LoadResult.Success(doc)) =>
+            ragService.upsertDocument(doc.id, doc.content, doc.metadata, None).attempt.flatMap {
+              case Right(response) => loop(counts.record(response.action))
+              case Left(_) => loop(counts.fail)
+            }
+          case Some(_: LoadResult.Failure) => loop(counts.fail)
+          case Some(_: LoadResult.Skipped) => loop(counts)
+          case Some(LoadResult.ListingFailure(source, error)) =>
+            IO.raiseError(new RuntimeException(s"Could not list $source: ${error.message}"))
+        }
+      loop(Counts())
+    }.map(_.toResult(sourceName, sourceType, startTime))
+
+  /** The result of a source run that failed as a whole. */
+  private def failedResult(sourceName: String, sourceType: String, startTime: Instant)(e: Throwable): IngestionResult =
+    IngestionResult(
+      sourceName = sourceName,
+      sourceType = sourceType,
+      documentsAdded = 0,
+      documentsUpdated = 0,
+      documentsDeleted = 0,
+      documentsUnchanged = 0,
+      documentsFailed = 0,
+      startTime = startTime,
+      endTime = Instant.now(),
+      error = Some(e.getMessage)
+    )
+
+  /** Per-document outcome counts of a run. */
+  private final case class Counts(added: Int = 0, updated: Int = 0, unchanged: Int = 0, failed: Int = 0) {
+    def record(action: String): Counts = action match {
+      case "updated" => copy(updated = updated + 1)
+      case "unchanged" => copy(unchanged = unchanged + 1)
+      case _ => copy(added = added + 1)
     }
+    def fail: Counts = copy(failed = failed + 1)
+
+    def toResult(sourceName: String, sourceType: String, startTime: Instant): IngestionResult =
+      IngestionResult(
+        sourceName = sourceName,
+        sourceType = sourceType,
+        documentsAdded = added,
+        documentsUpdated = updated,
+        documentsDeleted = 0,
+        documentsUnchanged = unchanged,
+        documentsFailed = failed,
+        startTime = startTime,
+        endTime = Instant.now()
+      )
   }
 
   /**
@@ -557,6 +527,6 @@ class IngestionService(
 
 object IngestionService {
 
-  def apply(rag: IO[RAG], config: IngestionConfig): IngestionService =
-    new IngestionService(rag, config)
+  def apply(ragService: RAGService, config: IngestionConfig): IngestionService =
+    new IngestionService(ragService, config)
 }

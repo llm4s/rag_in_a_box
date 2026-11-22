@@ -10,6 +10,7 @@ import org.llm4s.model.ModelRegistryService
 import org.llm4s.rag.{RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
 import org.llm4s.rag.RAG.RAGConfigOps
 import org.llm4s.rag.permissions._
+import org.llm4s.rag.permissions.pg.PgSchemaManager
 import org.llm4s.types.Result
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
@@ -17,20 +18,40 @@ import org.llm4s.ragbox.registry.{DocumentEntry, DocumentRegistry, PgDocumentReg
 import org.llm4s.ragbox.store.{ChunkStore, PgChunkStore}
 
 import java.security.MessageDigest
+import java.sql.DriverManager
 import java.time.Instant
+import java.util.Properties
+import scala.util.Using
+
+/**
+ * A request the service rejects because its input is invalid, such as a malformed collection
+ * path or pattern. Routes map it to 400 Bad Request.
+ */
+final case class InvalidRequestError(message: String) extends RuntimeException(message)
 
 /**
  * Service wrapping llm4s RAG functionality.
  *
  * Provides a high-level interface for document ingestion, search, and query operations.
+ *
+ * In permission mode (a [[SearchIndex]] is configured) every document lives in an llm4s
+ * collection: queries filter on `collection_id`, so a vector written without one could never be
+ * retrieved. Ingests that name no collection go to [[RAGService.DefaultCollection]], and deletes
+ * go through the collection the document was registered in.
+ *
+ * @param providerRegistry where the embedding provider is resolved; tests pass one holding a
+ *                         deterministic in-process embedder
  */
-
 class RAGService(
   config: AppConfig,
   documentRegistry: DocumentRegistry,
   chunkStore: ChunkStore,
-  val searchIndex: Option[SearchIndex] = None
+  val searchIndex: Option[SearchIndex] = None,
+  providerRegistry: ProviderRegistry = ProviderRegistry.default
 ) {
+  import RAGService.DefaultCollection
+
+  private given ProviderRegistry = providerRegistry
 
   private val startTime: Long = System.currentTimeMillis()
   private var firstIngestionTime: Option[Instant] = None
@@ -146,28 +167,74 @@ class RAGService(
 
   /**
    * Ingest a document with content and metadata.
+   *
+   * In permission mode the document goes into its `collection` metadata value, or the default
+   * collection when there is none, so that permission-filtered queries can retrieve it.
    */
   def ingestDocument(
     content: String,
     documentId: String,
     metadata: Map[String, String]
-  ): IO[DocumentUploadResponse] = {
-    val contentHash = computeContentHash(content)
-    ingestAndRegister(documentId, content, contentHash, metadata).map { result =>
-      DocumentUploadResponse(documentId, result.chunks, s"Successfully ingested ${result.chunks} chunks")
+  ): IO[DocumentUploadResponse] =
+    if (hasPermissions) {
+      ingestWithPermissions(metadata.getOrElse("collection", DefaultCollection), documentId, content, metadata)
+    } else {
+      val contentHash = computeContentHash(content)
+      ingestAndRegister(documentId, content, contentHash, metadata).map { result =>
+        DocumentUploadResponse(documentId, result.chunks, s"Successfully ingested ${result.chunks} chunks")
+      }
     }
+
+  /**
+   * Delete a document by ID: its vectors, its visible chunks and its registry entry.
+   *
+   * In permission mode the vectors are deleted from the collection the document is registered
+   * in (or the default collection). `RAG.deleteDocument` cannot be used there: it deletes by the
+   * `<docId>-chunk-` id prefix, while permission ingest writes `coll-<id>-<docId>-chunk-<n>`.
+   */
+  def deleteDocument(documentId: String): IO[Unit] = {
+    val deleteVectors: IO[Unit] =
+      if (hasPermissions) {
+        documentRegistry.get(documentId).flatMap { entry =>
+          deleteVectorsFromCollection(entry.flatMap(_.collection).getOrElse(DefaultCollection), documentId).void
+        }
+      } else {
+        rag.flatMap { r =>
+          IO.fromEither(
+            r.deleteDocument(documentId)
+              .left.map(e => new RuntimeException(e.message))
+          )
+        }
+      }
+    deleteVectors *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
   }
 
   /**
-   * Delete a document by ID.
+   * Delete a document's vectors from a collection (permission mode).
+   *
+   * A registered collection can be a free-text label from before permission mode that names no
+   * llm4s collection. Such a document's vectors were migrated into the default collection at
+   * startup, so that is where they are deleted from.
    */
-  def deleteDocument(documentId: String): IO[Unit] =
-    rag.flatMap { r =>
-      IO.fromEither(
-        r.deleteDocument(documentId)
-          .left.map(e => new RuntimeException(e.message))
+  private def deleteVectorsFromCollection(collection: String, documentId: String): IO[Long] =
+    for {
+      r <- rag
+      existingPath <- CollectionPath.create(collection).toOption match {
+        case Some(path) => collectionExists(path).map(exists => Option.when(exists)(path))
+        case None => IO.pure(None)
+      }
+      path = existingPath.getOrElse(CollectionPath.unsafe(DefaultCollection))
+      deleted <- IO.fromEither(
+        r.deleteFromCollection(path, documentId).left.map(e => new RuntimeException(e.message))
       )
-    } *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
+    } yield deleted
+
+  private def collectionExists(path: CollectionPath): IO[Boolean] =
+    collections match {
+      case Some(store) =>
+        IO.fromEither(store.get(path).map(_.isDefined).left.map(e => new RuntimeException(e.message)))
+      case None => IO.pure(false)
+    }
 
   /**
    * Get RAG statistics.
@@ -228,6 +295,24 @@ class RAGService(
     content: String,
     metadata: Map[String, String],
     providedHash: Option[String]
+  ): IO[DocumentUpsertResponse] =
+    if (hasPermissions) {
+      upsertWithPermissions(
+        collectionPath = metadata.getOrElse("collection", DefaultCollection),
+        documentId = documentId,
+        content = content,
+        metadata = metadata,
+        providedHash = providedHash
+      )
+    } else {
+      upsertWithoutPermissions(documentId, content, metadata, providedHash)
+    }
+
+  private def upsertWithoutPermissions(
+    documentId: String,
+    content: String,
+    metadata: Map[String, String],
+    providedHash: Option[String]
   ): IO[DocumentUpsertResponse] = {
     val contentHash = providedHash.getOrElse(computeContentHash(content))
 
@@ -269,49 +354,66 @@ class RAGService(
         r.ingestText(content, documentId, metadata)
           .left.map(e => new RuntimeException(e.message))
       ).flatMap { chunkCount =>
-        val now = Instant.now()
-        val collection = metadata.get("collection")
-
-        // Create chunks for visibility using the same chunking strategy
-        val chunker = ChunkerFactory.create(config.rag.chunking.strategy).getOrElse(ChunkerFactory.default)
-        val chunkingConfig = ChunkingConfig(
-          targetSize = config.rag.chunking.size,
-          maxSize = (config.rag.chunking.size * 1.5).toInt,
-          overlap = config.rag.chunking.overlap
-        )
-        val filename = metadata.get("filename")
-        val docChunks = filename.map(f => chunker.chunkWithSource(content, f, chunkingConfig))
-          .getOrElse(chunker.chunk(content, chunkingConfig))
-
-        // Convert to ChunkInfo for storage
-        val chunkInfos = docChunks.map(toChunkInfo(documentId, collection, _))
-
-        for {
-          // Store chunks for visibility
-          _ <- chunkStore.store(documentId, chunkInfos)
-          // Track ingestion time
-          _ <- IO {
-            if (firstIngestionTime.isEmpty) firstIngestionTime = Some(now)
-            lastIngestionTime = Some(now)
-          }
-          // Register document
-          _ <- documentRegistry.put(DocumentEntry(
+        recordIngest(documentId, content, contentHash, chunkCount, metadata, metadata.get("collection"), Set.empty)
+          .as(DocumentUpsertResponse(
             documentId = documentId,
-            contentHash = contentHash,
-            chunkCount = chunkCount,
-            metadata = metadata,
-            collection = collection,
-            indexedAt = now,
-            updatedAt = now
+            chunks = chunkCount,
+            action = "created",
+            message = s"Successfully indexed $chunkCount chunks"
           ))
-        } yield DocumentUpsertResponse(
-          documentId = documentId,
-          chunks = chunkCount,
-          action = "created",
-          message = s"Successfully indexed $chunkCount chunks"
-        )
       }
     }
+
+  /**
+   * After a successful ingest: store the document's chunks for visibility, track ingestion time
+   * and register the document.
+   */
+  private def recordIngest(
+    documentId: String,
+    content: String,
+    contentHash: String,
+    chunkCount: Int,
+    metadata: Map[String, String],
+    collection: Option[String],
+    readableBy: Set[Int]
+  ): IO[Unit] = {
+    val now = Instant.now()
+
+    // Create chunks for visibility using the same chunking strategy
+    val chunker = ChunkerFactory.create(config.rag.chunking.strategy).getOrElse(ChunkerFactory.default)
+    val chunkingConfig = ChunkingConfig(
+      targetSize = config.rag.chunking.size,
+      maxSize = (config.rag.chunking.size * 1.5).toInt,
+      overlap = config.rag.chunking.overlap
+    )
+    val filename = metadata.get("filename")
+    val docChunks = filename.map(f => chunker.chunkWithSource(content, f, chunkingConfig))
+      .getOrElse(chunker.chunk(content, chunkingConfig))
+
+    // Convert to ChunkInfo for storage
+    val chunkInfos = docChunks.map(toChunkInfo(documentId, collection, _))
+
+    for {
+      // Store chunks for visibility
+      _ <- chunkStore.store(documentId, chunkInfos)
+      // Track ingestion time
+      _ <- IO {
+        if (firstIngestionTime.isEmpty) firstIngestionTime = Some(now)
+        lastIngestionTime = Some(now)
+      }
+      // Register document
+      _ <- documentRegistry.put(DocumentEntry(
+        documentId = documentId,
+        contentHash = contentHash,
+        chunkCount = chunkCount,
+        metadata = metadata,
+        collection = collection,
+        indexedAt = now,
+        updatedAt = now,
+        readableBy = readableBy
+      ))
+    } yield ()
+  }
 
   /**
    * Convert a DocumentChunk to ChunkInfo for storage.
@@ -491,10 +593,7 @@ class RAGService(
     collectionPattern: String,
     topK: Option[Int]
   ): IO[SearchResponse] =
-    rag.flatMap { r =>
-      val pattern = CollectionPattern.parse(collectionPattern)
-        .getOrElse(CollectionPattern.All)
-
+    (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
       IO.fromEither(
         r.queryWithPermissions(auth, pattern, query, topK)
           .map { results =>
@@ -516,10 +615,7 @@ class RAGService(
     collectionPattern: String,
     topK: Option[Int]
   ): IO[QueryResponse] =
-    rag.flatMap { r =>
-      val pattern = CollectionPattern.parse(collectionPattern)
-        .getOrElse(CollectionPattern.All)
-
+    (rag, parseCollectionPattern(collectionPattern)).flatMapN { (r, pattern) =>
       IO.fromEither(
         r.queryWithPermissionsAndAnswer(auth, pattern, question, topK)
           .map { result =>
@@ -540,7 +636,8 @@ class RAGService(
   /**
    * Ingest a document with permission controls.
    *
-   * @param collectionPath Collection path for the document
+   * @param collectionPath Collection path for the document; [[RAGService.DefaultCollection]] for
+   *                       documents that name none
    * @param documentId Unique document identifier
    * @param content Document content
    * @param metadata Optional metadata
@@ -553,39 +650,48 @@ class RAGService(
     content: String,
     metadata: Map[String, String] = Map.empty,
     readableBy: Set[PrincipalId] = Set.empty
-  ): IO[DocumentUploadResponse] = {
-    val path = CollectionPath.unsafe(collectionPath)
+  ): IO[DocumentUploadResponse] =
+    ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, computeContentHash(content))
 
-    rag.flatMap { r =>
-      IO.fromEither(
+  private def ingestIntoCollection(
+    collectionPath: String,
+    documentId: String,
+    content: String,
+    metadata: Map[String, String],
+    readableBy: Set[PrincipalId],
+    contentHash: String
+  ): IO[DocumentUploadResponse] =
+    for {
+      path <- parseCollectionPath(collectionPath)
+      r <- rag
+      chunkCount <- IO.fromEither(
         r.ingestWithPermissions(path, documentId, content, metadata, readableBy)
           .left.map(e => new RuntimeException(e.message))
-      ).flatMap { chunkCount =>
-        val now = Instant.now()
-        val contentHash = computeContentHash(content)
-
-        // Also register in document registry for local tracking
-        documentRegistry.put(DocumentEntry(
-          documentId = documentId,
-          contentHash = contentHash,
-          chunkCount = chunkCount,
-          metadata = metadata + ("collection" -> collectionPath),
-          collection = Some(collectionPath),
-          indexedAt = now,
-          updatedAt = now
-        )).as(DocumentUploadResponse(
-          documentId = documentId,
-          chunks = chunkCount,
-          message = s"Successfully indexed $chunkCount chunks in $collectionPath"
-        ))
-      }
-    }
-  }
+      )
+      // The registry records documents in the default collection with no collection, which is
+      // how it has always represented "default" (see PgDocumentRegistry.listIdsByCollection).
+      registeredCollection = Option.when(path.value != DefaultCollection)(path.value)
+      _ <- recordIngest(
+        documentId = documentId,
+        content = content,
+        contentHash = contentHash,
+        chunkCount = chunkCount,
+        metadata = metadata ++ registeredCollection.map("collection" -> _),
+        collection = registeredCollection,
+        readableBy = readableBy.map(_.value)
+      )
+    } yield DocumentUploadResponse(
+      documentId = documentId,
+      chunks = chunkCount,
+      message = s"Successfully indexed $chunkCount chunks in ${path.value}"
+    )
 
   /**
    * Upsert a document with permission controls (idempotent create/update).
    *
-   * Checks document registry first - if content hash matches, skips re-indexing.
+   * The document is unchanged - and not re-indexed - only when its content hash, collection and
+   * access list all match the registry. Otherwise its vectors are deleted from the collection it
+   * is registered in (which may differ from `collectionPath`, for a move) and it is re-ingested.
    *
    * @param collectionPath Collection path for the document
    * @param documentId Unique document identifier
@@ -605,9 +711,22 @@ class RAGService(
   ): IO[DocumentUpsertResponse] = {
     val contentHash = providedHash.getOrElse(computeContentHash(content))
 
-    documentRegistry.get(documentId).flatMap {
-      case Some(existing) if existing.contentHash == contentHash =>
-        // Content unchanged - skip re-indexing
+    def ingest(action: String): IO[DocumentUpsertResponse] =
+      // Register the caller's hash, so the next upsert with the same hash is unchanged
+      ingestIntoCollection(collectionPath, documentId, content, metadata, readableBy, contentHash)
+        .map(result => DocumentUpsertResponse(
+          documentId = result.documentId,
+          chunks = result.chunks,
+          action = action,
+          message = result.message
+        ))
+
+    (parseCollectionPath(collectionPath), documentRegistry.get(documentId)).flatMapN {
+      case (path, Some(existing))
+          if existing.contentHash == contentHash &&
+            existing.collection.getOrElse(DefaultCollection) == path.value &&
+            existing.readableBy == readableBy.map(_.value) =>
+        // Content, collection and access list unchanged - skip re-indexing
         IO.pure(DocumentUpsertResponse(
           documentId = documentId,
           chunks = existing.chunkCount,
@@ -615,43 +734,69 @@ class RAGService(
           message = s"Document unchanged (hash: ${contentHash.take(8)}...)"
         ))
 
-      case Some(_) =>
-        // Content changed - delete and re-index
-        for {
-          _ <- deleteFromCollection(collectionPath, documentId).attempt
-          result <- ingestWithPermissions(collectionPath, documentId, content, metadata, readableBy)
-        } yield DocumentUpsertResponse(
-          documentId = result.documentId,
-          chunks = result.chunks,
-          action = "updated",
-          message = result.message
-        )
+      case (_, Some(existing)) =>
+        // Changed - delete from the collection it is in now (not the target one, for a move),
+        // then re-index
+        deleteVectorsFromCollection(existing.collection.getOrElse(DefaultCollection), documentId) *>
+          chunkStore.deleteByDocument(documentId) *>
+          ingest("updated")
 
-      case None =>
-        // New document
-        ingestWithPermissions(collectionPath, documentId, content, metadata, readableBy)
-          .map(result => DocumentUpsertResponse(
-            documentId = result.documentId,
-            chunks = result.chunks,
-            action = "created",
-            message = result.message
-          ))
+      case (_, None) =>
+        ingest("created")
     }
   }
 
   /**
    * Delete a document from a specific collection.
    */
-  def deleteFromCollection(collectionPath: String, documentId: String): IO[Long] = {
-    val path = CollectionPath.unsafe(collectionPath)
-
-    rag.flatMap { r =>
-      IO.fromEither(
+  def deleteFromCollection(collectionPath: String, documentId: String): IO[Long] =
+    for {
+      path <- parseCollectionPath(collectionPath)
+      r <- rag
+      deleted <- IO.fromEither(
         r.deleteFromCollection(path, documentId)
           .left.map(e => new RuntimeException(e.message))
       )
-    } <* chunkStore.deleteByDocument(documentId) <* documentRegistry.remove(documentId)
-  }
+      _ <- chunkStore.deleteByDocument(documentId)
+      _ <- documentRegistry.remove(documentId)
+    } yield deleted
+
+  /**
+   * Permission mode: make sure the default collection exists and move vectors that have no
+   * collection into it.
+   *
+   * Uses llm4s's own `PgSchemaManager` definitions: the default collection is a public (empty
+   * `queryable_by`) leaf named `default`. Vectors written before permission mode was enabled -
+   * or by an ingest path that bypassed collections - have `collection_id = NULL`, which
+   * permission-filtered queries can never return; migrating them makes them searchable again.
+   *
+   * @return the number of vectors migrated
+   */
+  def ensureDefaultCollection: IO[Long] =
+    if (!hasPermissions) IO.pure(0L)
+    else
+      IO.blocking {
+        Class.forName("org.postgresql.Driver")
+        val props = new Properties()
+        props.setProperty("user", config.database.effectiveUser)
+        props.setProperty("password", config.database.effectivePassword.reveal)
+        Using.resource(DriverManager.getConnection(config.database.connectionString, props)) { conn =>
+          for {
+            defaultId <- PgSchemaManager.createDefaultCollection(conn)
+            migrated <- PgSchemaManager.migrateExistingVectors(conn, config.database.tableName, defaultId)
+          } yield migrated
+        }
+      }.flatMap(result => IO.fromEither(result.left.map(e => new RuntimeException(e.message))))
+
+  private def parseCollectionPath(path: String): IO[CollectionPath] =
+    IO.fromEither(
+      CollectionPath.create(path).left.map(e => InvalidRequestError(s"Invalid collection path '$path': ${e.message}"))
+    )
+
+  private def parseCollectionPattern(pattern: String): IO[CollectionPattern] =
+    IO.fromEither(
+      CollectionPattern.parse(pattern).left.map(e => InvalidRequestError(s"Invalid collection pattern '$pattern': ${e.message}"))
+    )
 
   // ============================================================
   // Configuration Operations
@@ -970,14 +1115,20 @@ class RAGService(
 object RAGService {
 
   /**
+   * The collection documents go to in permission mode when they name none. It is llm4s
+   * `PgSchemaManager`'s default collection: public and a leaf.
+   */
+  val DefaultCollection: String = "default"
+
+  /**
    * Create a new RAGService with PostgreSQL-backed document registry and chunk store.
    * Does not enable permission-based RAG.
    */
-  def create(config: AppConfig): IO[RAGService] =
+  def create(config: AppConfig, providerRegistry: ProviderRegistry = ProviderRegistry.default): IO[RAGService] =
     for {
       registry <- PgDocumentRegistry(config.database)
       chunks <- PgChunkStore(config.database)
-    } yield new RAGService(config, registry, chunks, None)
+    } yield new RAGService(config, registry, chunks, None, providerRegistry)
 
   /**
    * Create a new RAGService with permission-based RAG enabled.
@@ -986,9 +1137,22 @@ object RAGService {
    * @param config Application configuration
    * @param searchIndex Pre-configured SearchIndex for permission-aware operations
    */
-  def createWithPermissions(config: AppConfig, searchIndex: SearchIndex): IO[RAGService] =
+  def createWithPermissions(
+    config: AppConfig,
+    searchIndex: SearchIndex,
+    providerRegistry: ProviderRegistry = ProviderRegistry.default
+  ): IO[RAGService] =
     for {
       registry <- PgDocumentRegistry(config.database)
       chunks <- PgChunkStore(config.database)
-    } yield new RAGService(config, registry, chunks, Some(searchIndex))
+      service = new RAGService(config, registry, chunks, Some(searchIndex), providerRegistry)
+      // Every ingest in permission mode needs the default collection, and vectors left without
+      // a collection by earlier versions are unsearchable until migrated into it.
+      migrated <- service.ensureDefaultCollection
+      _ <- IO.whenA(migrated > 0)(
+        IO(logger.info(s"Migrated $migrated vectors without a collection into '$DefaultCollection'"))
+      )
+    } yield service
+
+  private val logger = org.slf4j.LoggerFactory.getLogger(classOf[RAGService])
 }

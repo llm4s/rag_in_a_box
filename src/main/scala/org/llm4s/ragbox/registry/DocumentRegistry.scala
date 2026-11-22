@@ -13,6 +13,10 @@ import java.time.Instant
  * @param collection Optional collection name for grouping documents
  * @param indexedAt When the document was first indexed
  * @param updatedAt When the document was last updated
+ * @param readableBy Principal ids (llm4s `PrincipalId.value`) the document's vectors were
+ *                   restricted to when ingested in permission mode; empty means "inherit from
+ *                   the collection". Part of the upsert change check, so an access-list-only
+ *                   change is re-applied.
  */
 final case class DocumentEntry(
   documentId: String,
@@ -21,7 +25,8 @@ final case class DocumentEntry(
   metadata: Map[String, String],
   collection: Option[String],
   indexedAt: Instant,
-  updatedAt: Instant
+  updatedAt: Instant,
+  readableBy: Set[Int] = Set.empty
 )
 
 /**

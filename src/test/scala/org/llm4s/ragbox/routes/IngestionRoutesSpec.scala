@@ -16,7 +16,7 @@ class IngestionRoutesSpec extends AnyFlatSpec with Matchers {
 
   // Mock IngestionService for testing
   private class MockIngestionService extends IngestionService(
-    IO.raiseError(new RuntimeException("Not initialized")),
+    new org.llm4s.ragbox.testkit.MockRAGService(),
     IngestionConfig(enabled = false, runOnStartup = false, schedule = None, sources = Seq.empty)
   ) {
     private val mockResult = IngestionResult(

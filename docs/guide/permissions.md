@@ -176,6 +176,8 @@ curl -X POST http://localhost:8080/api/v1/query \
 | `docs/*` | Direct children of `docs` |
 | `docs/**` | All descendants of `docs` |
 
+A malformed pattern is rejected with `400 Bad Request`; it is never widened to `*`.
+
 ---
 
 ## Assigning Documents to Collections
@@ -202,6 +204,23 @@ curl -X PUT http://localhost:8080/api/v1/documents/deploy-guide \
     "collection": "docs/internal"
   }'
 ```
+
+A collection path may use only letters, digits, `_` and `-` in each `/`-separated segment; an
+invalid one is rejected with `400 Bad Request`.
+
+### The default collection
+
+A document uploaded without a `collection` - and every document from a configured ingestion
+source, unless its `metadata` sets `collection` - goes into the `default` collection. It is
+public (queryable by everyone) and is created at startup if it does not exist. At the same
+startup, vectors stored without a collection (for example by a server that previously ran
+without permissions) are moved into it, so they become searchable.
+
+### Moving documents and changing access
+
+Upserting a document with a different `collection` moves it: its vectors are removed from the
+old collection. Upserting with a different `readableBy` re-applies the access list even when
+the content is unchanged.
 
 ---
 
