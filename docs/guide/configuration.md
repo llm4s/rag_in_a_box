@@ -69,7 +69,9 @@ the jar (`src/main/resources/db/migration`); Flyway records the ones applied in 
 - To migrate separately, e.g. from a deploy job before rolling out new servers, run the same
   image or jar with `--migrate-only` (`java -jar ragbox-assembly.jar --migrate-only`, or
   `sbt "run --migrate-only"`): it applies the migrations and exits. Then start the servers with
-  `DB_MIGRATE_ON_START=false`; they expect the schema to be up to date.
+  `DB_MIGRATE_ON_START=false`; they expect the schema to be up to date. The Helm chart can run
+  this as a hook job (`migrations.job.enabled`, see
+  [Helm Deployment](helm-deployment.md#schema-migrations)).
 - The vector and keyword tables (`PG_TABLE_NAME`) and the permission tables
   (`llm4s_collections`, `llm4s_principals`) belong to llm4s, which creates them itself after
   the migrations have run.

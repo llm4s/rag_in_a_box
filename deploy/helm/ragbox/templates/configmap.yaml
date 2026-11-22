@@ -19,6 +19,7 @@ data:
   {{- else }}
   PG_TABLE_NAME: "rag_embeddings"
   {{- end }}
+  DB_MIGRATE_ON_START: {{ .Values.database.migrateOnStart | quote }}
 
   # LLM settings
   LLM_MODEL: {{ .Values.config.llm.model | quote }}

@@ -131,7 +131,44 @@ externalDatabase:
 ```
 
 The database needs the `vector` extension (pgvector). The server applies its schema migrations
-(Flyway) at startup; see [Configuration](configuration.md#schema-migrations).
+(Flyway) at startup; see [Configuration](configuration.md#schema-migrations) and
+[Schema migrations](#schema-migrations) below.
+
+### Schema migrations
+
+By default every server pod applies pending migrations when it starts
+(`database.migrateOnStart: true`, the `DB_MIGRATE_ON_START` environment variable); replicas
+starting together are serialised by Flyway's lock, and once the schema is current this is a
+no-op.
+
+To migrate once, before the new pods roll out, enable the migration job:
+
+```yaml
+migrations:
+  job:
+    enabled: true
+database:
+  migrateOnStart: false   # optional: the servers then expect the schema to be up to date
+```
+
+The job is a Helm hook that runs the release's image with `--migrate-only` (apply the migrations,
+then exit) using the same database settings and credential secrets as the deployment. A failed
+job fails the `helm upgrade` before any pod is replaced, and is kept for its logs
+(`kubectl logs job/<release>-ragbox-migrate`); a successful one is deleted. `backoffLimit`,
+`activeDeadlineSeconds`, `resources` and `annotations` are under `migrations.job`.
+
+Helm hooks run before the release's own resources are created, so when the job runs depends on
+where the database and its credentials come from:
+
+| Database | The job runs | First install |
+|----------|--------------|---------------|
+| Bundled (`postgresql.enabled: true`) | before each upgrade (`pre-upgrade`) | the servers migrate: keep `database.migrateOnStart: true` for the install, then set it to `false` |
+| External, credentials in the chart's secret (`externalDatabase.password`) | before each upgrade (`pre-upgrade`) | as above |
+| External, credentials in `externalDatabase.existingSecret` | before the install and each upgrade (`pre-install,pre-upgrade`) | the job migrates; `database.migrateOnStart: false` is safe from the start |
+
+`helm install` prints a warning when `database.migrateOnStart` is `false` and nothing would
+migrate before the first install. Leaving `migrateOnStart: true` together with the job is also
+fine: the job does the work and the servers find nothing to apply.
 
 ### Ingress Configuration
 
@@ -208,6 +245,8 @@ autoscaling:
 | `config.metrics.enabled` | Enable `/metrics` | `true` |
 | `config.metrics.requireAuth` | `/metrics` for administrators only | `true` |
 | `config.logging.format` | `json` or `text` (`LOG_FORMAT`) | `json` |
+| `database.migrateOnStart` | Servers apply pending migrations at startup (`DB_MIGRATE_ON_START`) | `true` |
+| `migrations.job.enabled` | Run the migrations in a pre-upgrade (and, with an external database's existing secret, pre-install) Job | `false` |
 
 See the [values.yaml](https://github.com/llm4s/rag_in_a_box/blob/main/deploy/helm/ragbox/values.yaml) for all configuration options.
 
