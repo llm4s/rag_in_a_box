@@ -29,7 +29,7 @@ class PgCollectionConfigRegistry(dbConfig: DatabaseConfig) extends CollectionCon
 
     val props = new Properties()
     props.setProperty("user", dbConfig.effectiveUser)
-    props.setProperty("password", dbConfig.effectivePassword)
+    props.setProperty("password", dbConfig.effectivePassword.reveal)
 
     connection = DriverManager.getConnection(dbConfig.connectionString, props)
 

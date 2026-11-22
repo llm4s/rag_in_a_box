@@ -4,8 +4,10 @@ import cats.effect.IO
 import cats.syntax.all._
 import org.llm4s.chunking.{ChunkerFactory, ChunkingConfig, DocumentChunk}
 import org.llm4s.llmconnect.{LLMClient, LLMConnect}
-import org.llm4s.llmconnect.config.{EmbeddingProviderConfig, OpenAIConfig, AnthropicConfig}
-import org.llm4s.rag.{EmbeddingProvider, RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
+import org.llm4s.llmconnect.config.{AnthropicConfig, EmbeddingProviderConfig, OpenAIConfig, ProviderConfig}
+import org.llm4s.llmconnect.spi.{EmbeddingProviderSection, ProviderRegistry}
+import org.llm4s.model.ModelRegistryService
+import org.llm4s.rag.{RAG, RAGConfig, RAGSearchResult, RAGAnswerResult, RAGStats}
 import org.llm4s.rag.RAG.RAGConfigOps
 import org.llm4s.rag.permissions._
 import org.llm4s.types.Result
@@ -51,74 +53,53 @@ class RAGService(
    */
   def hasPermissions: Boolean = searchIndex.isDefined
 
+  // Model metadata bundled with llm4s: resolves context windows for LLM configs and is
+  // required (as a given) when building LLM clients and the RAG pipeline.
+  private lazy val modelRegistry: Result[ModelRegistryService] = ModelRegistryService.default()
+
   // Create LLM client for answer generation
-  private lazy val llmClient: Option[LLMClient] = {
+  private lazy val llmClient: Option[LLMClient] = modelRegistry.toOption.flatMap { registry =>
+    given ModelRegistryService = registry
+
     // Parse provider/model format (e.g., "openai/gpt-4o")
     val parts = config.llm.model.split("/", 2)
     val provider = if (parts.length > 1) parts(0) else "openai"
     val model = if (parts.length > 1) parts(1) else config.llm.model
 
-    provider.toLowerCase match {
+    // fromValues resolves context window / completion reserve from the model registry
+    val providerConfig: Option[Result[ProviderConfig]] = provider.toLowerCase match {
       case "openai" =>
-        config.apiKeys.openai.flatMap { apiKey =>
-          LLMConnect.getClient(OpenAIConfig(
-            apiKey = apiKey,
-            model = model,
-            organization = None,
-            baseUrl = "https://api.openai.com/v1",
-            contextWindow = 128000,
-            reserveCompletion = 4096
-          )).toOption
-        }
+        config.apiKeys.openai.map(OpenAIConfig.fromValues(model, _, OpenAIConfig.DEFAULT_BASE_URL))
       case "anthropic" =>
-        config.apiKeys.anthropic.flatMap { apiKey =>
-          LLMConnect.getClient(AnthropicConfig(
-            apiKey = apiKey,
-            model = model,
-            baseUrl = "https://api.anthropic.com",
-            contextWindow = 200000,
-            reserveCompletion = 4096
-          )).toOption
-        }
+        config.apiKeys.anthropic.map(AnthropicConfig.fromValues(model, _, AnthropicConfig.DEFAULT_BASE_URL))
       case _ => None
     }
+
+    providerConfig.flatMap(_.flatMap(LLMConnect.getClient).toOption)
   }
 
-  // Base URLs for embedding providers (without /v1 - provider adds it)
-  private def getEmbeddingBaseUrl(provider: String): String = provider.toLowerCase match {
-    case "openai" => "https://api.openai.com"
-    case "voyage" => "https://api.voyageai.com"
-    case "ollama" => "http://localhost:11434"
-    case _ => "https://api.openai.com"
-  }
-
-  // Embedding provider config resolver
-  private def resolveEmbeddingProvider(provider: String): Result[EmbeddingProviderConfig] = {
-    val apiKey = config.embedding.provider.toLowerCase match {
-      case "openai" => config.apiKeys.openai
-      case "voyage" => config.apiKeys.voyage
-      case "ollama" => Some("") // Ollama doesn't need an API key
-      case _ => config.apiKeys.openai
-    }
-
-    apiKey match {
-      case Some(key) =>
-        Right(EmbeddingProviderConfig(
-          baseUrl = getEmbeddingBaseUrl(config.embedding.provider),
-          model = config.embedding.model,
-          apiKey = key
-        ))
-      case None =>
-        Left(org.llm4s.error.ConfigurationError(
-          s"No API key configured for embedding provider: ${config.embedding.provider}"
-        ))
-    }
+  /**
+   * Embedding provider config resolver, called by llm4s with the configured embedding
+   * provider id. Base URL and model defaults come from the provider's llm4s descriptor;
+   * ragbox supplies the API key and model from its own configuration.
+   */
+  private def resolveEmbeddingProvider(providerId: String): Result[EmbeddingProviderConfig] = {
+    val registry = summon[ProviderRegistry]
+    val id = registry.canonicalEmbeddingId(providerId)
+    for {
+      descriptor <- registry.resolveEmbedding(id)
+      section = EmbeddingProviderSection(
+        apiKey = config.apiKeys.getKey(id.asString),
+        model = Some(config.embedding.model)
+      )
+      providerConfig <- descriptor.buildConfig(section, modelOverride = None)
+    } yield providerConfig
   }
 
   // Build RAG configuration
   private lazy val ragConfig: RAGConfig = {
     val baseConfig = RAGConfig.default
-      .withEmbeddings(config.embedding.toEmbeddingProvider, config.embedding.model)
+      .withEmbeddings(config.embedding.providerId, config.embedding.model)
       .withChunking(
         config.rag.chunking.toChunkerStrategy,
         config.rag.chunking.size,
@@ -148,7 +129,11 @@ class RAGService(
   }
 
   // Build the RAG instance
-  private lazy val ragInstance: Result[RAG] = ragConfig.build(resolveEmbeddingProvider)
+  private lazy val ragInstance: Result[RAG] =
+    modelRegistry.flatMap { registry =>
+      given ModelRegistryService = registry
+      ragConfig.build(resolveEmbeddingProvider)
+    }
 
   /**
    * Get the underlying RAG instance.

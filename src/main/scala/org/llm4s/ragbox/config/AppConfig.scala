@@ -3,7 +3,7 @@ package org.llm4s.ragbox.config
 import cats.effect.{IO, Resource}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.llm4s.chunking.ChunkerFactory
-import org.llm4s.rag.EmbeddingProvider
+import org.llm4s.security.Secret
 import org.llm4s.vectorstore.FusionStrategy
 import org.llm4s.ragbox.auth.{ClaimMappingConfig, OAuthConfig, OAuthSessionConfig, OidcProviderConfig, OidcProviders}
 import org.llm4s.ragbox.ingestion.IngestionConfig
@@ -97,7 +97,7 @@ final case class DatabaseConfig(
   port: Int,
   database: String,
   user: String,
-  password: String,
+  password: Secret,
   tableName: String,
   url: Option[String]
 ) {
@@ -117,7 +117,7 @@ final case class DatabaseConfig(
   /**
    * Get effective password (parsed from URL or from config).
    */
-  def effectivePassword: String = url.flatMap(parsePasswordFromUrl).getOrElse(password)
+  def effectivePassword: Secret = url.flatMap(parsePasswordFromUrl).map(Secret(_)).getOrElse(password)
 
   private def parseUserFromUrl(url: String): Option[String] = {
     // Parse: postgresql://user:password@host:port/database
@@ -142,10 +142,11 @@ final case class EmbeddingConfig(
   model: String,
   dimensions: Option[Int]
 ) {
-  def toEmbeddingProvider: EmbeddingProvider = provider.toLowerCase match {
-    case "openai" => EmbeddingProvider.OpenAI
-    case "voyage" => EmbeddingProvider.Voyage
-    case "ollama" => EmbeddingProvider.Ollama
+  /**
+   * The llm4s embedding provider id (resolved through llm4s's ProviderRegistry).
+   */
+  def providerId: String = provider.toLowerCase match {
+    case id @ ("openai" | "voyage" | "ollama") => id
     case other => throw new IllegalArgumentException(s"Unknown embedding provider: $other")
   }
 }
@@ -190,14 +191,14 @@ final case class SearchSettings(
 }
 
 final case class ApiKeysConfig(
-  openai: Option[String],
-  anthropic: Option[String],
-  voyage: Option[String]
+  openai: Option[Secret],
+  anthropic: Option[Secret],
+  voyage: Option[Secret]
 ) {
   /**
    * Get API key for the specified provider.
    */
-  def getKey(provider: String): Option[String] = provider.toLowerCase match {
+  def getKey(provider: String): Option[Secret] = provider.toLowerCase match {
     case "openai" => openai
     case "anthropic" => anthropic
     case "voyage" => voyage
@@ -363,7 +364,7 @@ object AppConfig {
         port = config.getInt("database.port"),
         database = config.getString("database.database"),
         user = config.getString("database.user"),
-        password = config.getString("database.password"),
+        password = Secret(config.getString("database.password")),
         tableName = config.getString("database.table-name"),
         url = getOptionalString(config, "database.url")
       ),
@@ -390,9 +391,9 @@ object AppConfig {
         systemPrompt = config.getString("rag.system-prompt")
       ),
       apiKeys = ApiKeysConfig(
-        openai = getOptionalString(config, "api-keys.openai"),
-        anthropic = getOptionalString(config, "api-keys.anthropic"),
-        voyage = getOptionalString(config, "api-keys.voyage")
+        openai = getOptionalString(config, "api-keys.openai").map(Secret(_)),
+        anthropic = getOptionalString(config, "api-keys.anthropic").map(Secret(_)),
+        voyage = getOptionalString(config, "api-keys.voyage").map(Secret(_))
       ),
       ingestion = {
         // Load from config file first, then merge with environment variables

@@ -1,6 +1,7 @@
 package org.llm4s.ragbox.ingestion
 
 import com.typesafe.config.Config
+import org.llm4s.security.Secret
 
 import scala.jdk.CollectionConverters._
 import scala.util.Try
@@ -124,8 +125,8 @@ final case class S3SourceConfig(
   bucket: String,
   prefix: String = "",
   region: String = "us-east-1",
-  accessKeyId: Option[String] = None,
-  secretAccessKey: Option[String] = None,
+  accessKeyId: Option[Secret] = None,
+  secretAccessKey: Option[Secret] = None,
   patterns: Set[String] = Set("*.md", "*.txt", "*.pdf", "*.docx", "*.doc", "*.json", "*.xml", "*.html", "*.csv"),
   metadata: Map[String, String] = Map.empty,
   enabled: Boolean = true
@@ -320,8 +321,8 @@ object IngestionConfig {
         val bucket = Try(config.getString("bucket")).getOrElse("")
         val prefix = Try(config.getString("prefix")).getOrElse("")
         val region = Try(config.getString("region")).getOrElse("us-east-1")
-        val accessKeyId = Try(config.getString("access-key-id")).toOption
-        val secretAccessKey = Try(config.getString("secret-access-key")).toOption
+        val accessKeyId = Try(config.getString("access-key-id")).toOption.map(Secret(_))
+        val secretAccessKey = Try(config.getString("secret-access-key")).toOption.map(Secret(_))
         val patterns = Try(config.getStringList("patterns").asScala.toSet)
           .getOrElse(Set("*.md", "*.txt", "*.pdf", "*.docx", "*.doc", "*.json", "*.xml", "*.html", "*.csv"))
 

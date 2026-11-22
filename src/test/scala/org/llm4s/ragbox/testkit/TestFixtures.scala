@@ -4,6 +4,7 @@ import org.llm4s.ragbox.config._
 import org.llm4s.ragbox.ingestion.IngestionConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.DocumentEntry
+import org.llm4s.security.Secret
 import java.time.Instant
 
 /**
@@ -20,7 +21,7 @@ object TestFixtures {
     port = 5432,
     database = "ragdb_test",
     user = "test",
-    password = "test",
+    password = Secret("test"),
     tableName = "test_vectors",
     url = None
   )
@@ -60,8 +61,8 @@ object TestFixtures {
   )
 
   val testApiKeysConfig: ApiKeysConfig = ApiKeysConfig(
-    openai = Some("test-openai-key"),
-    anthropic = Some("test-anthropic-key"),
+    openai = Some(Secret("test-openai-key")),
+    anthropic = Some(Secret("test-anthropic-key")),
     voyage = None
   )
 
