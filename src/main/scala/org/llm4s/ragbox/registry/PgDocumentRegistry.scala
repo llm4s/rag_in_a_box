@@ -18,6 +18,7 @@ import scala.compiletime.uninitialized
  * across application restarts.
  */
 class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
+  import PgDocumentRegistry.EntryColumns
 
   private var connection: Connection = uninitialized
 
@@ -59,6 +60,10 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
           |    WHEN duplicate_column THEN NULL;
           |END $$""".stripMargin
       )
+      // Access list the document was ingested with (permission mode), for upsert change detection
+      stmt.execute(
+        "ALTER TABLE document_registry ADD COLUMN IF NOT EXISTS readable_by INTEGER[] NOT NULL DEFAULT '{}'"
+      )
       // Create collection index after ensuring column exists
       stmt.execute(
         """CREATE INDEX IF NOT EXISTS idx_document_registry_collection
@@ -83,7 +88,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
 
   override def get(documentId: String): IO[Option[DocumentEntry]] = IO {
     val sql =
-      """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+      s"""SELECT $EntryColumns
         |FROM document_registry WHERE document_id = ?""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try {
@@ -97,14 +102,15 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
 
   override def put(entry: DocumentEntry): IO[Unit] = IO {
     val sql =
-      """INSERT INTO document_registry (document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at)
-        |VALUES (?, ?, ?, ?::jsonb, ?, ?, ?)
+      """INSERT INTO document_registry (document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by)
+        |VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?)
         |ON CONFLICT (document_id) DO UPDATE SET
         |    content_hash = EXCLUDED.content_hash,
         |    chunk_count = EXCLUDED.chunk_count,
         |    metadata = EXCLUDED.metadata,
         |    collection = EXCLUDED.collection,
-        |    updated_at = EXCLUDED.updated_at""".stripMargin
+        |    updated_at = EXCLUDED.updated_at,
+        |    readable_by = EXCLUDED.readable_by""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try {
       stmt.setString(1, entry.documentId)
@@ -114,6 +120,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       stmt.setString(5, entry.collection.orNull)
       stmt.setTimestamp(6, Timestamp.from(entry.indexedAt))
       stmt.setTimestamp(7, Timestamp.from(entry.updatedAt))
+      stmt.setArray(8, connection.createArrayOf("integer", entry.readableBy.toSeq.sorted.map(Int.box).toArray))
       stmt.executeUpdate()
     } finally {
       stmt.close()
@@ -160,7 +167,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
 
   override def listEntries(): IO[Seq[DocumentEntry]] = IO {
     val sql =
-      """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+      s"""SELECT $EntryColumns
         |FROM document_registry ORDER BY indexed_at""".stripMargin
     val stmt = connection.createStatement()
     try {
@@ -177,7 +184,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
 
   override def listEntriesSince(since: Instant): IO[Seq[DocumentEntry]] = IO {
     val sql =
-      """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+      s"""SELECT $EntryColumns
         |FROM document_registry WHERE updated_at > ? ORDER BY updated_at""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try {
@@ -199,7 +206,7 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
     } else {
       // Use ANY with array for efficient batch lookup
       val sql =
-        """SELECT document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at
+        s"""SELECT $EntryColumns
           |FROM document_registry WHERE document_id = ANY(?)""".stripMargin
       val stmt = connection.prepareStatement(sql)
       try {
@@ -353,12 +360,19 @@ class PgDocumentRegistry(dbConfig: DatabaseConfig) extends DocumentRegistry {
       metadata = metadata,
       collection = Option(rs.getString("collection")),
       indexedAt = rs.getTimestamp("indexed_at").toInstant,
-      updatedAt = rs.getTimestamp("updated_at").toInstant
+      updatedAt = rs.getTimestamp("updated_at").toInstant,
+      readableBy = Option(rs.getArray("readable_by"))
+        .map(_.getArray.asInstanceOf[Array[java.lang.Integer]].map(_.intValue).toSet)
+        .getOrElse(Set.empty)
     )
   }
 }
 
 object PgDocumentRegistry {
+
+  /** Columns read into a [[DocumentEntry]] by `rowToEntry`. */
+  private val EntryColumns =
+    "document_id, content_hash, chunk_count, metadata, collection, indexed_at, updated_at, readable_by"
 
   /**
    * Create and initialize a PostgreSQL document registry.

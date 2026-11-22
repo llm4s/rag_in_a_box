@@ -98,7 +98,7 @@ object Main extends IOApp {
       authService <- Resource.eval(AuthService(userRegistry, config.security.auth))
 
       // Create Ingestion service and scheduler
-      ingestionService = IngestionService(ragService.rag, config.ingestion)
+      ingestionService = IngestionService(ragService, config.ingestion)
       scheduler = IngestionScheduler(ingestionService, config.ingestion)
 
       // Create Chunking service
