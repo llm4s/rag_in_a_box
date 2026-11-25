@@ -477,7 +477,8 @@ class RagBoxClient:
         top_k: Optional[int] = None,
         collection: Optional[str] = None,
         include_metadata: bool = True,
-        similarity_threshold: Optional[float] = None
+        similarity_threshold: Optional[float] = None,
+        temperature: Optional[float] = None
     ) -> QueryResult:
         """
         Query with answer generation (``POST /api/v1/query``).
@@ -489,6 +490,8 @@ class RagBoxClient:
             include_metadata: If False, contexts come back without their metadata
             similarity_threshold: Minimum vector similarity (0 to 1) of a chunk to be used
                 for the answer and returned
+            temperature: Temperature the answer is generated at (0 to 2); the server's
+                runtime ``llmTemperature`` when not given
 
         Returns:
             QueryResult with answer and supporting contexts
@@ -500,8 +503,13 @@ class RagBoxClient:
             data["collection"] = collection
         if not include_metadata:
             data["includeMetadata"] = False
+        overrides: Dict[str, Any] = {}
         if similarity_threshold is not None:
-            data["overrides"] = {"similarityThreshold": similarity_threshold}
+            overrides["similarityThreshold"] = similarity_threshold
+        if temperature is not None:
+            overrides["llmTemperature"] = temperature
+        if overrides:
+            data["overrides"] = overrides
 
         response = self._request("POST", "/api/v1/query", json=data)
         result = response.json()

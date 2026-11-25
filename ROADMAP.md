@@ -91,30 +91,26 @@ behaviour was last reworked.
 
 ---
 
-## Known limitations
+## What ragbox adds to llm4s
 
-These are limits of the current llm4s release (0.6.0) that ragbox works around or documents.
-Most are fixed or proposed upstream; see #40.
+ragbox runs on llm4s 1.0.0 and uses it as intended: answers (with their temperature, chat history
+and streaming), permission-filtered hybrid search, pre-chunked ingest, cross-collection deletes,
+tracing and the loaders' URL policy are all llm4s's own. What ragbox still adds, because llm4s has
+no hook for it:
 
-| Limitation | Effect in ragbox | Upstream |
-|---|---|---|
-| RAG answers take no completion options | The answer temperature is fixed: `LLM_TEMPERATURE`, the runtime `llmTemperature` and the experiment-variant temperature do not reach `/query` or chat | llm4s/llm4s#2715 (fixed on llm4s `main`, unreleased) |
-| No streaming answer API | `/query/stream` and chat streaming send the answer as one event once it is complete | llm4s/llm4s#2717 (fixed on `main`, unreleased) |
-| Permission-mode search is vector-only | In permission mode, fusion, keyword search, reranking and query rewriting do not apply (reported in `GET /api/v1/config` as `searchMode` / `fusionApplies`); ragbox routes ingests without a collection to `default` itself | llm4s/llm4s#2716 (fixed on `main`, unreleased) |
-| No persistent registry or source-scoped sync | ragbox keeps its own document registry and per-source sync state | llm4s/llm4s#2714 |
-| Loader URL policy | ragbox checks URLs before handing them to the llm4s loaders; robots.txt fetches and DNS rebinding remain residual risks | llm4s/llm4s#2724 |
-| No pre-chunked ingest with permissions | ragbox embeds its own chunks and writes them through `SearchIndex.ingest` | llm4s/llm4s#2732 |
-| No chat history in `queryWithAnswer` | ragbox builds the conversation for chat itself | llm4s/llm4s#2733 |
-| Tracing covers embeddings only | ragbox wraps the LLM client to trace the answer, rerank and rewrite calls | llm4s/llm4s#2734 |
+| What ragbox adds | Why |
+|---|---|
+| Answers with a `similarityThreshold` are composed by ragbox: retrieve, drop the chunks below the threshold, then call the answer LLM with llm4s's prompt | `RAG.queryWithAnswer` retrieves and answers in one call, with no step between the two |
+| Its own document registry and per-source sync state | llm4s's `DocumentRegistry` and `RAG.sync` (llm4s/llm4s#2714) track a document's id, version and source. ragbox's registry also holds each document's content hash, collection, access list and metadata for the sync API, and `RAG.sync` neither takes pre-chunked documents (per-collection chunking) nor runs with a `SearchIndex` (permission mode) |
+| Ingests without a collection go to the `default` collection in permission mode | llm4s refuses a plain ingest there rather than choosing a collection, as its default collection is public; ragbox makes that choice explicitly |
+| Query metrics are totalled from llm4s's trace events | `RAGAnswerResult.metrics` leaves the query-rewrite and LLM-rerank calls out of its token and cost totals; the trace has them |
+| The host allow-list of the ingestion URL policy | llm4s's `UrlPolicy.Standard` allow-list matches a host and all its subdomains; ragbox's entries match exactly unless they start with `*.`. The address rules are llm4s's |
 
 ---
 
 ## Planned
 
 ### Next
-- **Adopt the next llm4s release** (#40): completion options, real streaming answers,
-  permission-mode hybrid search; drop the workarounds above as upstream issues land
-  (llm4s/llm4s#2714, #2724, #2732, #2733, #2734).
 - **Test gaps** (#48): route and service specs for chat, experiments, suggestions, the
   WebSocket and `RAGService`; a V3 migration dropping a duplicate index; a Helm migration job.
 

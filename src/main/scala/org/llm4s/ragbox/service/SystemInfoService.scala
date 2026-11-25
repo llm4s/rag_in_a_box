@@ -16,13 +16,7 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
 
   private val startTime: Long = System.currentTimeMillis()
 
-  private def hasPermissions: Boolean = pipelines.hasPermissions
-
-  /**
-   * Current configuration, including how the pipeline searches: in permission mode llm4s's
-   * permission-filtered search is vector-only, so the configured fusion strategy and RRF k,
-   * reranking and query transforms do not apply there (llm4s/llm4s#2716).
-   */
+  /** Current configuration. */
   def configInfo: IO[ConfigResponse] = pipelines.ready.map { connected =>
     val current = pipelines.current
     ConfigResponse(
@@ -39,8 +33,8 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
         topK = current.topK,
         fusionStrategy = current.fusionStrategy,
         rrfK = current.rrfK,
-        searchMode = if (hasPermissions) "vector" else "hybrid",
-        fusionApplies = !hasPermissions,
+        searchMode = "hybrid",
+        fusionApplies = true,
         reranking = config.rag.reranking.normalizedStrategy.getOrElse(config.rag.reranking.strategy),
         queryTransform = config.rag.queryTransform.normalizedStrategy.getOrElse(config.rag.queryTransform.strategy),
         limitations = pipelineLimitations
@@ -74,7 +68,7 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
         fusionStrategy = ConfigSetting("fusionStrategy", current.fusionStrategy, ChangeabilityInfo.hot),
         rrfK = ConfigSetting("rrfK", current.rrfK.toString, ChangeabilityInfo.hot),
         systemPrompt = Some(current.systemPrompt),
-        searchMode = if (hasPermissions) "vector" else "hybrid",
+        searchMode = "hybrid",
         limitations = pipelineLimitations
       ),
       database = VisibilityDatabaseConfig(
@@ -92,25 +86,11 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
     )
   }
 
-  /** What the configured settings do not affect, with the llm4s issue that tracks each. */
-  private def pipelineLimitations: Seq[String] = {
-    val permissionMode =
-      if (hasPermissions)
-        Seq(
-          "Permission mode: llm4s permission-filtered search is vector-only, so fusionStrategy and rrfK " +
-            "have no effect" +
-            (if (config.rag.reranking.enabled) ", nor does reranking" else "") +
-            (if (config.rag.queryTransform.enabled) ", nor does the query transform" else "") +
-            " (llm4s/llm4s#2716)."
-        )
-      else Seq.empty
-    permissionMode ++ Seq(
-      "The LLM temperature applies to chat answers only: llm4s RAG.queryWithAnswer generates /query answers " +
-        "at temperature 0.0 in llm4s 0.6.0 (llm4s/llm4s#2715, fixed upstream for the next release).",
-      "Streaming endpoints send the answer in one event once it is complete: llm4s RAG has no streaming " +
-        "answer API in 0.6.0 (llm4s/llm4s#2717, added upstream for the next release)."
-    )
-  }
+  /**
+   * Configured settings that do not take effect, and why. There are none: fusion, reranking and
+   * query transforms apply in permission mode too, and the temperature to every answer.
+   */
+  private def pipelineLimitations: Seq[String] = Seq.empty
 
   // Live model lists by provider id, with when they were fetched
   private val modelListCache = new java.util.concurrent.ConcurrentHashMap[String, (Long, Seq[String])]()
@@ -135,15 +115,15 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
 
   private def bundledModels(provider: String, mode: org.llm4s.model.ModelMode): Seq[String] =
     pipelines.modelRegistry.toOption
-      .flatMap(_.listByProvider(provider).toOption)
+      .flatMap(_.listByProvider(org.llm4s.types.ProviderModelTypes.ProviderId(provider)).toOption)
       .getOrElse(Nil)
       .filter(_.mode == mode)
-      .map(_.modelId)
+      .map(_.modelId.asString)
       .sorted
 
   private def embeddingProviderInfo(id: String): ProviderInfo = {
     val descriptor = pipelines.providerRegistry.findEmbedding(org.llm4s.types.ProviderModelTypes.ProviderId(id))
-    val fromDescriptor = descriptor.map(_.modelDimensions.keys.toSeq.sorted).getOrElse(Nil)
+    val fromDescriptor = descriptor.map(_.modelDimensions.keys.toSeq.map(_.asString).sorted).getOrElse(Nil)
     val models = if (fromDescriptor.nonEmpty) fromDescriptor else bundledModels(id, org.llm4s.model.ModelMode.Embedding)
     val needsKey = descriptor.exists(_.configSpec.requiresApiKey)
     ProviderInfo(id, models, configured = !needsKey || config.apiKeys.getKey(id).isDefined)
@@ -164,16 +144,16 @@ final class SystemInfoService(config: AppConfig, pipelines: RagPipelines, docume
           case Some((_, models)) => IO.pure(Some(models))
           case None =>
             val isActive = config.llm.providerId == id
-            val section = org.llm4s.config.ProvidersConfigModel.NamedProviderConfig(
+            val section = org.llm4s.config.NamedProviderConfig(
               provider = providerId,
               model = org.llm4s.types.ProviderModelTypes.ModelName(if (isActive) config.llm.modelName else ""),
               baseUrl = (if (isActive) config.llm.baseUrl else None)
-                .orElse(descriptor.flatMap(_.configSpec.defaultBaseUrl))
-                .map(org.llm4s.types.ProviderModelTypes.BaseUrl(_)),
+                .map(org.llm4s.types.ProviderModelTypes.BaseUrl(_))
+                .orElse(descriptor.flatMap(_.configSpec.defaultBaseUrl)),
               apiKey = apiKey.map(k => org.llm4s.types.ProviderModelTypes.ApiKey(k.reveal))
             )
             IO.interruptible {
-              val http = org.llm4s.http.Llm4sHttpClient.create(3.seconds)
+              val http = org.llm4s.http.Llm4sHttpClient.create(org.llm4s.http.HttpClientOptions(connectTimeout = Some(3.seconds)))
               lister.listModels(section, http).map(_.map(_.name.asString).sorted.toSeq)
             }.timeout(5.seconds).attempt.map {
               case Right(Right(models)) if models.nonEmpty =>

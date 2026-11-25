@@ -2,7 +2,6 @@
 import { onMounted, computed, ref } from 'vue'
 import { useExperimentsStore } from '@/stores/experiments'
 import type { ExperimentStatus, CreateExperimentRequest, ExperimentConfigSnapshot, Experiment } from '@/types/api'
-import { getPipelineConfig } from '@/api/config'
 
 const experimentsStore = useExperimentsStore()
 
@@ -53,10 +52,6 @@ const statusIcons: Record<ExperimentStatus, string> = {
   archived: 'mdi-archive'
 }
 
-// In permission mode search is vector-only (llm4s/llm4s#2716): fusion, rrfK and reranking do not
-// apply, so a group's values for them are shown as not applied
-const fusionApplies = ref(true)
-
 function formatDate(dateStr?: string | null): string {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleDateString('en-US', {
@@ -74,20 +69,16 @@ function formatTrafficSplit(split: number): string {
 
 function formatConfigSnapshot(config: ExperimentConfigSnapshot): string {
   const parts: string[] = []
-  const search = (part: string) => fusionApplies.value ? part : `${part} (not applied: vector-only search)`
   if (config.topK != null) parts.push(`topK: ${config.topK}`)
-  if (config.fusionStrategy) parts.push(search(`fusion: ${config.fusionStrategy}`))
-  if (config.rrfK != null) parts.push(search(`rrfK: ${config.rrfK}`))
-  if (config.reranking) parts.push(search(`reranking: ${config.reranking}`))
+  if (config.fusionStrategy) parts.push(`fusion: ${config.fusionStrategy}`)
+  if (config.rrfK != null) parts.push(`rrfK: ${config.rrfK}`)
+  if (config.reranking) parts.push(`reranking: ${config.reranking}`)
   if (config.systemPrompt) parts.push(`prompt: "${config.systemPrompt.slice(0, 40)}${config.systemPrompt.length > 40 ? '...' : ''}"`)
-  if (config.llmTemperature != null) parts.push(`temp: ${config.llmTemperature} (chat only)`)
+  if (config.llmTemperature != null) parts.push(`temp: ${config.llmTemperature}`)
   return parts.length > 0 ? parts.join(', ') : 'Default'
 }
 
 async function loadData() {
-  getPipelineConfig()
-    .then(p => { fusionApplies.value = p.rag.fusionApplies })
-    .catch(() => { fusionApplies.value = true })
   await Promise.all([
     experimentsStore.fetchExperiments(),
     experimentsStore.fetchRunningExperiment()
@@ -112,6 +103,12 @@ async function createExperiment() {
   if (!request.description) delete request.description
   if (!request.collection) delete request.collection
   if (Object.keys(request.baselineConfig || {}).length === 0) delete request.baselineConfig
+  // A number field that was typed in and then emptied holds '', not a number
+  const variant: Record<string, unknown> = { ...request.variantConfig }
+  for (const key of ['topK', 'llmTemperature']) {
+    if (variant[key] === '') delete variant[key]
+  }
+  request.variantConfig = variant as typeof request.variantConfig
 
   const created = await experimentsStore.createExperiment(request)
   if (created) {
@@ -447,7 +444,7 @@ onMounted(() => {
           <p class="text-caption text-grey mb-3">Configure the parameters you want to test. Leave blank to use defaults.</p>
 
           <v-row>
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
               <v-text-field
                 v-model.number="newExperiment.variantConfig!.topK"
                 label="Top K"
@@ -456,7 +453,20 @@ onMounted(() => {
                 density="compact"
               />
             </v-col>
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="newExperiment.variantConfig!.llmTemperature"
+                label="LLM Temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                placeholder="0.1"
+                density="compact"
+                data-testid="variant-temperature"
+              />
+            </v-col>
+            <v-col cols="12" md="3">
               <v-select
                 v-model="newExperiment.variantConfig!.fusionStrategy"
                 label="Fusion Strategy"
@@ -465,7 +475,7 @@ onMounted(() => {
                 clearable
               />
             </v-col>
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
               <v-select
                 v-model="newExperiment.variantConfig!.reranking"
                 label="Reranking"
@@ -486,8 +496,7 @@ onMounted(() => {
             </v-col>
           </v-row>
           <p class="text-caption text-grey">
-            Each group runs with its own settings. The LLM temperature is not tested: llm4s 0.6.0 answers
-            /query at temperature 0.0.
+            Each group runs with its own settings: every one given is applied to the group's queries.
           </p>
         </v-card-text>
 

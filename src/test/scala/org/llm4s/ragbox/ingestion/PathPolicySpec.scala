@@ -1,6 +1,6 @@
 package org.llm4s.ragbox.ingestion
 
-import org.llm4s.rag.loader.LoadResult
+import org.llm4s.rag.loader.{DirectoryLoader, LoadResult}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -86,7 +86,7 @@ class PathPolicySpec extends AnyFlatSpec with Matchers {
     PathPolicy.checkPatterns(Set.empty).isLeft shouldBe true
   }
 
-  "ConfinedDirectoryLoader" should "load files under the directory but not follow symlinks out of it" in {
+  "llm4s's DirectoryLoader, as ingestion uses it," should "load files under the directory but not follow symlinks out of it" in {
     val (root, docs, outside) = layout()
     Files.createSymbolicLink(docs.resolve("escape-dir"), outside)
     Files.createSymbolicLink(docs.resolve("escape-file.md"), outside.resolve("secret.md"))
@@ -96,7 +96,7 @@ class PathPolicySpec extends AnyFlatSpec with Matchers {
     Files.createSymbolicLink(sub.resolve("loop"), docs) // a cycle inside the root
 
     val allowed = new PathPolicy(Seq(root.toString)).checkDirectory(docs.toString).toOption.get
-    val loader = ConfinedDirectoryLoader(allowed.path, allowed.real, Set("md"))
+    val loader = DirectoryLoader(allowed.path, Set("md"))
     val contents = loader.load().collect { case LoadResult.Success(doc) => doc.content }.toList
 
     contents should contain allOf ("inside", "nested")
@@ -108,7 +108,7 @@ class PathPolicySpec extends AnyFlatSpec with Matchers {
     val sub = Files.createDirectories(docs.resolve("sub"))
     Files.writeString(sub.resolve("b.md"), "nested")
     val allowed = new PathPolicy(Seq(root.toString)).checkDirectory(docs.toString).toOption.get
-    val loader = ConfinedDirectoryLoader(allowed.path, allowed.real, Set("md"), recursive = false)
+    val loader = DirectoryLoader(allowed.path, Set("md"), recursive = false)
     loader.load().collect { case LoadResult.Success(doc) => doc.content }.toList shouldBe List("inside")
   }
 }

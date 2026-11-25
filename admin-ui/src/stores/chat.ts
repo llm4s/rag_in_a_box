@@ -260,6 +260,14 @@ export const useChatStore = defineStore('chat', () => {
               msg.contexts.push(context)
             }
           },
+          // The answer arrives piece by piece as the LLM generates it...
+          onChunk: (chunk: string) => {
+            const msg = getMessage()
+            if (msg) {
+              msg.content += chunk
+            }
+          },
+          // ...and then whole, which replaces the pieces
           onAnswer: (answer: string) => {
             const msg = getMessage()
             if (msg) {

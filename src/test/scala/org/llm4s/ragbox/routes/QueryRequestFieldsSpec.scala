@@ -76,13 +76,37 @@ class QueryRequestFieldsSpec extends AnyFlatSpec with Matchers {
     service.getQueryOverrides shouldBe empty
   }
 
-  "overrides.llmTemperature" should "be rejected, on /query and before a stream starts" in {
+  "overrides.llmTemperature" should "be passed to the query, on /query and on a stream" in {
     val (service, routes) = setup()
     Seq("/api/v1/query", "/api/v1/query/stream").foreach { path =>
       val response = post(routes, path, """{"question": "q", "overrides": {"llmTemperature": 0.7}}""")
+      response.status shouldBe Status.Ok
+      response.as[String].unsafeRunSync() should not be empty
+    }
+    service.getQueryOverrides.map(_.llmTemperature) shouldBe Seq(Some(0.7), Some(0.7))
+  }
+
+  it should "be rejected outside 0 to 2, on /query and before a stream starts" in {
+    val (service, routes) = setup()
+    for (path <- Seq("/api/v1/query", "/api/v1/query/stream"); t <- Seq("2.5", "-0.1")) {
+      val response = post(routes, path, s"""{"question": "q", "overrides": {"llmTemperature": $t}}""")
       response.status shouldBe Status.BadRequest
-      response.as[String].unsafeRunSync() should include("llmTemperature is not supported")
+      response.as[String].unsafeRunSync() should include("llmTemperature must be between 0 and 2")
     }
     service.getQueryOverrides shouldBe empty
+  }
+
+  "POST /api/v1/query/stream" should "send the contexts, the answer in chunks, then the whole answer" in {
+    val (_, routes) = setup()
+    val body = post(routes, "/api/v1/query/stream", """{"question": "q"}""").as[String].unsafeRunSync()
+    val events = body.split("\n\n").toSeq.filter(_.nonEmpty).map { block =>
+      val lines = block.split("\n")
+      lines.find(_.startsWith("event: ")).get.stripPrefix("event: ") ->
+        parse(lines.find(_.startsWith("data: ")).get.stripPrefix("data: ")).toOption.get
+    }
+    events.map(_._1) shouldBe Seq("start", "context", "chunk", "answer", "complete")
+    events(2)._2.hcursor.get[String]("chunk") shouldBe Right("answer")
+    events(3)._2.hcursor.get[String]("answer") shouldBe Right("answer")
+    events.last._2.hcursor.get[String]("queryId") shouldBe events.head._2.hcursor.get[String]("queryId")
   }
 }

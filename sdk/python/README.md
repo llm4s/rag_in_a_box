@@ -163,7 +163,7 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `query(question, top_k, collection, include_metadata, similarity_threshold)` | `POST /api/v1/query` | Query with answer generation; `QueryResult.query_id` is the query-log id |
+| `query(question, top_k, collection, include_metadata, similarity_threshold, temperature)` | `POST /api/v1/query` | Query with answer generation; `QueryResult.query_id` is the query-log id |
 | `feedback(query_id, rating, comment, relevant_chunks)` | `POST /api/v1/feedback` | Rate one of your queries' answers |
 | `search(query, top_k, collection)` | `POST /api/v1/search` | Search without LLM |
 

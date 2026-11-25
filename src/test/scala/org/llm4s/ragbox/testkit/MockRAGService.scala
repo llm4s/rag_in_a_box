@@ -122,6 +122,30 @@ class MockRAGService(
   /** Chat answers requested so far: the question and the history sent with it. */
   def getChatCalls: Seq[(String, Seq[org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn])] = chatCalls
 
+  /** An answer that was not streamed, as the events of one that was. */
+  private def whole(response: IO[QueryResponse]): fs2.Stream[IO, org.llm4s.ragbox.service.AnswerEvent] = {
+    import org.llm4s.ragbox.service.AnswerEvent._
+    fs2.Stream.eval(response).flatMap(r => fs2.Stream.emits(Seq(Contexts(r.contexts), Delta(r.answer), Completed(r))))
+  }
+
+  /** A streamed answer is the answer the non-streaming methods give, as one piece. */
+  override def answerStream(
+    principal: org.llm4s.ragbox.auth.Principal,
+    question: String,
+    collectionPattern: String,
+    topK: Option[Int],
+    overrides: RAGService.SettingsOverride
+  ): fs2.Stream[IO, org.llm4s.ragbox.service.AnswerEvent] =
+    whole(answer(principal, question, collectionPattern, topK, overrides))
+
+  override def chatStreamAs(
+    principal: org.llm4s.ragbox.auth.Principal,
+    question: String,
+    history: Seq[org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn],
+    collectionPattern: String
+  ): fs2.Stream[IO, org.llm4s.ragbox.service.AnswerEvent] =
+    whole(chatAs(principal, question, history, collectionPattern))
+
   override def getStats: IO[StatsResponse] = {
     errorToThrow match {
       case Some(e) => IO.raiseError(e)

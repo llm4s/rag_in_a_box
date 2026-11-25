@@ -53,7 +53,7 @@ A config (`baselineConfig` / `variantConfig`) may set:
 | `rrfK` | 1 to 1000 |
 | `systemPrompt` | string |
 | `reranking` | `none`, `cohere`, `llm` |
-| `llmTemperature` | 0 to 2 (validated and recorded, but not applied: llm4s 0.6.0 answers `/query` at temperature 0.0, [llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715)) |
+| `llmTemperature` | 0 to 2 |
 
 Unset fields fall back to the request's overrides and then the runtime settings.
 

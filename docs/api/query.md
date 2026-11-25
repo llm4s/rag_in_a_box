@@ -60,19 +60,19 @@ POST /api/v1/query
 | `overrides` | object | No | Per-request settings, see below |
 
 `overrides` fields: `topK`, `fusionStrategy` (`rrf`, `weighted`, `vector_only`,
-`keyword_only`), `systemPrompt`, `similarityThreshold`. Precedence is experiment group config,
+`keyword_only`), `systemPrompt`, `llmTemperature`, `similarityThreshold`. Precedence is experiment group config,
 then `overrides`, then `topK`, then the runtime settings.
 
 `similarityThreshold` (0 to 1) drops retrieved chunks whose vector (cosine) similarity is below
 it: they are neither sent to the LLM nor returned. It is compared with each chunk's vector
 similarity, not with `score`, whose scale depends on the fusion strategy (with `rrf` it is a rank
 score of about 1/(k + rank)); chunks found by keyword search only have no similarity and are
-kept. With a threshold, ragbox runs llm4s's retrieval and answer steps itself (same prompt,
-temperature 0.0) so the filter sits between them.
+kept. With a threshold, ragbox runs llm4s's retrieval and answer steps itself (same prompt and
+temperature) so the filter sits between them; `metrics.chunksRetrieved` then counts the chunks
+retrieved and `chunksUsed` those that passed.
 
-`overrides.llmTemperature` is rejected with `400`: llm4s 0.6.0 answers `/query` at temperature
-0.0 ([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715)); it will be supported once
-ragbox adopts the next llm4s release. The runtime `llmTemperature` applies to chat.
+`llmTemperature` (0 to 2) is the temperature the answer is generated at; without it, the runtime
+`llmTemperature` applies.
 
 ### Example
 
@@ -144,11 +144,12 @@ events, each `data` a JSON object:
 | Event | Data |
 |-------|------|
 | `start` | `{"queryId", "timestamp"}` |
-| `context` | `{"context": <context item>, "index", "timestamp"}`, one per retrieved chunk |
-| `answer` | `{"answer", "timestamp"}`, the whole answer |
+| `context` | `{"context": <context item>, "index", "timestamp"}`, one per chunk the answer is generated from, before the LLM is called |
+| `chunk` | `{"chunk", "timestamp"}`, the next piece of the answer's text, as the LLM generates it |
+| `answer` | `{"answer", "timestamp"}`, the whole answer, after its chunks |
 | `usage` | `{"usage": {"promptTokens", "completionTokens", "totalTokens"}, "timestamp"}`, when known |
 | `complete` | `{"queryId", "totalContexts", "timestamp"}`; `queryId` (as in `start`) is the query-log id for `POST /feedback` |
-| `error` | `{"error": "query_failed", "message", "timestamp"}`, instead of the events after `start` |
+| `error` | `{"error": "query_failed", "message", "timestamp"}`, the last event of a query that failed, at any point after `start` |
 
 ```
 event: start
@@ -157,6 +158,12 @@ data: {"queryId":"5b0c...","timestamp":"2026-01-15T10:30:00Z"}
 event: context
 data: {"context":{"content":"...","score":0.92,"metadata":{},"documentId":"doc-123","chunkIndex":0},"index":0,"timestamp":"..."}
 
+event: chunk
+data: {"chunk":"Set the","timestamp":"..."}
+
+event: chunk
+data: {"chunk":" AUTH_MODE environment variable...","timestamp":"..."}
+
 event: answer
 data: {"answer":"Set the AUTH_MODE environment variable...","timestamp":"..."}
 
@@ -164,10 +171,9 @@ event: complete
 data: {"queryId":"5b0c...","totalContexts":1,"timestamp":"..."}
 ```
 
-The answer is not streamed token by token: llm4s 0.6.0 has no streaming RAG answer API
-([llm4s/llm4s#2717](https://github.com/llm4s/llm4s/issues/2717)), so the full answer is
-generated first and sent as one `answer` event. Validation and authorization failures are
-ordinary JSON error responses, not events.
+The answer is streamed as the LLM generates it (llm4s `RAG.queryWithAnswerStreaming`): append the
+`chunk` events to show it as it arrives; the `answer` event then carries the whole text.
+Validation and authorization failures are ordinary JSON error responses, not events.
 
 ---
 

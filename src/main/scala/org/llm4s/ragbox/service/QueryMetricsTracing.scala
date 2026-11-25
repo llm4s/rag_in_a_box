@@ -1,7 +1,8 @@
 package org.llm4s.ragbox.service
 
-import org.llm4s.llmconnect.model.{Completion, TokenUsage}
+import org.llm4s.llmconnect.model.TokenUsage
 import org.llm4s.trace.{TraceEvent, Tracing}
+import org.llm4s.types.ProviderModelTypes.ModelName
 import org.llm4s.types.Result
 
 import scala.collection.mutable.ArrayBuffer
@@ -13,17 +14,20 @@ import scala.concurrent.duration.FiniteDuration
  *
  * It is handed to llm4s twice: to the RAG pipeline with `RAGConfig.withTracing` - which traces
  * every embedding call as a `TraceEvent.EmbeddingUsageRecorded` (with its duration) and a
- * `CostRecorded` - and around the answer LLM as `TracingLLMClient`, which traces every completion
- * as a `CompletionReceived` with its duration and token usage. Query rewriting and LLM reranking
- * go through that same client, so their completions are recorded too.
+ * `CostRecorded`, and every model call the pipeline makes (answer, query rewriting, LLM
+ * reranking) as a `CompletionReceived` with its duration and token usage - and around the answer
+ * LLM as `TracingLLMClient`, for the completions ragbox asks for itself (answers with a
+ * similarity threshold). The pipeline is given the untraced client, so no call is traced twice.
  *
  * llm4s RAG calls are synchronous and run on the calling thread, so the events of one call are
  * collected through a thread-local: [[collect]] opens a collection on the current (blocking)
  * thread, runs the call and returns what was traced during it. Events outside a collection are
  * dropped.
  *
- * llm4s's own `withTracing` covers only the embedding client and `RAGAnswerResult` carries only
- * the answer's usage, hence this; llm4s/llm4s#2734 proposes per-query metrics from llm4s itself.
+ * llm4s reports each answer's metrics itself (`RAGAnswerResult.metrics`). ragbox reads the trace
+ * instead because its totals cover more: the rewrite and LLM-rerank calls, which llm4s traces but
+ * leaves out of an answer's metrics, and the completions ragbox makes directly. The stage
+ * durations are llm4s's own, from the `RAGOperationCompleted` event of the call.
  */
 final class QueryMetricsTracing extends Tracing {
   import QueryMetricsTracing._
@@ -47,17 +51,12 @@ final class QueryMetricsTracing extends Tracing {
     Option(current.get()).foreach(_ += event)
     Right(())
   }
-
-  override def traceToolCall(toolName: String, input: String, output: String): Result[Unit] = Right(())
-  override def traceError(error: Throwable, context: String): Result[Unit] = Right(())
-  override def traceCompletion(completion: Completion, model: String): Result[Unit] = Right(())
-  override def traceTokenUsage(usage: TokenUsage, model: String, operation: String): Result[Unit] = Right(())
 }
 
 object QueryMetricsTracing {
 
   /** One traced LLM completion. */
-  final case class CompletionCall(model: String, duration: Option[FiniteDuration], usage: Option[TokenUsage])
+  final case class CompletionCall(model: ModelName, duration: Option[FiniteDuration], usage: Option[TokenUsage])
 
   /** What one llm4s call traced. */
   final case class Collected(events: Vector[TraceEvent]) {
@@ -76,6 +75,13 @@ object QueryMetricsTracing {
       val costs = events.collect { case c: TraceEvent.CostRecorded => c.costUsd }
       Option.when(costs.nonEmpty)(costs.sum)
     }
+
+    /**
+     * The stage durations llm4s measured for the query (`rewrite`, `embedding`, `search`, and
+     * `rerank` and `answer` where they ran): those of its `RAGOperationCompleted` event.
+     */
+    def stageDurations: Map[String, FiniteDuration] =
+      events.collect { case r: TraceEvent.RAGOperationCompleted => r.stageDurations }.lastOption.getOrElse(Map.empty)
 
     /** LLM completions, in the order they were made. */
     def completions: Vector[CompletionCall] =

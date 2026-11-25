@@ -1,12 +1,12 @@
 package org.llm4s.ragbox.service
 
 import org.llm4s.chunking.{ChunkerFactory, DocumentChunker}
-import org.llm4s.config.ProvidersConfigModel.NamedProviderConfig
+import org.llm4s.config.NamedProviderConfig
 import org.llm4s.error.ConfigurationError
-import org.llm4s.llmconnect.{EmbeddingClient, LLMClient, LlmClientOptions}
+import org.llm4s.llmconnect.{EmbeddingClient, LLMClient}
 import org.llm4s.llmconnect.config.{EmbeddingModelConfig, EmbeddingProviderConfig, ProviderConfig}
 import org.llm4s.llmconnect.model.{AssistantMessage, Conversation, Message, SystemMessage, UserMessage}
-import org.llm4s.llmconnect.spi.{EmbeddingProviderSection, ProviderRegistry}
+import org.llm4s.llmconnect.spi.{EmbeddingBuildContext, EmbeddingConfigContext, EmbeddingProviderSection, ProviderBuildContext, ProviderConfigContext, ProviderRegistry}
 import org.llm4s.model.ModelRegistryService
 import org.llm4s.rag.{RAGConfig, RAGSearchResult}
 import org.llm4s.rag.permissions.SearchIndex
@@ -49,8 +49,8 @@ object Llm4sPipeline {
         baseUrl = config.llm.baseUrl.map(BaseUrl(_)),
         apiKey = apiKey.map(key => ApiKey(key.reveal))
       )
-      providerConfig <- descriptor.buildConfig(id.asString, section)
-      client <- descriptor.buildClient(providerConfig, LlmClientOptions.default)
+      providerConfig <- descriptor.buildConfig(section, ProviderConfigContext.of(id.asString))
+      client <- descriptor.build(providerConfig, ProviderBuildContext.of())
     } yield (client, providerConfig)
   }
 
@@ -65,10 +65,9 @@ object Llm4sPipeline {
       descriptor <- registry.resolveEmbedding(id)
       section = EmbeddingProviderSection(
         apiKey = config.apiKeys.getKey(id.asString),
-        baseUrl = config.embedding.baseUrl,
-        model = Some(config.embedding.model)
+        baseUrl = config.embedding.baseUrl.map(BaseUrl(_))
       )
-      providerConfig <- descriptor.buildConfig(section, modelOverride = None)
+      providerConfig <- descriptor.buildConfig(section, EmbeddingConfigContext(Some(ModelName(config.embedding.model))))
     } yield providerConfig
   }
 
@@ -87,8 +86,11 @@ object Llm4sPipeline {
    *
    * Storage is PostgreSQL for both halves of hybrid search in both modes (`withPgHybrid`): vectors
    * in pgvector and BM25 keywords in PostgreSQL full-text search, so keyword search survives a
-   * restart. In permission mode the [[SearchIndex]] is attached as well; its queries are
-   * vector-only (llm4s/llm4s#2716), so fusion, reranking and query transforms only apply outside it.
+   * restart. In permission mode the [[SearchIndex]] is attached as well: llm4s then searches
+   * through it (`queryWithPermissions`), with the same fusion, reranking and query transforms, and
+   * its keyword half is PostgreSQL full-text search over the index's own table.
+   *
+   * The answer temperature is not here: every answer passes its completion options with the call.
    */
   def ragConfig(
     config: AppConfig,
@@ -137,19 +139,18 @@ object Llm4sPipeline {
 
   /**
    * The embedding client and model ragbox embeds with outside a pipeline: for the semantic
-   * chunker, and for permission-mode ingest (see `RAGService`), which hands llm4s's
-   * `SearchIndex` chunks it has already chunked and embedded. Built the way llm4s's `RAG` builds
-   * its own, so the vectors are the ones the pipeline would have written.
+   * chunker, which embeds sentences to find its boundaries. Built the way llm4s's `RAG` builds
+   * its own.
    */
   def embedder(config: AppConfig, registry: ProviderRegistry)(using ModelRegistryService): Result[(EmbeddingClient, EmbeddingModelConfig)] = {
     val id = registry.canonicalEmbeddingId(config.embedding.providerId)
     for {
       descriptor <- registry.resolveEmbedding(id)
       providerConfig <- embeddingProviderConfig(config, registry)(id.asString)
-      provider <- descriptor.build(providerConfig)
+      provider <- descriptor.build(providerConfig, EmbeddingBuildContext())
     } yield {
       val dims = config.embedding.dimensions.orElse(descriptor.dimensionsOf(providerConfig.model)).getOrElse(1536)
-      (new EmbeddingClient(provider, providerId = Some(id)), EmbeddingModelConfig(providerConfig.model, dims))
+      (EmbeddingClient(provider).withProviderId(id), EmbeddingModelConfig(providerConfig.model, dims))
     }
   }
 
@@ -178,11 +179,8 @@ object Llm4sPipeline {
   /**
    * The settings an llm4s `RAG` instance bakes in when it is built, so the key it is kept by (see
    * [[PipelinePool]]): equal settings share an instance, and changing any of them - at runtime,
-   * or for an experiment variant - needs another. topK is not part of it: every call passes it.
-   *
-   * In permission mode, llm4s's permission-filtered search is vector-only (llm4s/llm4s#2716):
-   * fusion, reranking and query transforms do not apply, so [[PipelineSettings.forMode]] leaves
-   * them at the configuration file's values and changing them builds nothing.
+   * or for an experiment variant - needs another. topK and the answer temperature are not part
+   * of it: every call passes them.
    */
   final case class PipelineSettings(
     fusionStrategy: String,
@@ -200,16 +198,6 @@ object Llm4sPipeline {
         reranking = reranking,
         queryTransform = queryTransform
       ))
-
-    /** These settings as they matter in permission mode or not (see the class description). */
-    def forMode(config: AppConfig, permissionMode: Boolean): PipelineSettings =
-      if (!permissionMode) this
-      else copy(
-        fusionStrategy = config.rag.search.fusionStrategy,
-        rrfK = config.rag.search.rrfK,
-        reranking = config.rag.reranking,
-        queryTransform = config.rag.queryTransform
-      )
   }
 
   object PipelineSettings {
@@ -228,24 +216,27 @@ object Llm4sPipeline {
   /** One earlier message of a chat session. */
   final case class ChatTurn(role: String, content: String)
 
+  /** A chat session's earlier messages as the `history` llm4s's answer calls take. */
+  def history(turns: Seq[ChatTurn]): Seq[Message] =
+    turns.map {
+      case ChatTurn("assistant", content) => AssistantMessage(content)
+      case ChatTurn(_, content) => UserMessage(content)
+    }
+
   /**
-   * The conversation sent to the LLM for a chat answer: the system prompt, the session's earlier
-   * turns, then the retrieved context and the question - numbered and worded as llm4s's
-   * `RAG.queryWithAnswer` words its single-shot prompt.
+   * The conversation llm4s's `RAG.queryWithAnswer` sends the LLM - the system prompt, the history,
+   * then the numbered contexts and the question - for the one answer ragbox asks the LLM for
+   * itself: an answer from the chunks above a similarity threshold (see `QueryService`).
    */
-  def chatConversation(
+  def answerConversation(
     systemPrompt: String,
-    history: Seq[ChatTurn],
+    history: Seq[Message],
     contexts: Seq[RAGSearchResult],
     question: String
   ): Conversation = {
     val contextText = contexts.zipWithIndex.map { case (ctx, i) => s"[${i + 1}] ${ctx.content}" }.mkString("\n\n")
-    val earlier: Seq[Message] = history.map {
-      case ChatTurn("assistant", content) => AssistantMessage(content)
-      case ChatTurn(_, content) => UserMessage(content)
-    }
     Conversation(
-      (SystemMessage(systemPrompt) +: earlier) :+
+      (SystemMessage(systemPrompt) +: history) :+
         UserMessage(s"Context:\n$contextText\n\nQuestion: $question\n\nAnswer:")
     )
   }

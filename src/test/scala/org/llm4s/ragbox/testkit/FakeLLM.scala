@@ -1,12 +1,11 @@
 package org.llm4s.ragbox.testkit
 
-import org.llm4s.config.ProvidersConfigModel.NamedProviderConfig
-import org.llm4s.llmconnect.{LLMClient, LlmClientOptions}
-import org.llm4s.llmconnect.config.{ContextWindowResolver, ProviderConfig}
+import org.llm4s.config.NamedProviderConfig
+import org.llm4s.llmconnect.LLMClient
+import org.llm4s.llmconnect.config.ProviderConfig
 import org.llm4s.llmconnect.model.{AssistantMessage, Completion, CompletionOptions, Conversation, StreamedChunk, TokenUsage}
-import org.llm4s.llmconnect.spi.{ProviderConfigSpec, ProviderDescriptor}
-import org.llm4s.model.ModelRegistryService
-import org.llm4s.types.ProviderModelTypes.{ProviderId, asUrl}
+import org.llm4s.llmconnect.spi.{ProviderBuildContext, ProviderConfigContext, ProviderConfigSpec, ProviderDescriptor}
+import org.llm4s.types.ProviderModelTypes.{BaseUrl, ModelName, ProviderId}
 import org.llm4s.types.Result
 
 import java.time.Instant
@@ -21,6 +20,8 @@ import scala.jdk.CollectionConverters._
  * any real provider. Every completion is recorded with its options, so a test can check what was
  * sent - the conversation history, the temperature, a query-rewrite or rerank prompt.
  *
+ * A streamed completion arrives word by word ([[FakeLLM.pieces]]).
+ *
  * Replies: a query-rewrite request (llm4s `LLMQueryRewriter`) gets `rewritten: <query>`; an LLM
  * rerank request gets a JSON array of scores, highest last, so reranking reverses the candidates;
  * anything else gets [[Answer]].
@@ -33,6 +34,11 @@ final class FakeLLM {
 
   /** Completions requested so far, oldest first. */
   def requests: Seq[(Conversation, CompletionOptions)] = calls.asScala.toSeq
+
+  private val streamed = new java.util.concurrent.atomic.AtomicInteger(0)
+
+  /** How many of the completions were streamed (each as its words, one piece per word). */
+  def streamedCount: Int = streamed.get()
 
   /** The base URL the last client was built with. */
   @volatile var lastBaseUrl: Option[String] = None
@@ -57,7 +63,6 @@ final class FakeLLM {
       failing.fold[Result[Completion]](Right(Completion(
         id = s"fake-${counter.incrementAndGet()}",
         created = Instant.now(),
-        content = content,
         model = Model,
         message = AssistantMessage(content),
         usage = Some(TokenUsage(promptTokens = 100, completionTokens = 10, totalTokens = 110))
@@ -66,19 +71,29 @@ final class FakeLLM {
 
     override def streamComplete(
       conversation: Conversation,
-      options: CompletionOptions,
-      onChunk: StreamedChunk => Unit
-    ): Result[Completion] = complete(conversation, options)
+      options: CompletionOptions
+    )(onChunk: StreamedChunk => Unit): Result[Completion] =
+      complete(conversation, options).map { completion =>
+        streamed.incrementAndGet()
+        pieces(completion.content).foreach(piece => onChunk(StreamedChunk(id = completion.id, contentDelta = Some(piece))))
+        completion
+      }
 
-    override def getContextWindow(): Int = 128000
-    override def getReserveCompletion(): Int = 4096
+    override def contextWindow: Int = 128000
+    override def reserveCompletion: Int = 4096
   }
 
-  private final case class Config(model: String, endpointUrl: Option[String]) extends ProviderConfig {
+  private final case class Config(model: ModelName, endpointUrl: Option[BaseUrl]) extends ProviderConfig {
     override def providerId: ProviderId = Id
     override def contextWindow: Int = 128000
     override def reserveCompletion: Int = 4096
-    override def withModel(model: String): ProviderConfig = copy(model = model)
+    override def withModel(model: ModelName): ProviderConfig = copy(model = model)
+    override def apiKeyProvider: Option[org.llm4s.llmconnect.auth.ApiKeyProvider] = None
+    override def network: org.llm4s.http.HttpNetworkSettings = org.llm4s.http.HttpNetworkSettings.default
+    override def timeouts: org.llm4s.llmconnect.config.ProviderTimeouts = org.llm4s.llmconnect.config.ProviderTimeouts.default
+    override def withApiKeyProvider(provider: org.llm4s.llmconnect.auth.ApiKeyProvider): Result[ProviderConfig] = Right(this)
+    override def withNetwork(network: org.llm4s.http.HttpNetworkSettings): ProviderConfig = this
+    override def withTimeouts(timeouts: org.llm4s.llmconnect.config.ProviderTimeouts): ProviderConfig = this
   }
 
   /** The provider, registered as `fake`. */
@@ -86,23 +101,22 @@ final class FakeLLM {
     override def id: ProviderId = Id
     override def configSpec: ProviderConfigSpec = ProviderConfigSpec()
 
-    override def buildConfig(providerName: String, section: NamedProviderConfig)(using
-      ContextWindowResolver
-    ): Result[ProviderConfig] = {
+    override def buildConfig(section: NamedProviderConfig, context: ProviderConfigContext): Result[ProviderConfig] = {
       lastBaseUrl = section.baseUrl.map(_.asUrl)
-      Right(Config(section.model.toString, lastBaseUrl))
+      Right(Config(section.model, section.baseUrl))
     }
 
-    override def buildClient(config: ProviderConfig, options: LlmClientOptions)(using
-      ModelRegistryService
-    ): Result[LLMClient] = Right(new Client)
+    override def build(config: ProviderConfig, context: ProviderBuildContext): Result[LLMClient] = Right(new Client)
   }
 }
 
 object FakeLLM {
   val Id: ProviderId = ProviderId("fake")
-  val Model: String = "fake-model"
+  val Model: ModelName = ModelName("fake-model")
   val Answer: String = "A fake answer."
+
+  /** The pieces a streamed completion of `content` arrives in: its words, each with the space before it. */
+  def pieces(content: String): Seq[String] = content.split("(?= )").toSeq
 
   def apply(): FakeLLM = new FakeLLM
 }

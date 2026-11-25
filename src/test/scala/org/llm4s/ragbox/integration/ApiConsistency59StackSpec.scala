@@ -180,11 +180,14 @@ class ApiConsistency59StackSpec extends AnyFlatSpec with Matchers with PgVectorF
       logged._2.hcursor.downField("configSnapshot").get[Double]("similarityThreshold") shouldBe Right(0.25)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Option[Double]]("similarityThreshold") shouldBe Right(None)
       loggedWithout._2.hcursor.downField("configSnapshot").get[Int]("topK").isRight shouldBe true
-      // Permission mode searches vector-only (llm4s/llm4s#2716): fusion, rrfK and reranking did
-      // not apply, so the snapshot says so and leaves them out (#64)
+      // Permission mode searches as plain mode does: fusion, rrfK and reranking apply, and the
+      // snapshot records them, with the temperature the answer was generated at
       val snapshot = loggedWithout._2.hcursor.downField("configSnapshot")
-      snapshot.get[String]("searchMode") shouldBe Right("vector-only")
-      Seq("fusionStrategy", "rrfK", "reranking").foreach(k => snapshot.downField(k).focus shouldBe Some(Json.Null))
+      snapshot.get[String]("searchMode") shouldBe Right("hybrid")
+      snapshot.get[String]("fusionStrategy") shouldBe Right("rrf")
+      snapshot.get[Int]("rrfK") shouldBe Right(60)
+      snapshot.get[String]("reranking") shouldBe Right("none")
+      snapshot.get[Double]("llmTemperature").isRight shouldBe true
     }
   }
 

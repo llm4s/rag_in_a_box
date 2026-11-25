@@ -40,19 +40,21 @@ admin UI under **API Docs** (`/admin/api-docs`).
 | llm4s feature | Where ragbox uses it |
 |---|---|
 | Provider registry (`ProviderRegistry`, ServiceLoader provider modules) | Every LLM and embedding client is resolved by provider id (`openai/gpt-4o`, `anthropic/...`, `voyage`, `ollama`, or any module on the classpath); nothing in ragbox matches on provider names (`Llm4sPipeline`). |
-| `RAG` pipeline (`RAG.queryWithAnswer`, `RAGConfig`) | Search and answer generation; pipelines are pooled by their settings (`PipelinePool`). |
+| `RAG` pipeline (`RAG.queryWithAnswer`, `RAGConfig`) | Search and answer generation, with per-call completion options (temperature) and chat `history`; pipelines are pooled by their settings (`PipelinePool`). |
+| Streaming answers (`RAG.queryWithAnswerStreaming`) | `/query/stream` and the chat message stream: the contexts, then the answer as the LLM generates it, as Server-Sent Events. |
+| Pre-chunked ingest (`RAG.ingestChunks`, `ingestChunksWithPermissions`) | Each document is chunked once, with its collection's chunking, and llm4s embeds and indexes those chunks. |
 | PostgreSQL hybrid search (pgvector + full-text) and `FusionStrategy` | Default search mode with RRF or weighted fusion. |
-| Permission-aware `PgSearchIndex`, `PrincipalStore`, collections | Users, groups and collection permissions; permission-filtered retrieval. |
+| Permission-aware `PgSearchIndex`, `PrincipalStore`, collections | Users, groups and collection permissions; permission-filtered hybrid retrieval, with the same fusion, reranking and query rewriting. |
 | Rerankers (`CohereReranker`, LLM reranking) and `LLMQueryRewriter` | `RAG_RERANKING_STRATEGY`, `RAG_QUERY_TRANSFORM`. |
 | Chunkers (`ChunkerFactory`: simple, sentence, markdown, semantic) | Ingestion, per-collection chunking and the chunking preview. |
 | `TikaDocumentExtractor` | `POST /api/v1/documents/upload`. |
-| Loaders (`FileLoader`, `UrlLoader`, `WebCrawlerLoader`, `S3Loader`) | Built-in ingestion sources. |
-| `NetworkSecurity` | SSRF policy for URL and crawler ingestion. |
-| Tracing (`Tracing`, `TracingLLMClient`) and the bundled model metadata (`ModelRegistryService`) | Per-query token, latency and cost accounting in the query log. |
+| Loaders (`DirectoryLoader`, `UrlLoader`, `WebCrawlerLoader`, `S3Loader`) | Built-in ingestion sources. |
+| `UrlPolicy` | SSRF policy for URL and crawler ingestion, enforced by the loaders on every fetch. |
+| Tracing (`Tracing`) and the bundled model metadata (`ModelRegistryService`) | Per-query token, latency and cost accounting in the query log. |
 | `Result` / typed errors, `Secret` | Error handling and secret handling throughout. |
 
-Where llm4s does not yet do what ragbox needs, ragbox works around it and links the upstream
-issue; see [ROADMAP.md](ROADMAP.md).
+ragbox aims to use llm4s as intended, with as little of its own machinery as it can; the few
+places it adds something llm4s has no hook for are listed in [ROADMAP.md](ROADMAP.md).
 
 ## Quick start
 

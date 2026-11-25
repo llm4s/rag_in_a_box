@@ -47,7 +47,7 @@ A log entry (`QueryLogEntry`) has:
 | `promptTokens`, `embeddingTokens` | Prompt and embedding tokens |
 | `costUsd` | Estimated cost, for models whose pricing llm4s knows |
 | `userRating` | Feedback rating (1-5), once given |
-| `experimentId`, `variant`, `configSnapshot` | The experiment and group (`baseline` / `variant`) the query was routed to, and the settings it ran with (`topK`, `searchMode`, `fusionStrategy`, `rrfK`, `reranking`, `systemPrompt`, and the `similarityThreshold` override when given; in permission mode `searchMode` is `vector-only` and fusion, `rrfK` and reranking, which do not apply there, are `null`) |
+| `experimentId`, `variant`, `configSnapshot` | The experiment and group (`baseline` / `variant`) the query was routed to, and the settings it ran with (`topK`, `searchMode`, `fusionStrategy`, `rrfK`, `reranking`, `systemPrompt`, `llmTemperature`, and the `similarityThreshold` override when given) |
 | `failed`, `errorMessage` | Whether answering failed, and why |
 | `createdAt` | When the query was made |
 

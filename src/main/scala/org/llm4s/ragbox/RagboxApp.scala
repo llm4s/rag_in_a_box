@@ -141,7 +141,7 @@ object RagboxApp {
       logger <- Resource.eval(Slf4jLogger.create[IO])
       // The ones ragService reads, when the caller built it with them (as Main does); otherwise new
       runtimeConfigManager <- runtimeConfigManager.fold(
-        Resource.make(RuntimeConfigManager(config, pool, permissionMode = ragService.hasPermissions))(_.close())
+        Resource.make(RuntimeConfigManager(config, pool))(_.close())
       )(Resource.pure(_))
       collectionConfigRegistry <- collectionConfigRegistry.fold(
         Resource.make(PgCollectionConfigRegistry(pool))(_.close())

@@ -1,6 +1,6 @@
 import sbt._
 
-val llm4sVersion = "0.6.0"
+val llm4sVersion = "1.0.0"
 
 def isLicenseOrNotice(name: String): Boolean = {
   val lower = name.toLowerCase

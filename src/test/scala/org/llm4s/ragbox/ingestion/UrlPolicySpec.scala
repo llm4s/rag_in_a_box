@@ -113,21 +113,27 @@ class UrlPolicySpec extends AnyFlatSpec with Matchers with TableDrivenPropertyCh
     p.check("file:///etc/passwd").isLeft shouldBe true
   }
 
-  "UrlPolicy.parseNumericIPv4" should "parse the inet_aton forms" in {
-    val cases = Table(
-      ("host", "address"),
-      ("2130706433", "127.0.0.1"),
-      ("0x7f.1", "127.0.0.1"),
-      ("0177.0.0.1", "127.0.0.1"),
-      ("127.1", "127.0.0.1"),
-      ("10.0x10.1", "10.16.0.1"),
-      ("1.2.3.4", "1.2.3.4")
-    )
-    forAll(cases) { (host, address) =>
-      UrlPolicy.parseNumericIPv4(host).map(_.getHostAddress) shouldBe Some(address)
-    }
-    Seq("256.0.0.1", "1.2.3.4.5", "4294967296", "08.0.0.1", "1..2").foreach { host =>
-      withClue(host) { UrlPolicy.parseNumericIPv4(host) shouldBe None }
-    }
+  it should "be the llm4s UrlPolicy the loaders enforce, returning the addresses to connect to" in {
+    val p: org.llm4s.rag.loader.UrlPolicy = policy(UrlPolicyConfig(allowedHosts = Seq("public.example")))
+    p.resolve(new java.net.URI("https://public.example/page")).map(_.map(_.getHostAddress)) shouldBe Right(Seq("93.184.215.14"))
+
+    // A refusal is marked as one, so a crawl skips the page; a host that does not resolve is a failed read
+    val refusedPage = p.resolve(new java.net.URI("https://docs.example.com/"))
+    refusedPage.left.map(_.endpoint) shouldBe Left(UrlPolicy.RefusedEndpoint)
+    val privatePage = policy().resolve(new java.net.URI("http://intranet.example/"))
+    privatePage.left.map(_.endpoint) shouldBe Left(UrlPolicy.RefusedEndpoint)
+    // The address it resolved to stays out of the reason returned to the caller
+    privatePage.left.map(_.message).left.getOrElse("") should not include "10.1.2.3"
+    policy().resolve(new java.net.URI("http://nowhere.example/")).left.map(_.endpoint) shouldBe Left("nowhere.example")
+
+    def failure(error: org.llm4s.error.NetworkError) = org.llm4s.rag.loader.LoadResult.failure("u", error)
+    UrlPolicy.refused(failure(refusedPage.left.toOption.get)) shouldBe true
+    UrlPolicy.refused(failure(policy().resolve(new java.net.URI("http://nowhere.example/")).left.toOption.get)) shouldBe false
+  }
+
+  it should "still refuse cloud metadata addresses when private networks are allowed" in {
+    val p = policy(UrlPolicyConfig(allowPrivateNetworks = true))
+    p.check("http://169.254.169.254/latest/meta-data/").isLeft shouldBe true
+    p.check("http://metadata.example/").isLeft shouldBe true
   }
 }

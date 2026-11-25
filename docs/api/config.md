@@ -57,10 +57,10 @@ GET /api/v1/config
 }
 ```
 
-`rag.searchMode` is `hybrid` (vector + keyword, fused) or `vector` in permission mode, where
-llm4s search is vector-only ([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/issues/2716));
-`fusionApplies` says whether `fusionStrategy`/`rrfK` have any effect, and `limitations` lists
-settings that do not take effect and why.
+`rag.searchMode` is always `hybrid` (vector + keyword search, combined as `fusionStrategy` says)
+and `fusionApplies` always `true`, in permission mode too; earlier versions reported `vector` and
+`false` there, and both fields are kept for their clients. `limitations` lists configured settings
+that do not take effect, and why; it is empty.
 
 These settings are static: they change only with a restart with new environment variables. Use
 the [runtime settings](#runtime) for live changes.

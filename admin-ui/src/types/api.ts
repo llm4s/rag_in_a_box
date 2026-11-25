@@ -426,23 +426,24 @@ export interface HealthResponse {
  * entries logged before them.
  */
 /**
- * The settings a logged query ran with - only those that applied. In permission mode search is
- * vector-only (llm4s/llm4s#2716): `searchMode` is `vector-only` and fusion, rrfK and reranking
- * are null.
+ * The settings a logged query ran with. Queries logged in permission mode by earlier versions,
+ * where search was vector-only then, have `searchMode` `vector-only` and null fusion, rrfK and
+ * reranking.
  */
 export interface QueryConfigSnapshot {
   topK: number
-  /** Fusion strategy, in `hybrid` search (null in `vector-only` search). */
+  /** Fusion strategy (null in `vector-only` entries). */
   fusionStrategy?: string | null
   systemPrompt?: string | null
+  /** The temperature the answer was generated at (null in entries logged before it was applied). */
   llmTemperature?: number | null
   /** Minimum chunk similarity the query applied (null: none). */
   similarityThreshold?: number | null
   /** RRF constant, with `rrf` fusion. */
   rrfK?: number | null
-  /** Reranking strategy: `none`, `cohere` or `llm` (null in `vector-only` search). */
+  /** Reranking strategy: `none`, `cohere` or `llm` (null in `vector-only` entries). */
   reranking?: string | null
-  /** `hybrid` or `vector-only` (permission mode); null in entries logged before it was recorded. */
+  /** `hybrid`; `vector-only` in earlier permission-mode entries; null in entries logged before it was recorded. */
   searchMode?: QuerySearchMode | null
 }
 
@@ -576,7 +577,7 @@ export interface RAGConfigInfo {
   topK: number
   fusionStrategy: string
   rrfK: number
-  /** `hybrid`, or `vector` in permission mode (llm4s/llm4s#2716) */
+  /** Always `hybrid` (earlier versions: `vector` in permission mode). */
   searchMode: string
   /** Whether fusionStrategy and rrfK affect search */
   fusionApplies: boolean
@@ -656,7 +657,9 @@ export interface QueryErrorEvent extends QueryStreamEvent {
 export interface StreamingCallbacks {
   onStart?: (queryId: string) => void
   onContext?: (context: ContextItem, index: number) => void
+  /** The next piece of the answer, as the LLM generates it. */
   onChunk?: (chunk: string) => void
+  /** The whole answer, after its chunks. */
   onAnswer?: (answer: string) => void
   onUsage?: (usage: UsageInfo) => void
   onComplete?: (queryId: string, totalContexts: number) => void
@@ -776,7 +779,7 @@ export interface ExperimentConfigSnapshot {
   topK?: number | null
   fusionStrategy?: string | null
   systemPrompt?: string | null
-  /** Recorded only: llm4s 0.6.0 answers /query at temperature 0.0 (llm4s/llm4s#2715). */
+  /** The temperature the group's answers are generated at (0 to 2). */
   llmTemperature?: number | null
   rrfK?: number | null
   /** `none`, `cohere` or `llm`. */
@@ -889,7 +892,7 @@ export interface QueryOverrides {
   topK?: number
   fusionStrategy?: string
   systemPrompt?: string
-  /** Minimum vector similarity (0 to 1). (`llmTemperature` is rejected: llm4s 0.6.0, #40.) */
+  /** Minimum vector similarity (0 to 1). */
   similarityThreshold?: number
 }
 
@@ -1017,6 +1020,9 @@ export interface ChatCompleteEvent {
 export interface ChatStreamingCallbacks {
   onStart?: (queryId: string, userMessageId: string) => void
   onContext?: (context: ContextItem, index: number) => void
+  /** The next piece of the answer, as the LLM generates it. */
+  onChunk?: (chunk: string) => void
+  /** The whole answer, after its chunks. */
   onAnswer?: (answer: string) => void
   onUsage?: (usage: UsageInfo) => void
   onComplete?: (queryId: string, totalContexts: number) => void

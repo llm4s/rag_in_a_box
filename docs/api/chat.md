@@ -167,10 +167,10 @@ POST /api/v1/chat/sessions/{id}/messages/stream
 ```
 
 Same body. The response is `text/event-stream` with the same events as the
-[streaming query](/api/query#stream) (`start`, `context`, `answer`, `usage`, `complete`,
-`error`); the `start` event's data is `{"queryId", "userMessageId"}`. The answer arrives as one
-`answer` event once complete ([llm4s/llm4s#2717](https://github.com/llm4s/llm4s/issues/2717)).
-The assistant message is stored when the stream completes. `queryId` is the id of the answer's
+[streaming query](/api/query#stream) (`start`, `context`, `chunk`, `answer`, `usage`, `complete`,
+`error`); the `start` event's data is `{"queryId", "userMessageId"}`. The answer is streamed as
+the LLM generates it, with the session's history, and the assistant message is stored before the
+`answer` event is sent. `queryId` is the id of the answer's
 query-log entry, which the stored assistant message links to (`queryLogId`).
 
 A failed answer (either endpoint) is stored as an error reply and logged in the query log as a

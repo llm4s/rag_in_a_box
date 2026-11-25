@@ -1,16 +1,13 @@
 package org.llm4s.ragbox.ingestion
 
-import org.llm4s.core.safety.NetworkSecurity
-import org.llm4s.error.ProcessingError
-import org.llm4s.rag.loader.{DocumentLoader, FileLoader, LoadResult}
+import org.llm4s.error.NetworkError
+import org.llm4s.rag.loader.{DocumentLoader, LoadResult}
+import org.llm4s.rag.loader.{UrlPolicy => Llm4sUrlPolicy}
 import org.slf4j.LoggerFactory
 
-import java.io.IOException
 import java.net.{InetAddress, URI}
-import java.nio.file.{FileVisitOption, FileVisitResult, Files, Path, Paths, SimpleFileVisitor}
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.{Files, Path, Paths}
 import java.util.Locale
-import scala.collection.mutable
 import scala.util.Try
 
 /**
@@ -32,9 +29,9 @@ final case class IngestionPolicyConfig(
  * @param allowedHosts         when non-empty, the only hosts that may be fetched: an entry
  *                             matches the host exactly, and `*.example.com` matches any subdomain
  *                             of example.com. Allowed hosts are still subject to the address check.
- * @param allowPrivateNetworks skip the check that a URL's host resolves only to public addresses.
- *                             Note that the llm4s 0.6.0 loaders apply their own, non-configurable
- *                             check when they fetch, so private addresses are still refused there.
+ * @param allowPrivateNetworks allow hosts that resolve to loopback, private and other non-public
+ *                             addresses (to crawl an intranet). Cloud metadata addresses stay
+ *                             refused.
  */
 final case class UrlPolicyConfig(
   allowedHosts: Seq[String] = Seq.empty,
@@ -70,7 +67,7 @@ final class PathPolicy(roots: Seq[String]) {
    * Check that `raw` names a directory under an allowed root.
    *
    * @return the path to walk (as given, so document ids stay as before) and its resolved form,
-   *         which the walk must stay inside
+   *         which llm4s's `DirectoryLoader` stays inside
    */
   def checkDirectory(raw: String): Either[String, PathPolicy.Allowed] = {
     val outside = "Path is outside the allowed ingestion roots"
@@ -109,7 +106,7 @@ object PathPolicy {
    * A directory that may be ingested.
    *
    * @param path the path as requested, to walk from
-   * @param real the directory with symlinks resolved; the walk never leaves it
+   * @param real the directory with symlinks resolved
    * @param root the allowed root it is under, resolved
    */
   final case class Allowed(path: Path, real: Path, root: Path)
@@ -143,83 +140,31 @@ object PathPolicy {
 }
 
 /**
- * Loads the files under a directory, like llm4s's `DirectoryLoader`, but never leaves `confineTo`.
+ * Which URLs ingestion may fetch, as the llm4s [[Llm4sUrlPolicy UrlPolicy]] its loaders enforce:
+ * http and https only, no embedded credentials, optionally only allow-listed hosts, and (unless
+ * private networks are allowed) only hosts whose every address is public.
  *
- * `DirectoryLoader` follows symlinks wherever they point. This walk follows a symlink only when
- * its target is inside `confineTo`, loads only regular files, and checks each file again just
- * before reading it. Document ids and metadata are the same as `DirectoryLoader`'s.
+ * The loaders ask it for every URL they fetch - each configured URL, each crawled page, each
+ * redirect hop and each robots.txt - and connect to one of the addresses it returns, so a host
+ * cannot pass the check and then resolve somewhere else (DNS rebinding). ragbox also asks it
+ * before a run ([[check]]), to refuse a request with a reason instead of failing the fetch.
  *
- * @param maxDepth maximum recursion depth (0 = the directory itself only)
- */
-final case class ConfinedDirectoryLoader(
-  path: Path,
-  confineTo: Path,
-  extensions: Set[String],
-  recursive: Boolean = true,
-  metadata: Map[String, String] = Map.empty,
-  maxDepth: Int = 10
-) extends DocumentLoader {
-
-  private def inside(p: Path): Boolean = Try(p.toRealPath()).toOption.exists(_.startsWith(confineTo))
-
-  private def matches(file: Path): Boolean = {
-    val name = file.getFileName.toString.toLowerCase(Locale.ROOT)
-    extensions.exists(ext => name.endsWith(s".${ext.toLowerCase(Locale.ROOT)}"))
-  }
-
-  def load(): Iterator[LoadResult] = {
-    val dir = path.toFile
-    if (!dir.isDirectory || !inside(path))
-      Iterator(LoadResult.listingFailure(path.toString, ProcessingError("load", s"Not a readable directory: $path")))
-    else {
-      val files = mutable.ArrayBuffer.empty[Path]
-      val visitor = new SimpleFileVisitor[Path] {
-        override def preVisitDirectory(d: Path, attrs: BasicFileAttributes): FileVisitResult =
-          if (inside(d)) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SUBTREE
-
-        override def visitFile(f: Path, attrs: BasicFileAttributes): FileVisitResult = {
-          if (attrs.isRegularFile && matches(f) && inside(f)) files += f
-          FileVisitResult.CONTINUE
-        }
-
-        // Unreadable entries and symlink loops are skipped, as DirectoryLoader skips unreadable ones
-        override def visitFileFailed(f: Path, e: IOException): FileVisitResult = FileVisitResult.CONTINUE
-      }
-      val depth = if (recursive) maxDepth + 1 else 1
-      Files.walkFileTree(path, java.util.EnumSet.of(FileVisitOption.FOLLOW_LINKS), depth, visitor)
-
-      val fileMetadata = metadata + ("directory" -> dir.getName)
-      files.iterator.flatMap { file =>
-        // The tree can change after the walk: check again just before reading
-        if (inside(file) && Files.isRegularFile(file)) FileLoader(file, fileMetadata).load()
-        else Iterator(LoadResult.skipped(file.toString, "Outside the ingestion directory"))
-      }
-    }
-  }
-
-  def description: String = s"ConfinedDirectoryLoader($path, ${extensions.mkString(",")})"
-}
-
-/**
- * Which URLs may be fetched: http and https only, optionally only from allow-listed hosts, and
- * (unless private networks are allowed) only hosts whose every address is public.
+ * The address rules are llm4s's (`UrlPolicy.Standard`); the allow-list is ragbox's, as its entries
+ * match exactly unless they start with `*.`.
  *
- * Hosts are resolved here, but the loader resolves them again when it connects, so a host whose
- * DNS answer changes in between (DNS rebinding) is not covered by this check alone.
- *
- * @param resolve name resolution, replaceable in tests
+ * @param lookup name resolution, replaceable in tests
  */
 final class UrlPolicy(
   config: UrlPolicyConfig,
-  resolve: String => Seq[InetAddress] = host => InetAddress.getAllByName(host).toSeq
-) {
+  lookup: String => Seq[InetAddress] = host => InetAddress.getAllByName(host).toSeq
+) extends Llm4sUrlPolicy {
   import UrlPolicy._
 
   private val allowedHosts: Seq[String] =
     config.allowedHosts.map(normalizeHost).filter(_.nonEmpty)
 
   /** Whether `host` is allowed by the host allow-list (always, when the list is empty). */
-  def hostAllowed(host: String): Boolean = {
+  private def hostAllowed(host: String): Boolean = {
     val h = normalizeHost(host)
     allowedHosts.isEmpty || allowedHosts.exists { entry =>
       if (entry.startsWith("*.")) h.endsWith(entry.drop(1))
@@ -227,104 +172,77 @@ final class UrlPolicy(
     }
   }
 
-  /** Whether the host of `url` is allowed by the host allow-list. */
-  def urlHostAllowed(url: String): Boolean =
-    hostOf(url).exists(hostAllowed)
+  /**
+   * The addresses of a host: an IP literal is parsed, never looked up, and a host that only looks
+   * like a number (`2130706433`, `0x7f.1`, `127.1`: forms some resolvers read as an address) is
+   * refused rather than guessed at.
+   */
+  private def addressesOf(host: String): Either[NetworkError, Seq[InetAddress]] =
+    if (host.contains(':') || DottedQuad.matches(host))
+      Try(Seq(InetAddress.getByName(host))).toEither.left.map(_ => refusal("URL host is not a valid IP address"))
+    else if (NumericLooking.matches(host)) Left(refusal("URL host is not a valid IP address"))
+    else
+      Try(lookup(host)).toOption.filter(_.nonEmpty)
+        .toRight(NetworkError(Unresolved, None, host))
 
-  /** Check `raw`; this may resolve its host, so it can block. */
+  private val standard: Llm4sUrlPolicy.Standard =
+    Llm4sUrlPolicy.Standard(allowPrivateNetworks = config.allowPrivateNetworks, resolver = addressesOf)
+
+  /** What llm4s's loaders ask before each fetch: the addresses `url` may be fetched from. */
+  def resolve(url: URI): Either[NetworkError, Seq[InetAddress]] =
+    for {
+      scheme <- Right(Option(url.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse(""))
+      _ <- Either.cond(scheme == "http" || scheme == "https", (), refusal("Only http and https URLs are allowed"))
+      _ <- Either.cond(url.getRawUserInfo == null, (), refusal("URLs with embedded credentials are not allowed"))
+      host <- Option(url.getHost).map(normalizeHost).filter(_.nonEmpty).toRight(refusal("URL has no valid host"))
+      _ <- Either.cond(hostAllowed(host), (), refusal("Host is not in the allowed hosts list (ingestion.url.allowed-hosts)"))
+      addresses <- standard.resolve(url).left.map {
+        // What llm4s refused (a blocked name or address range): the detail stays in the log
+        case blocked if blocked.endpoint == Llm4sRefusal =>
+          logger.debug(s"URL refused: ${blocked.message}")
+          refusal("URL host is a private, loopback, link-local or otherwise non-public address")
+        case other => other
+      }
+    } yield addresses
+
+  /** Check `raw` before a run; this may resolve its host, so it can block. The reason is safe to return to the caller. */
   def check(raw: String): Either[String, URI] =
     for {
       _ <- Either.cond(raw != null && raw.trim.nonEmpty, (), "URL is required")
       _ <- Either.cond(raw.length <= MaxUrlLength, (), s"URL is longer than $MaxUrlLength characters")
       uri <- Try(new URI(raw.trim)).toEither.left.map(_ => "URL is not valid")
-      scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("")
-      _ <- Either.cond(scheme == "http" || scheme == "https", (), "Only http and https URLs are allowed")
-      _ <- Either.cond(uri.getRawUserInfo == null, (), "URLs with embedded credentials are not allowed")
-      host <- hostOf(uri).toRight("URL has no valid host")
-      _ <- Either.cond(hostAllowed(host), (), "Host is not in the allowed hosts list (ingestion.url.allowed-hosts)")
-      _ <- if (config.allowPrivateNetworks) Right(()) else checkAddresses(host)
+      _ <- resolve(uri).left.map(_.message)
     } yield uri
-
-  private def checkAddresses(host: String): Either[String, Unit] = {
-    val blocked = "URL host is a private, loopback, link-local or otherwise non-public address"
-    val addresses: Either[String, Seq[InetAddress]] =
-      if (NetworkSecurity.isBlockedHostname(host) || host == "localhost" || host.endsWith(".localhost"))
-        Left(blocked)
-      else if (host.contains(':'))
-        // IPv6 literal: parsed, never looked up
-        Try(Seq(InetAddress.getByName(host))).toEither.left.map(_ => "URL host is not a valid IPv6 address")
-      else if (looksNumeric(host))
-        // Every numeric form a resolver may accept (2130706433, 0x7f.1, 0177.0.0.1, 127.1), parsed here
-        parseNumericIPv4(host).map(Seq(_)).toRight("URL host is not a valid IPv4 address")
-      else
-        Try(resolve(host)).toEither.left.map(_ => "URL host could not be resolved")
-          .filterOrElse(_.nonEmpty, "URL host could not be resolved")
-    addresses.flatMap(as => Either.cond(!as.exists(isBlockedAddress), (), blocked))
-  }
 }
 
 object UrlPolicy {
 
+  private val logger = LoggerFactory.getLogger(classOf[UrlPolicy])
+
   val MaxUrlLength = 2048
 
-  /**
-   * Whether `address` is not a public unicast address: loopback, private (RFC 1918, ULA
-   * fc00::/7), link-local (including cloud metadata 169.254.169.254 and fd00:ec2::254),
-   * unspecified, multicast, CGNAT 100.64.0.0/10, reserved and documentation ranges, and IPv6
-   * forms that embed a blocked IPv4 address (IPv4-mapped, NAT64, 6to4).
-   */
-  def isBlockedAddress(address: InetAddress): Boolean = NetworkSecurity.isBlockedIP(address)
+  /** The `endpoint` of the `NetworkError` for a URL the policy refuses (not one it could not resolve). */
+  val RefusedEndpoint = "ingestion-policy"
 
-  /** The host of `url`, lower case, without IPv6 brackets or a trailing dot. */
-  def hostOf(url: String): Option[String] = Try(new URI(url.trim)).toOption.flatMap(hostOf)
+  /** The `endpoint` llm4s's `UrlPolicy.Standard` gives its own refusals. */
+  private val Llm4sRefusal = "ssrf-protection"
 
-  private def hostOf(uri: URI): Option[String] =
-    Option(uri.getHost)
-      // java.net.URI rejects some hosts that java.net.URL (which the loaders connect with) accepts
-      .orElse(Try(uri.toURL.getHost).toOption)
-      .map(normalizeHost)
-      .filter(_.nonEmpty)
+  private val Unresolved = "URL host could not be resolved"
 
+  private def refusal(reason: String): NetworkError = NetworkError(reason, None, RefusedEndpoint)
+
+  /** Whether `result` is a fetch the policy refused, as opposed to one that failed. */
+  def refused(result: LoadResult): Boolean = result match {
+    case LoadResult.Failure(_, error: NetworkError, _, _) => error.endpoint == RefusedEndpoint
+    case _ => false
+  }
+
+  /** `host`, lower case, without IPv6 brackets or a trailing dot. */
   private def normalizeHost(host: String): String =
     host.trim.toLowerCase(Locale.ROOT).stripPrefix("[").stripSuffix("]").stripSuffix(".")
 
-  private val DecimalPart = "[0-9]+".r
-  private val HexPart = "0x[0-9a-f]*".r
-
-  private def looksNumeric(host: String): Boolean =
-    host.split("\\.", -1).forall(p => DecimalPart.matches(p) || HexPart.matches(p))
-
-  /**
-   * Parse the legacy `inet_aton` IPv4 forms: one to four parts, each decimal, octal (leading 0)
-   * or hex (0x), the last part filling the remaining bytes.
-   */
-  private[ingestion] def parseNumericIPv4(host: String): Option[InetAddress] = {
-    def part(p: String): Option[Long] =
-      if (HexPart.matches(p)) {
-        val digits = p.drop(2)
-        if (digits.isEmpty) Some(0L) else Try(java.lang.Long.parseLong(digits, 16)).toOption
-      } else if (p.length > 1 && p.startsWith("0")) Try(java.lang.Long.parseLong(p.drop(1), 8)).toOption
-      else Try(java.lang.Long.parseLong(p)).toOption
-
-    val parts = host.split("\\.", -1).toSeq
-    if (parts.isEmpty || parts.size > 4 || parts.exists(_.isEmpty) || parts.exists(_.length > 20)) None
-    else {
-      val values = parts.map(part)
-      if (values.exists(_.isEmpty)) None
-      else {
-        val vs = values.flatten
-        val leading = vs.init
-        val last = vs.last
-        val lastBytes = 4 - leading.size
-        if (leading.exists(v => v < 0 || v > 255) || last < 0 || last >= (1L << (8 * lastBytes))) None
-        else {
-          val value = leading.foldLeft(0L)((acc, v) => (acc << 8) | v) << (8 * lastBytes) | last
-          val bytes = Array.tabulate[Byte](4)(i => ((value >> (8 * (3 - i))) & 0xff).toByte)
-          Try(InetAddress.getByAddress(bytes)).toOption
-        }
-      }
-    }
-  }
+  private val DottedQuad = "(?:[0-9]{1,3}\\.){3}[0-9]{1,3}".r
+  private val NumericLooking = "(?:(?:0x[0-9a-f]*|[0-9]+)\\.)*(?:0x[0-9a-f]*|[0-9]+)".r
 }
 
 /** A loader that yields fixed results: here, the refusals for URLs the policy rejected. */
@@ -334,14 +252,11 @@ private[ingestion] final case class FixedResultsLoader(results: Seq[LoadResult])
   def description: String = s"FixedResultsLoader(${results.size})"
 }
 
-/** `underlying`'s results, with each successful document passed through `filter`. */
-private[ingestion] final case class FilteredLoader(
+/** `underlying`'s results, each passed through `transform`. */
+private[ingestion] final case class MappedLoader(
   underlying: DocumentLoader,
-  filter: LoadResult.Success => LoadResult
+  transform: LoadResult => LoadResult
 ) extends DocumentLoader {
-  def load(): Iterator[LoadResult] = underlying.load().map {
-    case success: LoadResult.Success => filter(success)
-    case other => other
-  }
+  def load(): Iterator[LoadResult] = underlying.load().map(transform)
   def description: String = underlying.description
 }

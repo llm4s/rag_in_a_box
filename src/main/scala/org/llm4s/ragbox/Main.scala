@@ -114,7 +114,7 @@ object Main extends IOApp {
 
       // Runtime settings (restored from the database) and per-collection chunking configs, which
       // the RAG service reads on every query and ingest
-      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, dbPool, permissionMode = searchIndexOpt.isDefined))(_.close())
+      runtimeConfigManager <- Resource.make(RuntimeConfigManager(config, dbPool))(_.close())
       collectionConfigRegistry <- Resource.make(PgCollectionConfigRegistry(dbPool))(_.close())
 
       // Create RAG service with PostgreSQL-backed document registry

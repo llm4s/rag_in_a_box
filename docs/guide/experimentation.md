@@ -48,17 +48,12 @@ These can be set per experiment group with immediate effect:
 | `rrfK` | RRF constant (with `rrf` fusion) | 1-1000 |
 | `systemPrompt` | Instructions for the LLM | Custom text |
 | `reranking` | Rerank candidates before top-k | none, cohere, llm |
+| `llmTemperature` | Temperature the answer is generated at | 0.0-2.0 |
 
-An experiment group runs with **all** of its settings: topK is passed with each query, and the
-others select an llm4s pipeline built for (and cached by) the group's settings, so a prompt or
-fusion experiment really compares two pipelines. In permission mode llm4s search is vector-only,
-so fusion, rrfK and reranking have no effect there
-([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/issues/2716)).
-
-**Temperature is not testable on `/query` yet.** llm4s 0.6.0 `RAG.queryWithAnswer` answers at
-temperature 0.0 ([llm4s/llm4s#2715](https://github.com/llm4s/llm4s/issues/2715), fixed upstream
-for the next release). An `llmTemperature` in a group's config is stored but not applied, and the
-logged config snapshot records no temperature.
+An experiment group runs with **all** of its settings, in permission mode too: topK and the
+temperature are passed with each query, and the others select an llm4s pipeline built for (and
+cached by) the group's settings, so a prompt or fusion experiment really compares two pipelines.
+The logged config snapshot records what each query ran with.
 
 ### Warm Parameters
 
@@ -144,7 +139,7 @@ queries are not routed.
 | `rrfK` | int | RRF constant |
 | `systemPrompt` | string | LLM system prompt |
 | `reranking` | string | `none`, `cohere` (needs `COHERE_API_KEY`) or `llm` |
-| `llmTemperature` | double | Stored, not applied to `/query` in llm4s 0.6.0 (see above) |
+| `llmTemperature` | double | Temperature the answer is generated at (0 to 2) |
 
 A setting a group leaves out is the runtime setting. Creating an experiment validates it (400
 Bad Request otherwise): a name of 1-255 characters, `trafficSplit` between 0 and 1, and valid
@@ -548,7 +543,18 @@ curl -X POST http://localhost:8080/api/v1/experiments \
   }'
 ```
 
-(Temperature experiments wait for the llm4s release with llm4s/llm4s#2715.)
+A temperature experiment is the same shape:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/experiments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Warmer answers",
+    "baselineConfig": { "llmTemperature": 0.0 },
+    "variantConfig": { "llmTemperature": 0.7 },
+    "trafficSplit": 0.5
+  }'
+```
 
 ---
 

@@ -28,7 +28,7 @@ class RAGServiceFacadeSpec extends AnyFlatSpec with Matchers {
     def collections: CollectionStore = new MockCollectionStore
     def query(auth: UserAuthorization, pattern: CollectionPattern, embedding: Array[Float], topK: Int, filter: Option[MetadataFilter]): Either[LLMError, Seq[ScoredRecord]] =
       fail("query")
-    def ingest(path: CollectionPath, documentId: String, chunks: Seq[ChunkWithEmbedding], metadata: Map[String, String], readableBy: Set[PrincipalId]): Either[LLMError, Int] =
+    def ingest(path: CollectionPath, documentId: String, chunks: Seq[ChunkWithEmbedding], metadata: Map[String, String], readableBy: Set[PrincipalId]): Either[LLMError, Seq[String]] =
       fail("ingest")
     def deleteDocument(path: CollectionPath, documentId: String): Either[LLMError, Long] = fail("deleteDocument")
     def clearCollection(path: CollectionPath): Either[LLMError, Long] = fail("clearCollection")

@@ -40,8 +40,7 @@ object ExperimentStatus {
  * out is the runtime setting; each one given is applied to the group's queries, through a
  * pipeline built for (and cached by) the group's settings.
  *
- * @param llmTemperature recorded, but not applied to `/query` answers: llm4s 0.6.0
- *                       `RAG.queryWithAnswer` answers at temperature 0.0 (llm4s/llm4s#2715)
+ * @param llmTemperature the temperature the group's answers are generated at, 0 to 2
  * @param reranking      `none`, `cohere` or `llm` (see `RAG_RERANKING_STRATEGY`)
  */
 final case class ExperimentConfigSnapshot(

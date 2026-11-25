@@ -108,7 +108,7 @@ class RuntimeConfigIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
       } yield ()
     })
     val (conversation, options) = llm.requests.last
-    options.temperature shouldBe 0.2
+    options.temperature shouldBe Some(0.2)
     conversation.messages.head.content shouldBe "Chat prompt."
   }
 
@@ -150,19 +150,17 @@ class RuntimeConfigIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     restored.config.rrfK shouldBe 60
   }
 
-  "An update response" should "say where a setting does not apply" in withContainers { pg =>
+  "An update response" should "report every query setting as effective immediately, in permission mode too" in withContainers { pg =>
     val db = freshDatabase(pg)
     val (plain, permission) = run(
       liveService(db, permissions = false).use(_.runtime.update(RuntimeConfigUpdateRequest(llmTemperature = Some(0.1), rrfK = Some(10))))
         .flatMap(p => liveService(freshDatabase(pg), permissions = true).use(_.runtime.update(RuntimeConfigUpdateRequest(rrfK = Some(10)))).map(p -> _))
     )
-    val temperature = plain.changes.find(_.field == "llmTemperature").get
-    temperature.effectiveImmediately shouldBe true
-    temperature.note.get should include("llm4s/llm4s#2715")
-    plain.changes.find(_.field == "rrfK").get.effectiveImmediately shouldBe true
-    val rrf = permission.changes.find(_.field == "rrfK").get
-    rrf.effectiveImmediately shouldBe false
-    rrf.note.get should include("llm4s/llm4s#2716")
+    (plain.changes ++ permission.changes).map(_.field).sorted shouldBe Seq("llmTemperature", "rrfK", "rrfK")
+    (plain.changes ++ permission.changes).foreach { change =>
+      change.effectiveImmediately shouldBe true
+      change.note shouldBe None
+    }
   }
 
   // ============================================================
