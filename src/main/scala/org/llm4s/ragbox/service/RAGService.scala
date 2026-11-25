@@ -2,6 +2,7 @@ package org.llm4s.ragbox.service
 
 import cats.effect.IO
 import cats.syntax.all._
+import fs2.Stream
 import org.llm4s.chunking.ChunkingConfig
 import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.rag.RAG
@@ -104,6 +105,18 @@ class RAGService(
       case None => queryWithAnswer(question, topK, overrides)
     }
 
+  /** [[answer]], streamed as it is generated. */
+  def answerStream(
+    principal: Principal,
+    question: String,
+    collectionPattern: String,
+    topK: Option[Int],
+    overrides: RAGService.SettingsOverride = RAGService.SettingsOverride.Empty
+  ): Stream[IO, AnswerEvent] =
+    Stream.eval(authorizationFor(principal)).flatMap { auth =>
+      streamAnswer(question, auth.map(_ -> collectionPattern), Nil, topK, overrides)
+    }
+
   /** Search as `principal`: permission-filtered to `collectionPattern` in permission mode. */
   def searchAs(principal: Principal, query: String, collectionPattern: String, topK: Option[Int]): IO[SearchResponse] =
     authorizationFor(principal).flatMap {
@@ -115,6 +128,12 @@ class RAGService(
   def chatAs(principal: Principal, question: String, history: Seq[ChatTurn], collectionPattern: String): IO[QueryResponse] =
     authorizationFor(principal).flatMap { auth =>
       chatAnswer(question, history, auth.map(_ -> collectionPattern), topK = None)
+    }
+
+  /** [[chatAs]], streamed as it is generated. */
+  def chatStreamAs(principal: Principal, question: String, history: Seq[ChatTurn], collectionPattern: String): Stream[IO, AnswerEvent] =
+    Stream.eval(authorizationFor(principal)).flatMap { auth =>
+      streamAnswer(question, auth.map(_ -> collectionPattern), history, topK = None, RAGService.SettingsOverride.Empty)
     }
 
   /**
@@ -270,7 +289,7 @@ class RAGService(
     queryWithAnswer(question, topK, RAGService.SettingsOverride.Empty)
 
   def queryWithAnswer(question: String, topK: Option[Int], overrides: RAGService.SettingsOverride): IO[QueryResponse] =
-    queries.queryWithAnswer(question, topK, overrides)
+    queries.answer(question, None, Nil, topK, overrides)
 
   def searchWithPermissions(query: String, auth: UserAuthorization, collectionPattern: String, topK: Option[Int]): IO[SearchResponse] =
     queries.searchWithPermissions(query, auth, collectionPattern, topK)
@@ -282,15 +301,32 @@ class RAGService(
     topK: Option[Int],
     overrides: RAGService.SettingsOverride = RAGService.SettingsOverride.Empty
   ): IO[QueryResponse] =
-    queries.queryWithPermissionsAndAnswer(question, auth, collectionPattern, topK, overrides)
+    queries.answer(question, Some(auth -> collectionPattern), Nil, topK, overrides)
 
+  /**
+   * A chat reply: an answer with the session's earlier messages as conversation history, at the
+   * runtime settings.
+   */
   def chatAnswer(
     question: String,
     history: Seq[ChatTurn],
     permissions: Option[(UserAuthorization, String)],
     topK: Option[Int]
   ): IO[QueryResponse] =
-    queries.chatAnswer(question, history, permissions, topK)
+    queries.answer(question, permissions, history, topK, RAGService.SettingsOverride.Empty)
+
+  /**
+   * An answer streamed as it is generated (see [[QueryService.answerStream]]): what [[answerStream]]
+   * and [[chatStreamAs]] go through.
+   */
+  def streamAnswer(
+    question: String,
+    permissions: Option[(UserAuthorization, String)],
+    history: Seq[ChatTurn],
+    topK: Option[Int],
+    overrides: RAGService.SettingsOverride
+  ): Stream[IO, AnswerEvent] =
+    queries.answerStream(question, permissions, history, topK, overrides)
 
   // ============================================================
   // Statistics and visibility (StatsService)
@@ -367,13 +403,16 @@ object RAGService {
    * @param similarityThreshold minimum vector similarity (0-1) of a retrieved chunk for it to be
    *                            passed to the LLM and returned (see [[QueryService.aboveThreshold]]).
    *                            Applied per query; it does not select a different pipeline.
+   * @param llmTemperature      the temperature the answer is generated at (0 to 2), passed with
+   *                            the call as its completion options; it selects no pipeline either
    */
   final case class SettingsOverride(
     fusionStrategy: Option[String] = None,
     rrfK: Option[Int] = None,
     systemPrompt: Option[String] = None,
     reranking: Option[String] = None,
-    similarityThreshold: Option[Double] = None
+    similarityThreshold: Option[Double] = None,
+    llmTemperature: Option[Double] = None
   )
 
   object SettingsOverride {
@@ -411,9 +450,6 @@ object RAGService {
 
   /** How long a provider's live model list is cached by [[RAGService.getProviders]]. */
   val ModelListTtlMillis: Long = 10 * 60 * 1000L
-
-  /** The id llm4s indexes chunk `index` of a document under (outside permission mode). */
-  def chunkId(documentId: String, index: Int): String = s"$documentId-chunk-$index"
 
   /**
    * Resolve external principal ids (`user:alice@example.com`, `group:managers`) to llm4s

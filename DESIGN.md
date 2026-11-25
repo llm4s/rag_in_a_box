@@ -44,7 +44,7 @@ is planned, the [ROADMAP](ROADMAP.md); for how to extend it, [docs/EXTENDING.md]
 | Language, runtime | Scala 3.7, Java 21 |
 | HTTP | http4s (Ember server and client), circe |
 | Effects | cats-effect 3 (`IO`, `Resource`, `Supervisor`) |
-| RAG | llm4s 0.6.0 (`llm4s-rag` plus the OpenAI, Anthropic, Voyage and Ollama provider modules) |
+| RAG | llm4s 1.0.0 (`llm4s-rag` plus the OpenAI, Anthropic, Voyage and Ollama provider modules) |
 | Database | PostgreSQL 15+ with pgvector; plain JDBC over HikariCP; Flyway migrations |
 | Admin UI | Vue 3, Vuetify 3, Pinia, Vite, Swagger UI (served at `/admin`) |
 | Tests | ScalaTest, Testcontainers (PostgreSQL, Keycloak), Vitest, Playwright |
@@ -179,20 +179,24 @@ or plain path, so routes never branch on the mode.
   settings), embed the chunks, write them to llm4s (`SearchIndex.ingest` in permission mode, the
   pipeline otherwise), record the document and its content hash in the **`DocumentRegistry`**
   and its chunks in the **`ChunkStore`** (for visibility). Unchanged content is skipped.
-- **Query**: `RAG.queryWithAnswer` with the current runtime settings (top-K per call) through a
-  pooled pipeline, inside `QueryMetricsTracing.collect`, which attributes llm4s trace events
-  (embedding usage, completion usage, cost) to the request. The query log records latency per
-  stage, tokens, cost, the experiment variant and failures.
-- **Chat**: retrieval for the new message (permission-filtered), then the answer LLM is called
-  with a conversation ragbox builds itself: system prompt, the session's recent messages
-  (`RAG_CHAT_HISTORY_MESSAGES`), the retrieved context and the question (llm4s's
-  `queryWithAnswer` takes no history yet, llm4s/llm4s#2733).
+- **Query**: `RAG.queryWithAnswer` (`queryWithPermissionsAndAnswer` in permission mode) through a
+  pooled pipeline, with the call's own top-K and completion options (the temperature), inside
+  `QueryMetricsTracing.collect`, which attributes llm4s trace events (stage durations, embedding
+  usage, completion usage, cost) to the request. The query log records latency per stage, tokens,
+  cost, the experiment variant and failures. A query with a similarity threshold is the one
+  answer ragbox composes itself (retrieve, filter, then the answer LLM), as llm4s has no hook
+  between retrieval and the answer.
+- **Chat**: the same call, with the session's recent messages (`RAG_CHAT_HISTORY_MESSAGES`) as
+  its `history`.
+- **Streaming**: `/query/stream` and the chat message stream use the `...Streaming` form of the
+  call: llm4s hands over the contexts before the model is called, then each piece of the answer
+  as the provider sends it, and ragbox forwards them as Server-Sent Events.
 - **Uploads**: `TikaDocumentExtractor` extracts text from PDF, DOCX, HTML and other formats.
-- All llm4s calls are synchronous, so they run on the blocking pool (`IO.blocking`).
+- All llm4s calls are synchronous, so they run on the blocking pool (`IO.blocking`, or
+  `IO.interruptible` for a stream, so a client that disconnects ends the model call).
 
-In permission mode llm4s searches vector-only, so fusion, keyword search, reranking and query
-rewriting do not apply; `GET /api/v1/config` reports this (`searchMode`, `fusionApplies`,
-`limitations`). See the ROADMAP for this and the other llm4s workarounds.
+Permission mode searches as plain mode does: fusion, keyword search, reranking and query
+rewriting all apply to `queryWithPermissions`.
 
 ### Runtime configuration
 

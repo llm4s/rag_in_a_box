@@ -54,7 +54,7 @@ const rows = computed<Row[]>(() => {
   return result
 })
 
-/** Permission-mode search is vector-only, so the query ran without fusion or reranking. */
+/** A query logged in permission mode by an earlier version, where search was vector-only: no fusion or reranking. */
 const vectorOnly = computed(() => props.snapshot?.searchMode === 'vector-only')
 </script>
 
@@ -75,8 +75,8 @@ const vectorOnly = computed(() => props.snapshot?.searchMode === 'vector-only')
       </tbody>
     </v-table>
     <div v-if="vectorOnly" class="text-caption text-medium-emphasis mt-1" data-test="snapshot-vector-only-note">
-      Fusion, RRF k and reranking did not apply: permission-mode search is vector-only
-      (llm4s/llm4s#2716).
+      Fusion, RRF k and reranking did not apply: permission-mode search was vector-only when
+      this query was logged.
     </div>
     <div v-if="!rows.length" class="text-grey text-body-2" data-test="snapshot-none">
       No configuration was recorded for this query.

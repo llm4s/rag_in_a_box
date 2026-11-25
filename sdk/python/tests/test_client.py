@@ -197,6 +197,18 @@ def test_query_sends_include_metadata_and_similarity_threshold(client):
 
 
 @responses.activate
+def test_query_sends_temperature(client):
+    responses.post(
+        f"{BASE}/api/v1/query",
+        json={"answer": "a", "contexts": []},
+        match=[matchers.json_params_matcher({
+            "question": "q?", "overrides": {"similarityThreshold": 0.6, "llmTemperature": 0.0}
+        })],
+    )
+    assert client.query("q?", similarity_threshold=0.6, temperature=0.0).answer == "a"
+
+
+@responses.activate
 def test_search_parses_results(client):
     responses.post(f"{BASE}/api/v1/search",
                    json={"results": [{"content": "c", "score": 0.5, "metadata": {"a": "b"}}], "count": 1})

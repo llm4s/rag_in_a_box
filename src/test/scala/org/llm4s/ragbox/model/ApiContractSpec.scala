@@ -83,7 +83,7 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     topK = 5, fusionStrategy = "rrf", rrfK = 60, systemPrompt = "You are helpful.",
     llmTemperature = 0.1, chunkingStrategy = "sentence", chunkSize = 800, chunkOverlap = 150
   )
-  private val settingUpdate = SettingUpdateResult("llmTemperature", "0.7", "0.2", "hot", effectiveImmediately = true, note = Some("Applies to chat answers."))
+  private val settingUpdate = SettingUpdateResult("llmTemperature", "0.7", "0.2", "hot", effectiveImmediately = true, note = Some("Applies to documents ingested from now on."))
   private val settingValidation = SettingValidation(
     field = "topK", valid = false, currentValue = "5", proposedValue = "500",
     error = Some("topK must be between 1 and 100"), warning = Some("Large topK increases latency")
@@ -223,8 +223,8 @@ class ApiContractSpec extends AnyFlatSpec with Matchers {
     // Pipeline config and query metrics
     entry("RAGConfigInfo", RAGConfigInfo(
       chunkingStrategy = "sentence", chunkSize = 800, chunkOverlap = 150, topK = 5, fusionStrategy = "rrf",
-      rrfK = 60, searchMode = "vector", fusionApplies = false, reranking = "none", queryTransform = "none",
-      limitations = Seq("fusionStrategy and rrfK have no effect (llm4s/llm4s#2716).")
+      rrfK = 60, searchMode = "hybrid", fusionApplies = true, reranking = "none", queryTransform = "none",
+      limitations = Seq("A configured setting that does not take effect, and why.")
     )),
     entry("QueryMetrics", queryMetrics),
     // POST /query: the answer with the query-log id POST /feedback takes (#54)

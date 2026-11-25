@@ -151,6 +151,30 @@ class PermissionLifecycleSpec extends AnyFlatSpec with Matchers with PgVectorFix
     }.unsafeRunSync()
   }
 
+  it should "clear every collection's documents, and keep the collections, when everything is cleared" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    permissionService(db).use { service =>
+      IO {
+        createCollection(service, "energy")
+        service.ingestWithPermissions("energy", "doc-energy", solarText).unsafeRunSync()
+        service.ingestDocument(solarText, "doc-default", Map.empty).unsafeRunSync()
+        searchIds(service) should contain allOf ("doc-energy", "doc-default")
+
+        service.clearAll.unsafeRunSync()
+
+        searchIds(service) shouldBe empty
+        storedVectors(db, "doc-energy") shouldBe empty
+        storedVectors(db, "doc-default") shouldBe empty
+        service.listDocumentEntries.unsafeRunSync() shouldBe empty
+        service.collections.get.exists(CollectionPath.unsafe("energy")) shouldBe Right(true)
+
+        // The collections still take documents
+        service.ingestWithPermissions("energy", "doc-again", solarText).unsafeRunSync()
+        searchIds(service, "energy") shouldBe Seq("doc-again")
+      }
+    }.unsafeRunSync()
+  }
+
   it should "remove vectors when pruning" in withContainers { pg =>
     val db = freshDatabase(pg)
     permissionService(db).use { service =>

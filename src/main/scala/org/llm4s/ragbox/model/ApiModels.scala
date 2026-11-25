@@ -225,8 +225,8 @@ final case class SyncStatusResponse(
  * Override parameters for query experimentation.
  * Allows testing different configurations without changing system defaults.
  *
- * @param llmTemperature      rejected (400): llm4s 0.6.0 answers `/query` at temperature 0.0
- *                            (llm4s/llm4s#2715; ragbox #40 adopts the fix)
+ * @param llmTemperature      the temperature the answer is generated at, 0 to 2 (default: the
+ *                            runtime `llmTemperature`)
  * @param similarityThreshold minimum vector similarity (0 to 1) of a chunk to be used for the
  *                            answer and returned; keyword-only matches are kept
  */
@@ -269,13 +269,15 @@ final case class QueryResponse(
 ) derives Codec.AsObject
 
 /**
- * Per-query metrics, from what llm4s traced while answering (`RAGConfig.withTracing` and
- * `TracingLLMClient`).
+ * Per-query metrics, from what llm4s traced while answering (`RAGConfig.withTracing`). The
+ * latencies are the stage durations llm4s measured.
  *
- * @param embeddingLatencyMs time spent embedding the query, when the provider reported it
- * @param searchLatencyMs    the rest of retrieval (search, reranking, query rewriting); known
- *                           only when the embedding time is
+ * @param embeddingLatencyMs time spent embedding the query
+ * @param searchLatencyMs    the rest of retrieval (search, reranking, query rewriting)
  * @param llmLatencyMs       time spent generating the answer
+ * @param chunksRetrieved    chunks the search returned: the reranker's candidates when there is
+ *                           one, and every retrieved chunk for a query with a similarity threshold
+ * @param chunksUsed         chunks the answer was generated from
  * @param embeddingTokens    tokens embedded
  * @param promptTokens       LLM prompt tokens, over every completion (rewriting, reranking, answer)
  * @param completionTokens   LLM completion tokens, over every completion
@@ -356,9 +358,11 @@ final case class LLMConfigInfo(
 ) derives Codec.AsObject
 
 /**
- * @param searchMode     `hybrid` (vector + keyword, fused) or `vector` (permission mode, where
- *                       llm4s search is vector-only: llm4s/llm4s#2716)
- * @param fusionApplies  whether `fusionStrategy` and `rrfK` affect search
+ * @param searchMode     always `hybrid`: the pipeline's hybrid search, combined as
+ *                       `fusionStrategy` says, in permission mode too. Earlier versions reported
+ *                       `vector` in permission mode; kept for their clients
+ * @param fusionApplies  whether `fusionStrategy` and `rrfK` affect search: always true; kept
+ *                       for clients of earlier versions, which reported false in permission mode
  * @param reranking      reranking strategy: none, cohere or llm
  * @param queryTransform pre-retrieval query transform: none or llm-rewrite
  * @param limitations    settings that do not take effect, and why
@@ -555,18 +559,19 @@ object ErrorResponse {
  * Configuration snapshot for experiment tracking.
  * Records the effective configuration a query ran with - only the settings that applied.
  *
- * In permission mode llm4s 0.6.0 permission-filtered search is vector-only (llm4s/llm4s#2716),
- * so fusion, the RRF constant and reranking do not apply: the snapshot records
- * `searchMode = vector-only` and no `fusionStrategy`, `rrfK` or `reranking`.
+ * Entries logged by versions before llm4s 1.0 in permission mode, where search was vector-only
+ * then, record `searchMode = vector-only` and no `fusionStrategy`, `rrfK` or `reranking`; and no
+ * entry of those versions records a temperature, as `/query` answers took none.
  *
- * @param fusionStrategy the fusion strategy, in `hybrid` search mode (none in `vector-only` mode)
+ * @param fusionStrategy the fusion strategy (none in those earlier permission-mode entries)
+ * @param llmTemperature the temperature the answer was generated at
  * @param similarityThreshold the minimum chunk similarity the query applied (none: no threshold)
  * @param rrfK the RRF constant, with `rrf` fusion (none otherwise, and in entries logged before it was recorded)
- * @param reranking the reranking strategy (`none`, `cohere` or `llm`), in `hybrid` search mode
- *                  (none in `vector-only` mode, and in entries logged before it was recorded)
- * @param searchMode how the query searched: `hybrid` (vector + keyword, fused, then reranked) or
- *                   `vector-only` (permission mode, llm4s/llm4s#2716); none in entries logged
- *                   before it was recorded
+ * @param reranking the reranking strategy (`none`, `cohere` or `llm`); none in entries logged
+ *                  before it was recorded
+ * @param searchMode `hybrid`: the pipeline's hybrid search ran, combined as `fusionStrategy`
+ *                   says, then reranked. `vector-only` in those earlier permission-mode entries;
+ *                   none in entries logged before it was recorded
  */
 final case class QueryConfigSnapshot(
   topK: Int,
@@ -581,10 +586,10 @@ final case class QueryConfigSnapshot(
 
 object QueryConfigSnapshot {
 
-  /** Vector and keyword search, fused, then reranked: every search setting applies. */
+  /** The pipeline's hybrid search, combined as the fusion strategy says, then reranked: every search setting applies. */
   val HybridSearch: String = "hybrid"
 
-  /** Permission-mode search: vector-only in llm4s 0.6.0 (llm4s/llm4s#2716). */
+  /** Entries logged in permission mode by versions before llm4s 1.0, where search was vector-only. */
   val VectorOnlySearch: String = "vector-only"
 }
 
@@ -724,7 +729,7 @@ final case class QueryContextEvent(
 }
 
 /**
- * Event containing a chunk of the answer (for streaming LLM responses).
+ * Event containing the next piece of the answer's text, as the LLM generates it.
  */
 final case class QueryChunkEvent(
   chunk: String,
@@ -734,7 +739,7 @@ final case class QueryChunkEvent(
 }
 
 /**
- * Event containing the complete answer (when streaming not available).
+ * Event containing the complete answer, after its `chunk` events.
  */
 final case class QueryAnswerEvent(
   answer: String,

@@ -16,6 +16,7 @@ import type {
   ChatStartEvent,
   QueryContextEvent,
   QueryAnswerEvent,
+  QueryChunkEvent,
   QueryUsageEvent,
   ChatCompleteEvent,
   QueryErrorEvent
@@ -187,6 +188,11 @@ function processSSEMessage(message: string, callbacks: ChatStreamingCallbacks): 
       case 'context': {
         const event = parsed as QueryContextEvent
         callbacks.onContext?.(event.context, event.index)
+        break
+      }
+      case 'chunk': {
+        const event = parsed as QueryChunkEvent
+        callbacks.onChunk?.(event.chunk)
         break
       }
       case 'answer': {

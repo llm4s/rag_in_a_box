@@ -824,15 +824,15 @@
     "chunkOverlap" : 150,
     "chunkSize" : 800,
     "chunkingStrategy" : "sentence",
-    "fusionApplies" : false,
+    "fusionApplies" : true,
     "fusionStrategy" : "rrf",
     "limitations" : [
-      "fusionStrategy and rrfK have no effect (llm4s/llm4s#2716)."
+      "A configured setting that does not take effect, and why."
     ],
     "queryTransform" : "none",
     "reranking" : "none",
     "rrfK" : 60,
-    "searchMode" : "vector",
+    "searchMode" : "hybrid",
     "topK" : 5
   },
   "RuntimeConfig" : {
@@ -871,7 +871,7 @@
         "effectiveImmediately" : true,
         "field" : "llmTemperature",
         "newValue" : "0.2",
-        "note" : "Applies to chat answers.",
+        "note" : "Applies to documents ingested from now on.",
         "oldValue" : "0.7"
       }
     ],
@@ -909,7 +909,7 @@
     "effectiveImmediately" : true,
     "field" : "llmTemperature",
     "newValue" : "0.2",
-    "note" : "Applies to chat answers.",
+    "note" : "Applies to documents ingested from now on.",
     "oldValue" : "0.7"
   },
   "SettingValidation" : {

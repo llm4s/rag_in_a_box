@@ -919,8 +919,12 @@ paths:
       tags: [Query]
       summary: Answer a question, as server-sent events
       description: |
-        Auth: as `POST /api/v1/query`. Each SSE `data` is a JSON object whose `event` field is
-        `start`, `context` (one per context), `answer`, `usage`, `complete` or `error`.
+        Auth: as `POST /api/v1/query`. The answer is streamed as the LLM generates it. The
+        events, in order, each with a JSON object as its `data`: `start`; `context`, one per
+        chunk the answer is generated from, before the LLM is called; `chunk`, the next piece of
+        the answer's text (`{"chunk"}`), one per piece the provider sends; `answer`, the whole
+        answer; `usage`, when the provider reported it; and `complete`. A failure at any point
+        after `start` is an `error` event, the last one.
         The `queryId` of `start` and `complete` is the query-log id `POST /feedback` takes.
       requestBody:
         required: true
@@ -1153,8 +1157,10 @@ paths:
       tags: [Chat]
       summary: Send a message, answer as server-sent events
       description: |
-        Auth: as GET of the session. Events: `start`, `context`, `answer`, `usage`, `complete`
-        (or `error`). The answer arrives as one event once complete.
+        Auth: as GET of the session. The events of `POST /api/v1/query/stream`: `start`
+        (with `userMessageId`), `context`, `chunk` (the answer, piece by piece, as the LLM
+        generates it), `answer` (the whole answer), `usage` and `complete`, or `error`. The
+        assistant message is stored before `answer` is sent.
       parameters:
         - name: id
           in: path
@@ -3374,10 +3380,9 @@ components:
           type: string
         llmTemperature:
           type: number
-          description: |
-            Not supported: a request that sets it is rejected with 400. llm4s 0.6.0 answers
-            `/query` at temperature 0.0 (llm4s/llm4s#2715); the runtime `llmTemperature` applies
-            to chat.
+          minimum: 0
+          maximum: 2
+          description: The temperature the answer is generated at (default, the runtime `llmTemperature`)
         similarityThreshold:
           type: number
           minimum: 0
@@ -3769,8 +3774,10 @@ components:
               type: integer
             searchMode:
               type: string
+              description: Always `hybrid` (the pipeline's hybrid search, combined as `fusionStrategy` says). Earlier versions reported `vector` in permission mode.
             fusionApplies:
               type: boolean
+              description: Always true; earlier versions reported false in permission mode.
             reranking:
               type: string
             queryTransform:
@@ -4289,11 +4296,13 @@ components:
             fusionStrategy:
               type: string
               nullable: true
-              description: The fusion strategy, in hybrid search (null in vector-only search, where fusion does not apply)
+              description: The fusion strategy (null in vector-only entries)
             systemPrompt:
               type: string
             llmTemperature:
               type: number
+              nullable: true
+              description: The temperature the answer was generated at (absent in queries logged before it was applied)
             similarityThreshold:
               type: number
               nullable: true
@@ -4305,14 +4314,15 @@ components:
             reranking:
               type: string
               nullable: true
-              description: The reranking strategy (none, cohere or llm), in hybrid search (null in vector-only search; absent in queries logged before it was recorded)
+              description: The reranking strategy (none, cohere or llm); null in vector-only entries, absent in queries logged before it was recorded
             searchMode:
               type: string
               enum: [hybrid, vector-only]
               nullable: true
               description: >-
-                How the query searched: hybrid, or vector-only in permission mode, where llm4s search
-                is vector-only (llm4s/llm4s#2716) and fusionStrategy, rrfK and reranking are null.
+                hybrid: the pipeline's hybrid search, combined as fusionStrategy says, then
+                reranked. vector-only: a query logged in permission mode by an earlier version,
+                where search was vector-only then (fusionStrategy, rrfK and reranking are null).
                 Absent in queries logged before it was recorded.
         createdAt:
           type: string

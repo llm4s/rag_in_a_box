@@ -3,8 +3,7 @@ package org.llm4s.ragbox.service
 import cats.effect.IO
 import cats.syntax.all._
 import org.llm4s.chunking.{ChunkerFactory, DocumentChunker}
-import org.llm4s.llmconnect.{EmbeddingClient, LLMClient}
-import org.llm4s.llmconnect.config.EmbeddingModelConfig
+import org.llm4s.llmconnect.LLMClient
 import org.llm4s.llmconnect.spi.ProviderRegistry
 import org.llm4s.model.ModelRegistryService
 import org.llm4s.rag.RAG
@@ -64,11 +63,12 @@ final class RagPipelines(
   val metricsTracing = new QueryMetricsTracing
 
   /**
-   * The answer LLM, resolved through the provider registry (see [[Llm4sPipeline.llmClient]]) and
-   * traced with [[metricsTracing]]. When it cannot be built the reason is logged and the service
-   * runs without answer generation: search still works, answers fail with [[LlmUnavailableError]].
+   * The answer LLM, resolved through the provider registry (see [[Llm4sPipeline.llmClient]]):
+   * the client itself, and the same client traced with [[metricsTracing]]. When it cannot be built
+   * the reason is logged and the service runs without answer generation: search still works,
+   * answers fail with [[LlmUnavailableError]].
    */
-  lazy val llmClient: Option[LLMClient] = {
+  private lazy val builtLlm: Option[(LLMClient, LLMClient)] = {
     val built = modelRegistry.flatMap { registry =>
       given ModelRegistryService = registry
       Llm4sPipeline.llmClient(config, providerRegistry)
@@ -76,12 +76,21 @@ final class RagPipelines(
     built match {
       case Right((client, providerConfig)) =>
         RagPipelines.logger.info(s"LLM '${config.llm.model}' resolved through the llm4s provider registry")
-        Some(TracingLLMClient(client, metricsTracing, providerConfig))
+        Some((client, TracingLLMClient(client, metricsTracing, providerConfig)))
       case Left(error) =>
         RagPipelines.logger.warn(s"LLM '${config.llm.model}' is not available, answer generation is disabled: ${error.formatted}")
         None
     }
   }
+
+  /** The answer LLM, traced, for the completions ragbox asks for itself (see `QueryService`). */
+  lazy val llmClient: Option[LLMClient] = builtLlm.map(_._2)
+
+  /**
+   * The answer LLM as the pipelines are given it: untraced, as an llm4s `RAG` built `withTracing`
+   * traces its own model calls (a traced client would report each call twice).
+   */
+  private def pipelineLlm: Option[LLMClient] = builtLlm.map(_._1)
 
   /** The answer LLM, or [[LlmUnavailableError]]. */
   def requireLlm: IO[LLMClient] = IO.fromOption(llmClient)(LlmUnavailableError())
@@ -99,7 +108,7 @@ final class RagPipelines(
       scala.util.Try(
         for {
           registry <- modelRegistry
-          ragConfig <- Llm4sPipeline.ragConfig(effective, searchIndex, llmClient, metricsTracing)
+          ragConfig <- Llm4sPipeline.ragConfig(effective, searchIndex, pipelineLlm, metricsTracing)
           rag <- {
             given ModelRegistryService = registry
             ragConfig.build(
@@ -125,7 +134,6 @@ final class RagPipelines(
     val now = settings.current
     PipelineSettings.from(config)
       .copy(fusionStrategy = now.fusionStrategy, rrfK = now.rrfK, systemPrompt = now.systemPrompt)
-      .forMode(config, hasPermissions)
   }
 
   // The pipeline settings the runtime settings selected last, so the pipeline they replace is retired
@@ -168,7 +176,6 @@ final class RagPipelines(
         systemPrompt = overrides.systemPrompt.getOrElse(base.systemPrompt),
         reranking = reranking
       )
-      .forMode(config, hasPermissions)
   }
 
   /** Run `f` with the pipeline `overrides` select (the current one when they change nothing). */
@@ -185,24 +192,6 @@ final class RagPipelines(
 
   /** Whether the pipeline for the current settings has been built (without trying to build it). */
   def ready: IO[Boolean] = pipelines.isBuilt(currentPipelineSettings)
-
-  // The embedding client and model, once built (a failure is retried on next use)
-  private val embedderRef = new AtomicReference[Option[(EmbeddingClient, EmbeddingModelConfig)]](None)
-
-  /** The embedding client permission-mode ingest embeds with, traced like the pipeline's. */
-  def embedder: IO[(EmbeddingClient, EmbeddingModelConfig)] =
-    embedderRef.get() match {
-      case Some(built) => IO.pure(built)
-      case None =>
-        blockingResult(modelRegistry.flatMap { registry =>
-          given ModelRegistryService = registry
-          Llm4sPipeline.embedder(config, providerRegistry)
-        }).map { case (client, model) =>
-          val traced = (client.withTracing(metricsTracing), model)
-          embedderRef.compareAndSet(None, Some(traced))
-          embedderRef.get().getOrElse(traced)
-        }
-    }
 
   // Chunkers by strategy, once built (the semantic one needs the embedding provider)
   private val chunkers = TrieMap.empty[ChunkerFactory.Strategy, DocumentChunker]

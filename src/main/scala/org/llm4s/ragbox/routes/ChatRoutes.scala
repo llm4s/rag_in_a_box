@@ -2,7 +2,6 @@ package org.llm4s.ragbox.routes
 
 import cats.effect.IO
 import cats.syntax.all._
-import fs2.Stream
 import io.circe.Json
 import io.circe.syntax._
 import org.http4s._
@@ -11,13 +10,10 @@ import org.llm4s.ragbox.validation.InputValidation
 import org.http4s.circe._
 import org.http4s.circe.CirceEntityCodec._
 import org.http4s.dsl.io._
-import org.http4s.headers.`Content-Type`
 import org.llm4s.ragbox.config.AppConfig
 import org.llm4s.ragbox.model._
 import org.llm4s.ragbox.registry.{ChatSessionRegistry, QueryLogRegistryBase, QueryLogging}
 import org.llm4s.ragbox.service.{InvalidRequestError, Llm4sPipeline, RAGService}
-
-import java.util.UUID
 
 /**
  * HTTP routes for chat session operations.
@@ -225,8 +221,8 @@ object ChatRoutes {
         }
       } yield response
 
-    // POST /api/v1/chat/sessions/:id/messages/stream - Send message with SSE streaming. The answer
-    // arrives as one event once complete: llm4s has no streaming RAG answer API (llm4s/llm4s#2717).
+    // POST /api/v1/chat/sessions/:id/messages/stream - Send message, the reply streamed as
+    // Server-Sent Events while the LLM generates it (see AnswerSse)
     case (req @ POST -> Root / "api" / "v1" / "chat" / "sessions" / sessionId / "messages" / "stream") as principal =>
       for {
         sessionOpt <- visibleSession(chatRegistry, principal, sessionId)
@@ -259,88 +255,43 @@ object ChatRoutes {
               }
 
               // The query-log id the answer is logged under (the events' queryId)
-              queryId = UUID.randomUUID().toString
+              queryId <- IO.randomUUID.map(_.toString)
 
               userId = Some(PermissionContext.userId(principal))
-
-              // Create SSE stream
-              sseStream: Stream[IO, String] = Stream.eval(IO.realTimeInstant).flatMap { startTime =>
-                // Start event with user message ID
-                val startEvent = formatSSE("start", Json.obj(
-                  "queryId" -> Json.fromString(queryId),
-                  "userMessageId" -> Json.fromString(userMessage.id)
-                ).noSpaces)
-
-                // Execute query and stream results
-                val queryStream = Stream.eval {
-                  ragService.chatAs(principal, body.content, history, session.collectionPattern).attempt
-                }.flatMap {
-                  case Right(queryResponse) =>
-                    // Stream contexts
-                    val contextEvents = Stream.emits(queryResponse.contexts.zipWithIndex.map { case (ctx, idx) =>
-                      formatSSE("context", QueryContextEvent(ctx, idx).asJson.noSpaces)
-                    })
-
-                    // Answer event
-                    val answerEvent = Stream.emit(formatSSE("answer", QueryAnswerEvent(queryResponse.answer).asJson.noSpaces))
-
-                    // Usage event
-                    val usageEvent = queryResponse.usage match {
-                      case Some(usage) => Stream.emit(formatSSE("usage", QueryUsageEvent(usage).asJson.noSpaces))
-                      case None => Stream.empty
-                    }
-
-                    // Complete event
-                    val completeEvent = Stream.emit(formatSSE("complete", QueryCompleteEvent(queryId, queryResponse.contexts.size).asJson.noSpaces))
-
-                    // Save message and log asynchronously
-                    val saveEffect = Stream.eval {
-                      for {
-                        endTime <- IO.realTimeInstant
-                        totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
-
-                        // Log to query_logs
-                        logId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse, id = Some(queryId))
-
-                        // Save assistant message
-                        _ <- chatRegistry.addMessage(
-                          sessionId = sessionId,
-                          role = "assistant",
-                          content = queryResponse.answer,
-                          contexts = Some(queryResponse.contexts),
-                          usage = queryResponse.usage,
-                          queryLogId = Some(logId)
-                        )
-                      } yield ()
-                    }.drain
-
-                    contextEvents ++ answerEvent ++ usageEvent ++ completeEvent ++ saveEffect
-
-                  case Left(e) =>
-                    // Report the error, then log the failure (under the stream's queryId) and
-                    // save it as the reply, linked to that log entry
-                    Stream.eval(ErrorHandling.clientMessage(e, "Query failed")).flatMap { errorMessage =>
-                      Stream.emit(formatSSE("error", QueryErrorEvent("query_failed", errorMessage).asJson.noSpaces)) ++
-                        Stream.eval(for {
-                          endTime <- IO.realTimeInstant
-                          totalLatencyMs = (endTime.toEpochMilli - startTime.toEpochMilli).toInt
-                          failureLogId <- logChatFailure(queryLogRegistry, body.content, session.collectionPattern, userId, totalLatencyMs, e, Some(queryId))
-                          _ <- chatRegistry.addMessage(
-                            sessionId = sessionId,
-                            role = "assistant",
-                            content = s"$ErrorReplyPrefix $errorMessage",
-                            queryLogId = failureLogId
-                          )
-                        } yield ()).drain
-                    }
-                }
-
-                Stream.emit(startEvent) ++ queryStream
-              }
-
-              // Raw UTF-8: Ok(sseStream) would pick the circe encoder and JSON-quote every event
-              resp <- IO.pure(Response[IO](Status.Ok).withBodyStream(sseStream.through(fs2.text.utf8.encode)).withContentType(`Content-Type`(MediaType.`text/event-stream`)))
-            } yield resp)
+            } yield AnswerSse.response(
+              start = Json.obj(
+                "queryId" -> Json.fromString(queryId),
+                "userMessageId" -> Json.fromString(userMessage.id)
+              ),
+              queryId = queryId,
+              events = ragService.chatStreamAs(principal, body.content, history, session.collectionPattern)
+            )(
+              // Log the answer and store it as the reply, linked to its query-log entry
+              onCompleted = (queryResponse, totalLatencyMs) =>
+                for {
+                  logId <- QueryLogging.logAnswer(queryLogRegistry, body.content, Some(session.collectionPattern), userId, totalLatencyMs, queryResponse, id = Some(queryId))
+                  _ <- chatRegistry.addMessage(
+                    sessionId = sessionId,
+                    role = "assistant",
+                    content = queryResponse.answer,
+                    contexts = Some(queryResponse.contexts),
+                    usage = queryResponse.usage,
+                    queryLogId = Some(logId)
+                  )
+                } yield (),
+              // Log the failure (under the stream's queryId) and store it as the reply
+              onFailed = (e, totalLatencyMs) =>
+                for {
+                  errorMessage <- ErrorHandling.clientMessage(e, "Query failed")
+                  failureLogId <- logChatFailure(queryLogRegistry, body.content, session.collectionPattern, userId, totalLatencyMs, e, Some(queryId))
+                  _ <- chatRegistry.addMessage(
+                    sessionId = sessionId,
+                    role = "assistant",
+                    content = s"$ErrorReplyPrefix $errorMessage",
+                    queryLogId = failureLogId
+                  )
+                } yield ()
+            ))
             }
         }
       } yield response
@@ -417,9 +368,6 @@ object ChatRoutes {
       .toSeq
 
   /**
-   * Format a message as a Server-Sent Event.
-   */
-  /**
    * Log a chat answer that failed, like `/query` does (`failed = true`), so analytics error rates
    * and experiment results count chat failures too. A rejected request (invalid input) is not a
    * query and is not logged; logging never fails the request.
@@ -441,7 +389,4 @@ object ChatRoutes {
         QueryLogging.logFailure(queryLogRegistry, question, Some(collectionPattern), userId, totalLatencyMs, e, id = id)
           .attempt.map(_.toOption)
     }
-
-  private def formatSSE(event: String, data: String): String =
-    s"event: $event\ndata: $data\n\n"
 }

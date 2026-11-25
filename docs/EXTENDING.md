@@ -92,8 +92,8 @@ settings gets its own instance; in-flight requests keep the instance they leased
 instances are closed when their last lease is released. If you add a pipeline setting that can
 change at runtime, add it to `PipelineSettings` so it becomes part of the pool key.
 
-Note: in permission mode llm4s queries the `SearchIndex` vector-only (llm4s/llm4s#2716), so
-fusion, reranking and query transforms only apply outside permission mode.
+Settings that llm4s takes with each call - topK, and the answer's completion options (the
+temperature) - are not part of the key: they are passed with the call.
 
 ### 3. Ingestion Sources
 

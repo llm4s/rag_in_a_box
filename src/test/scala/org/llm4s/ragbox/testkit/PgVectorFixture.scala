@@ -186,7 +186,7 @@ trait PgVectorFixture extends TestContainerForAll { self: TestSuite =>
     val config = configure(testConfig(db, llm))
     for {
       ds <- pool(db)
-      runtime <- Resource.eval(RuntimeConfigManager(config, ds, permissionMode = permissions))
+      runtime <- Resource.eval(RuntimeConfigManager(config, ds))
       collections <- Resource.eval(PgCollectionConfigRegistry(ds))
       index <-
         if (!permissions) Resource.pure[IO, Option[PgSearchIndex]](None)

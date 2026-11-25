@@ -76,13 +76,12 @@ GET /api/v1/analytics/queries
 Failed queries are logged too (`failed: true`, `errorMessage`). `variant` is `baseline` or
 `variant` when the query ran in an [experiment](/api/experiments).
 
-`configSnapshot` is the configuration the query ran with - only the settings that applied:
-`topK`, `searchMode`, `fusionStrategy`, `rrfK` (with `rrf` fusion), `reranking`, `systemPrompt`
-and `similarityThreshold` (`null` when the query set none). `searchMode` is `hybrid`, or
-`vector-only` in permission mode, where llm4s search is vector-only
-([llm4s/llm4s#2716](https://github.com/llm4s/llm4s/issues/2716)): fusion, `rrfK` and reranking
-did not apply, so they are `null`. Queries logged by earlier versions have no `searchMode`, and
-the oldest no `rrfK` or `reranking`. The admin UI shows it in the query's details on the
+`configSnapshot` is the configuration the query ran with: `topK`, `searchMode`, `fusionStrategy`,
+`rrfK` (with `rrf` fusion), `reranking`, `systemPrompt`, `llmTemperature` and
+`similarityThreshold` (`null` when the query set none). `searchMode` is `hybrid`. Queries logged
+in permission mode by earlier versions, where search was vector-only then, have `vector-only`
+and `null` fusion, `rrfK` and reranking; queries logged before a field was recorded do not have
+it (`searchMode`, `llmTemperature`, and for the oldest `rrfK` and `reranking`). The admin UI shows it in the query's details on the
 Analytics page.
 
 ---

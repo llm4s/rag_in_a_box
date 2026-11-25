@@ -123,7 +123,7 @@ Do not set `DB_MIGRATE_ON_START=false` for the first start of a Flyway release u
 |----------|---------|-------------|
 | `LLM_MODEL` | `openai/gpt-4o` | LLM model (format: provider/model, any llm4s provider) |
 | `LLM_BASE_URL` | - | Provider endpoint when not the default (e.g. a remote Ollama) |
-| `LLM_TEMPERATURE` | `0.1` | Temperature for chat answers (single-shot `/query` answers use llm4s's fixed 0.0) |
+| `LLM_TEMPERATURE` | `0.1` | Temperature answers are generated at (`/query` and chat) |
 | `EMBEDDING_PROVIDER` | `openai` | Embedding provider (openai, voyage, ollama) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
 | `EMBEDDING_DIMENSIONS` | from llm4s's model table | Embedding dimensions |

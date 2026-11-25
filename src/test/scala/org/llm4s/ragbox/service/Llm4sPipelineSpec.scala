@@ -29,7 +29,7 @@ class Llm4sPipelineSpec extends AnyFlatSpec with Matchers {
 
     Llm4sPipeline.llmClient(withLlm("ollama/llama3.1", Some("http://ollama.internal:11434"), noKeys), registry)
       .map(_._2.endpointUrl) shouldBe Right(Some("http://ollama.internal:11434"))
-    Llm4sPipeline.llmClient(withLlm("anthropic/claude-sonnet-4-5"), registry).map(_._2.model) shouldBe
+    Llm4sPipeline.llmClient(withLlm("anthropic/claude-sonnet-4-5"), registry).map(_._2.model.asString) shouldBe
       Right("claude-sonnet-4-5")
     Llm4sPipeline.llmClient(withLlm("gpt-4o-mini"), registry).map(_._2.providerId.asString) shouldBe Right("openai")
   }

@@ -4,9 +4,8 @@ import org.llm4s.error.ConfigurationError
 import org.llm4s.llmconnect.config.EmbeddingProviderConfig
 import org.llm4s.llmconnect.model.{EmbeddingRequest, EmbeddingResponse, EmbeddingUsage}
 import org.llm4s.llmconnect.provider.EmbeddingProvider
-import org.llm4s.llmconnect.spi.{EmbeddingProviderDescriptor, EmbeddingProviderSection, ProviderRegistry}
-import org.llm4s.security.Secret
-import org.llm4s.types.ProviderModelTypes.ProviderId
+import org.llm4s.llmconnect.spi.{EmbeddingBuildContext, EmbeddingConfigContext, EmbeddingConfigSpec, EmbeddingProviderDescriptor, EmbeddingProviderSection, ProviderRegistry}
+import org.llm4s.types.ProviderModelTypes.{BaseUrl, ModelName, ProviderId}
 import org.llm4s.types.Result
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -50,15 +49,16 @@ final class FakeEmbeddings(failFirstBuilds: Int = 0) {
 
   private object Descriptor extends EmbeddingProviderDescriptor {
     override val id: ProviderId = ProviderId("openai")
-    override val modelDimensions: Map[String, Int] = Map(Model -> Dimensions)
+    override val configSpec: EmbeddingConfigSpec = EmbeddingConfigSpec()
+    override val modelDimensions: Map[ModelName, Int] = Map(ModelName(Model) -> Dimensions)
 
     override def buildConfig(
       section: EmbeddingProviderSection,
-      modelOverride: Option[String]
+      context: EmbeddingConfigContext
     ): Result[EmbeddingProviderConfig] =
-      Right(EmbeddingProviderConfig("", modelOverride.orElse(section.model).getOrElse(Model), Secret("")))
+      Right(EmbeddingProviderConfig(id, BaseUrl("http://fake-embeddings.invalid"), context.modelOverride.getOrElse(ModelName(Model))))
 
-    override def build(config: EmbeddingProviderConfig): Result[EmbeddingProvider] =
+    override def build(config: EmbeddingProviderConfig, context: EmbeddingBuildContext): Result[EmbeddingProvider] =
       if (remainingBuildFailures.getAndDecrement() > 0) Left(ConfigurationError("fake embedding provider unavailable"))
       else Right(new Provider)
   }

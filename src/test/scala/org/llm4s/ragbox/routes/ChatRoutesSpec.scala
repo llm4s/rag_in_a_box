@@ -257,7 +257,7 @@ class ChatRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
       event -> data
     }
 
-  "POST /api/v1/chat/sessions/{id}/messages/stream" should "stream start, contexts, answer, usage and complete, then store the answer" in withContainers { pg =>
+  "POST /api/v1/chat/sessions/{id}/messages/stream" should "stream start, contexts, the answer's chunks, answer, usage and complete, and store the answer" in withContainers { pg =>
     val (response, body, messages, logCount) = run(chat(freshDatabase(pg)).use { c =>
       for {
         id <- c.newSession()
@@ -269,13 +269,14 @@ class ChatRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
     response.status shouldBe Status.Ok
     response.contentType.map(_.mediaType) shouldBe Some(MediaType.`text/event-stream`)
     val evs = events(body)
-    evs.map(_._1) shouldBe Seq("start", "context", "context", "answer", "usage", "complete")
+    evs.map(_._1) shouldBe Seq("start", "context", "context", "chunk", "answer", "usage", "complete")
     evs.head._2.hcursor.get[String]("userMessageId") shouldBe Right(messages.head.id)
     val queryId = evs.head._2.hcursor.get[String]("queryId")
     evs.last._2.hcursor.get[String]("queryId") shouldBe queryId
     evs(1)._2.hcursor.get[Int]("index") shouldBe Right(0)
     evs(2)._2.hcursor.get[Int]("index") shouldBe Right(1)
-    evs(3)._2.hcursor.get[String]("answer") shouldBe Right("Zebras are striped.")
+    evs(3)._2.hcursor.get[String]("chunk") shouldBe Right("Zebras are striped.")
+    evs(4)._2.hcursor.get[String]("answer") shouldBe Right("Zebras are striped.")
 
     messages.map(m => (m.role, m.content)) shouldBe Seq("user" -> "stripes?", "assistant" -> "Zebras are striped.")
     messages(1).queryLogId should not be empty
@@ -291,7 +292,7 @@ class ChatRoutesSpec extends AnyFlatSpec with Matchers with PgVectorFixture {
         body <- response.bodyText.compile.string
       } yield events(body).map(_._1)
     })
-    names shouldBe Seq("start", "answer", "complete")
+    names shouldBe Seq("start", "chunk", "answer", "complete")
   }
 
   it should "stream an error event and store the error reply when answering fails" in withContainers { pg =>

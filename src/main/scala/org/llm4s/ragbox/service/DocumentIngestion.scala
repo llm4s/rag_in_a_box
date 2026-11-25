@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.syntax.all._
 import org.llm4s.chunking.DocumentChunk
 import org.llm4s.extract.TikaDocumentExtractor
-import org.llm4s.llmconnect.model.{EmbeddingError, EmbeddingRequest}
+import org.llm4s.rag.IndexedChunk
 import org.llm4s.rag.permissions._
 import org.llm4s.rag.permissions.pg.PgSchemaManager
 import org.llm4s.ragbox.config.{AppConfig, RuntimeSettings}
@@ -24,12 +24,16 @@ import javax.sql.DataSource
  *
  * In permission mode (a [[SearchIndex]] is configured) every document lives in an llm4s
  * collection: queries filter on `collection_id`, so a vector written without one could never be
- * retrieved. Ingests that name no collection go to [[RAGService.DefaultCollection]], and deletes
- * go through the collection the document was registered in.
+ * retrieved. llm4s refuses a plain ingest there rather than choosing a collection (its default one
+ * is public), so ragbox makes that choice: ingests that name no collection go to
+ * [[RAGService.DefaultCollection]].
  *
  * '''Chunking.''' Each document is chunked once, with the chunking its collection resolves to
  * (`CollectionConfigRegistry.getEffective`: a file-type override, the collection's config, or
- * the runtime settings), and those chunks are what llm4s indexes and the chunk store keeps.
+ * the runtime settings), and those chunks are handed to llm4s (`RAG.ingestChunks`, or
+ * `ingestChunksWithPermissions`), which embeds and indexes them and returns the id it stored each
+ * under. The chunk store keeps the same chunks under those ids, so a search result's id names a
+ * chunk in the chunk store.
  */
 final class DocumentIngestion(
   config: AppConfig,
@@ -40,8 +44,6 @@ final class DocumentIngestion(
   collectionConfigs: Option[CollectionConfigRegistry]
 ) {
   import RAGService.DefaultCollection
-
-  private def collections: Option[CollectionStore] = pipelines.searchIndex.map(_.collections)
 
   /**
    * The chunking a document gets: its collection's file-type override or config when it has
@@ -99,45 +101,28 @@ final class DocumentIngestion(
     }
 
   /**
-   * Delete a document by ID: its vectors, its visible chunks and its registry entry.
-   *
-   * In permission mode the vectors are deleted from the collection the document is registered
-   * in (or the default collection). `RAG.deleteDocument` cannot be used there: it deletes by the
-   * `<docId>-chunk-` id prefix, while permission ingest writes `coll-<id>-<docId>-chunk-<n>`.
+   * Delete a document by ID: its vectors, its visible chunks and its registry entry. In permission
+   * mode llm4s's `RAG.deleteDocument` removes it from every collection.
    */
-  def deleteDocument(documentId: String): IO[Unit] = {
-    val deleteVectors: IO[Unit] =
-      if (pipelines.hasPermissions)
-        documentRegistry.get(documentId).flatMap { entry =>
-          deleteVectorsFromCollection(entry.flatMap(_.collection).getOrElse(DefaultCollection), documentId).void
-        }
-      else pipelines.withCurrent(r => blockingResult(r.deleteDocument(documentId)))
-    deleteVectors *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
-  }
+  def deleteDocument(documentId: String): IO[Unit] =
+    deleteVectors(documentId) *> chunkStore.deleteByDocument(documentId) *> documentRegistry.remove(documentId)
+
+  private def deleteVectors(documentId: String): IO[Unit] =
+    pipelines.withCurrent(r => blockingResult(r.deleteDocument(documentId)))
 
   /**
-   * Delete a document's vectors from a collection (permission mode).
-   *
-   * A registered collection can be a free-text label from before permission mode that names no
-   * llm4s collection. Such a document's vectors were migrated into the default collection at
-   * startup, so that is where they are deleted from.
+   * Delete every document. In permission mode llm4s refuses `RAG.clear()` (it would bypass the
+   * permission API), so each collection is cleared through the `SearchIndex`; the collections and
+   * their permissions stay.
    */
-  private def deleteVectorsFromCollection(collection: String, documentId: String): IO[Long] =
-    for {
-      existingPath <- CollectionPath.create(collection).toOption match {
-        case Some(path) => collectionExists(path).map(exists => Option.when(exists)(path))
-        case None => IO.pure(None)
-      }
-      path = existingPath.getOrElse(CollectionPath.unsafe(DefaultCollection))
-      deleted <- pipelines.withCurrent(r => blockingResult(r.deleteFromCollection(path, documentId)))
-    } yield deleted
-
-  private def collectionExists(path: CollectionPath): IO[Boolean] =
-    collections.fold(IO.pure(false))(store => blockingResult(store.get(path).map(_.isDefined)))
-
-  /** Delete every document. */
-  def clearAll: IO[Unit] =
-    pipelines.withCurrent(r => blockingResult(r.clear())) *> chunkStore.clear() *> documentRegistry.clear()
+  def clearAll: IO[Unit] = {
+    val clearVectors: IO[Unit] = pipelines.searchIndex match {
+      case Some(index) =>
+        blockingResult(index.collections.list()).flatMap(_.toList.traverse_(c => blockingResult(index.clearCollection(c.path))))
+      case None => pipelines.withCurrent(r => blockingResult(r.clear()))
+    }
+    clearVectors *> chunkStore.clear() *> documentRegistry.clear()
+  }
 
   /**
    * Upsert a document (idempotent create/update): indexed when it is new or its content changed,
@@ -244,8 +229,7 @@ final class DocumentIngestion(
 
   /**
    * Ingest a document without permissions: chunk it once and hand exactly those chunks to llm4s
-   * (`RAG.ingestChunks`), which embeds and indexes them as `<documentId>-chunk-<n>` in both the
-   * vector and the keyword store. The chunk store keeps the same chunks under the same ids.
+   * (`RAG.ingestChunks`), which embeds and indexes them in both the vector and the keyword store.
    */
   private def ingestAndRegister(
     documentId: String,
@@ -257,12 +241,11 @@ final class DocumentIngestion(
     val collection = metadata.get("collection")
     for {
       chunks <- chunkContent(documentId, content, metadata, collection)
-      chunkCount <- pipelines.withCurrent(r => blockingResult(r.ingestChunks(documentId, chunks.map(_.content), metadata)))
+      indexed <- pipelines.withCurrent(r => blockingResult(r.ingestChunks(documentId, chunks, metadata)))
+      chunkCount = indexed.size
       _ <- recordIngest(
         documentId = documentId,
-        chunks = chunks.zipWithIndex.map { case (chunk, i) =>
-          toChunkInfo(RAGService.chunkId(documentId, i), documentId, i, collection, chunk)
-        },
+        chunks = chunkInfos(documentId, collection, chunks, indexed),
         contentHash = contentHash,
         chunkCount = chunkCount,
         metadata = metadata,
@@ -303,6 +286,10 @@ final class DocumentIngestion(
         sourceId = sourceId
       ))
   }
+
+  /** The chunks llm4s indexed, as the chunk store keeps them: each under the id llm4s gave it. */
+  private def chunkInfos(documentId: String, collection: Option[String], chunks: Seq[DocumentChunk], indexed: Seq[IndexedChunk]): Seq[ChunkInfo] =
+    chunks.zip(indexed).map { case (chunk, stored) => toChunkInfo(stored.id, documentId, stored.index, collection, chunk) }
 
   /**
    * A chunk as the chunk store keeps it, under the id llm4s indexed it as. Chunks of documents
@@ -355,11 +342,8 @@ final class DocumentIngestion(
 
   /**
    * Ingest into a collection: chunk the document once (with its collection's chunking, see
-   * [[chunkContent]]), embed the chunks and write them through llm4s's `SearchIndex.ingest` -
-   * the call `RAG.ingestWithPermissions` makes once it has chunked and embedded. ragbox does not
-   * call `RAG.ingestWithPermissions` itself, as that chunks with the pipeline's one chunking
-   * config (llm4s/llm4s#2732). The chunk store keeps the same chunks under the ids llm4s gave
-   * them (`coll-<collectionId>-<doc>-chunk-<n>`).
+   * [[chunkContent]]) and hand those chunks to llm4s (`RAG.ingestChunksWithPermissions`), which
+   * embeds them and writes them through the `SearchIndex`.
    */
   private def ingestIntoCollection(
     collectionPath: String,
@@ -372,28 +356,17 @@ final class DocumentIngestion(
   ): IO[DocumentUploadResponse] =
     for {
       path <- DocumentIngestion.parsePath(collectionPath)
-      index <- IO.fromOption(pipelines.searchIndex)(new IllegalStateException("Permission-aware ingestion needs a SearchIndex"))
       chunks <- chunkContent(documentId, content, metadata, Some(path.value))
-      embeddings <- embed(chunks.map(_.content))
-      chunkCount <- blockingResult(index.ingest(
-        collectionPath = path,
-        documentId = documentId,
-        chunks = chunks.zip(embeddings).zipWithIndex.map { case ((chunk, embedding), i) =>
-          ChunkWithEmbedding(content = chunk.content, embedding = embedding, chunkIndex = i, metadata = metadata)
-        },
-        metadata = metadata,
-        readableBy = readableBy
-      ))
-      collectionId <- collections.traverse(store => blockingResult(store.get(path))).map(_.flatten.map(_.id))
+      indexed <- pipelines.withCurrent { r =>
+        blockingResult(r.ingestChunksWithPermissions(path, documentId, chunks, metadata, readableBy))
+      }
+      chunkCount = indexed.size
       // The registry records documents in the default collection with no collection, which is
       // how it has always represented "default" (see PgDocumentRegistry.listIdsByCollection).
       registeredCollection = Option.when(path.value != DefaultCollection)(path.value)
       _ <- recordIngest(
         documentId = documentId,
-        chunks = chunks.zipWithIndex.map { case (chunk, i) =>
-          val id = collectionId.fold(RAGService.chunkId(documentId, i))(cid => s"coll-$cid-${RAGService.chunkId(documentId, i)}")
-          toChunkInfo(id, documentId, i, registeredCollection, chunk)
-        },
+        chunks = chunkInfos(documentId, registeredCollection, chunks, indexed),
         contentHash = contentHash,
         chunkCount = chunkCount,
         metadata = metadata ++ registeredCollection.map("collection" -> _),
@@ -407,26 +380,12 @@ final class DocumentIngestion(
       message = s"Successfully indexed $chunkCount chunks in ${path.value}"
     )
 
-  /** Embed `texts` in one request, as llm4s's `RAG` embeds a document's chunks. */
-  private def embed(texts: Seq[String]): IO[Seq[Array[Float]]] =
-    if (texts.isEmpty) IO.pure(Seq.empty)
-    else
-      pipelines.embedder.flatMap { case (client, model) =>
-        blockingResult(client.embed(EmbeddingRequest(texts, model)).flatMap { response =>
-          Either.cond(
-            response.embeddings.size == texts.size,
-            response.embeddings.map(_.map(_.toFloat).toArray),
-            EmbeddingError(None, s"Embedding provider returned ${response.embeddings.size} embeddings for ${texts.size} texts", model.name)
-          )
-        })
-      }
-
   /**
    * Upsert a document with permission controls (idempotent create/update).
    *
    * The document is unchanged - and not re-indexed - only when its content hash, collection and
-   * access list all match the registry. Otherwise its vectors are deleted from the collection it
-   * is registered in (which may differ from `collectionPath`, for a move) and it is re-ingested.
+   * access list all match the registry. Otherwise its vectors are deleted - from whichever
+   * collection holds them, so a move leaves no copy behind - and it is re-ingested.
    *
    * @param sourceId the ingestion source upserting the document, recorded as its owner
    */
@@ -454,10 +413,10 @@ final class DocumentIngestion(
         // Content, collection and access list unchanged - skip re-indexing
         claimForSource(existing, sourceId).as(unchanged(documentId, existing.chunkCount, contentHash))
 
-      case (_, Some(existing)) =>
-        // Changed - delete from the collection it is in now (not the target one, for a move),
-        // then re-index
-        deleteVectorsFromCollection(existing.collection.getOrElse(DefaultCollection), documentId) *>
+      case (_, Some(_)) =>
+        // Changed - delete it wherever it is now (not only in the target collection, for a
+        // move), then re-index
+        deleteVectors(documentId) *>
           chunkStore.deleteByDocument(documentId) *>
           ingest("updated")
 
@@ -465,7 +424,7 @@ final class DocumentIngestion(
         // Not registered, but it may still have vectors written outside the registry - by an
         // ingestion source before permission mode routed sources through collections - that
         // startup migrated into the default collection. Remove them so it is not indexed twice.
-        deleteVectorsFromCollection(DefaultCollection, documentId) *>
+        deleteVectors(documentId) *>
           ingest("created")
     }
   }

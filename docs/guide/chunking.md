@@ -92,18 +92,12 @@ Visibility.
 
 ## How Documents Are Chunked
 
-Each document is chunked **once**, with the chunker and chunk size/overlap the llm4s
-pipeline is configured with, and those exact chunks are both indexed (llm4s
-`RAG.ingestChunks`) and kept in the chunk store. Chunk store ids are the ids llm4s
-indexed the chunks under - `<documentId>-chunk-<n>`, or `coll-<collectionId>-<documentId>-chunk-<n>`
-in permission mode - so a search result's id matches a chunk in the chunk store.
-
-In permission mode llm4s 0.6.0 has no pre-chunked ingest ([llm4s/llm4s#2732](https://github.com/llm4s/llm4s/issues/2732); `RAG.ingestWithPermissions` chunks the
-text itself), so it chunks with the same chunker and config, which gives the same chunks. Only
-the semantic chunker could disagree (its boundaries depend on embeddings); ragbox logs a
-warning if the chunk counts differ.
-
----
+Each document is chunked **once**, with the chunker and chunk size/overlap its collection
+resolves to, and those exact chunks are handed to llm4s to embed and index (`RAG.ingestChunks`,
+or `RAG.ingestChunksWithPermissions` in permission mode) and kept in the chunk store. llm4s
+returns the id it stored each chunk under - `<documentId>-chunk-<n>`, or
+`coll-<collectionId>-<documentId>-chunk-<n>` in permission mode - and the chunk store uses those
+ids, so a search result's id matches a chunk in the chunk store.
 
 ## Configuration
 

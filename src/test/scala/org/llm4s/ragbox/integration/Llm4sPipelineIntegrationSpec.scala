@@ -7,6 +7,7 @@ import org.llm4s.llmconnect.model.{AssistantMessage, SystemMessage, UserMessage}
 import org.llm4s.ragbox.config.{AppConfig, DatabaseConfig}
 import org.llm4s.ragbox.model.{QueryMetrics, QueryResponse}
 import org.llm4s.ragbox.registry.{QueryLogRegistry, QueryLogging}
+import org.llm4s.ragbox.service.AnswerEvent
 import org.llm4s.ragbox.service.Llm4sPipeline.ChatTurn
 import org.llm4s.ragbox.service.SuggestionService
 import org.llm4s.ragbox.service.RAGService
@@ -114,6 +115,93 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     metrics.chunksRetrieved shouldBe response.contexts.size
   }
 
+  "The answer temperature" should "be the runtime llm.temperature, or the query's own" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    run(plainService(db, llm = Some(llm)).use { service =>
+      service.ingestDocument("Zebras have black and white stripes.", "zebra", Map.empty) *>
+        service.queryWithAnswer("zebra stripes", Some(2)) *>
+        service.queryWithAnswer("zebra stripes", Some(2), RAGService.SettingsOverride(llmTemperature = Some(1.3)))
+    })
+    llm.requests.map(_._2.temperature) shouldBe Seq(Some(testConfig(db, Some(llm)).llm.temperature), Some(1.3))
+  }
+
+  it should "apply in permission mode too" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    run(permissionService(db, llm = Some(llm)).use { service =>
+      service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.") *>
+        service.queryWithPermissionsAndAnswer("zebra stripes", org.llm4s.rag.permissions.UserAuthorization.Anonymous, "*", Some(2),
+          RAGService.SettingsOverride(llmTemperature = Some(0.9)))
+    })
+    llm.requests.map(_._2.temperature) shouldBe Seq(Some(0.9))
+  }
+
+  "A streamed answer" should "give the contexts, then the answer piece by piece, then the whole response" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val events = run(plainService(db, llm = Some(llm)).use { service =>
+      service.ingestDocument("Zebras have black and white stripes.", "zebra", Map.empty) *>
+        service.streamAnswer("zebra stripes", None, Nil, Some(2), RAGService.SettingsOverride.Empty).compile.toVector
+    })
+
+    llm.streamedCount shouldBe 1
+    events.head match {
+      case AnswerEvent.Contexts(contexts) => contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+      case other => fail(s"expected the contexts first, got $other")
+    }
+    val deltas = events.collect { case AnswerEvent.Delta(text) => text }
+    deltas shouldBe FakeLLM.pieces(FakeLLM.Answer)
+    deltas.size should be > 1
+    events.last match {
+      case AnswerEvent.Completed(response) =>
+        response.answer shouldBe FakeLLM.Answer
+        response.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+        response.usage.map(_.totalTokens) shouldBe Some(110)
+        response.metrics.flatMap(_.promptTokens) shouldBe Some(100)
+        response.metrics.flatMap(_.llmLatencyMs) shouldBe defined
+      case other => fail(s"expected the whole response last, got $other")
+    }
+    events.size shouldBe deltas.size + 2
+  }
+
+  it should "stream in permission mode, with the chat history, and with a similarity threshold" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val anonymous = org.llm4s.rag.permissions.UserAuthorization.Anonymous
+    val history = Seq(ChatTurn("user", "What do zebras look like?"), ChatTurn("assistant", "They are striped."))
+    val (chat, thresholded) = run(permissionService(db, llm = Some(llm)).use { service =>
+      for {
+        _ <- service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.")
+        chat <- service.streamAnswer("Why are they striped?", Some(anonymous -> "*"), history, Some(2), RAGService.SettingsOverride.Empty).compile.toVector
+        thresholded <- service.streamAnswer("zebra stripes", Some(anonymous -> "*"), Nil, Some(2),
+          RAGService.SettingsOverride(similarityThreshold = Some(1.0))).compile.toVector
+      } yield (chat, thresholded)
+    })
+
+    llm.streamedCount shouldBe 2
+    chat.collect { case AnswerEvent.Delta(text) => text }.mkString shouldBe FakeLLM.Answer
+    llm.requests.head._1.messages.map(_.getClass) shouldBe Seq(
+      classOf[SystemMessage], classOf[UserMessage], classOf[AssistantMessage], classOf[UserMessage]
+    )
+    // Nothing reaches a threshold of 1.0: the contexts event is empty, and the answer still streams
+    thresholded.head shouldBe AnswerEvent.Contexts(Nil)
+    thresholded.collect { case AnswerEvent.Delta(text) => text }.mkString shouldBe FakeLLM.Answer
+  }
+
+  it should "end with the failure when the LLM fails" in withContainers { pg =>
+    val db = freshDatabase(pg)
+    val llm = FakeLLM()
+    val result = run(plainService(db, llm = Some(llm)).use { service =>
+      service.ingestDocument("Zebras have black and white stripes.", "zebra", Map.empty) *>
+        IO { llm.failing = Some("provider down") } *>
+        service.streamAnswer("zebra stripes", None, Nil, Some(2), RAGService.SettingsOverride.Empty).attempt.compile.toVector
+    })
+    // The contexts were found before the model was called
+    result.head.map(_.getClass) shouldBe Right(classOf[AnswerEvent.Contexts])
+    result.last.left.map(_.getMessage).left.getOrElse("") should include("provider down")
+  }
+
   "A chat answer" should "send the conversation history and llm.temperature to the LLM" in withContainers { pg =>
     val db = freshDatabase(pg)
     val llm = FakeLLM()
@@ -134,7 +222,7 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     conversation.messages(2).content shouldBe "They are striped."
     conversation.messages.last.content should include("Question: Why are they striped?")
     conversation.messages.last.content should include("[1] Zebras have black and white stripes.")
-    options.temperature shouldBe temperature
+    options.temperature shouldBe Some(temperature)
   }
 
   it should "work in permission mode, filtering retrieval by the user's access" in withContainers { pg =>
@@ -152,6 +240,35 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
       } yield answer
     })
     response.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
+  }
+
+  "Permission mode" should "search by keyword, rewrite the query and rerank, as plain mode does" in withContainers { pg =>
+    val anonymous = org.llm4s.rag.permissions.UserAuthorization.Anonymous
+    // Keyword-only fusion: PostgreSQL full-text search over the permission index's own table
+    val keywordHits = run(permissionService(freshDatabase(pg), configure = keywordOnly).use { service =>
+      service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.") *>
+        service.ingestWithPermissions(RAGService.DefaultCollection, "penguin", "Penguins live in the southern hemisphere.") *>
+        service.searchWithPermissions("stripes", anonymous, "*", Some(5))
+    })
+    keywordHits.results.flatMap(_.documentId) shouldBe Seq("zebra")
+
+    val llm = FakeLLM()
+    val configure: AppConfig => AppConfig = c =>
+      c.copy(rag = c.rag.copy(
+        reranking = c.rag.reranking.copy(strategy = "llm", candidates = 10),
+        queryTransform = c.rag.queryTransform.copy(strategy = "llm-rewrite")
+      ))
+    val response = run(permissionService(freshDatabase(pg), llm = Some(llm), configure = configure).use { service =>
+      service.ingestWithPermissions(RAGService.DefaultCollection, "zebra", "Zebras have black and white stripes.") *>
+        service.ingestWithPermissions(RAGService.DefaultCollection, "penguin", "Penguins live in the southern hemisphere.") *>
+        service.queryWithPermissionsAndAnswer("zebra stripes", anonymous, "*", Some(2))
+    })
+    val prompts = llm.requests.map { case (conversation, _) => conversation.messages.map(_.content).mkString("\n") }
+    prompts.head should include("query rewriting")
+    prompts.find(_.contains("JSON array of scores")).getOrElse(fail("no rerank call")) should include("rewritten: zebra stripes")
+    response.answer shouldBe FakeLLM.Answer
+    // Rewrite, rerank and answer completions are all accounted for
+    response.metrics.flatMap(_.promptTokens) shouldBe Some(100 * llm.requests.size)
   }
 
   "Reranking and query rewriting" should "run through the answer LLM when configured" in withContainers { pg =>
@@ -178,16 +295,16 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     response.metrics.flatMap(_.promptTokens) shouldBe Some(100 * llm.requests.size)
   }
 
-  "The config info" should "say that fusion does not apply in permission mode" in withContainers { pg =>
+  "The config info" should "report hybrid search with no limitations, in permission mode too" in withContainers { pg =>
     val db = freshDatabase(pg)
     val (permission, plain) = run(
       permissionService(db).use(_.getConfigInfo).flatMap(p => plainService(freshDatabase(pg)).use(_.getConfigInfo).map(p -> _))
     )
-    permission.rag.searchMode shouldBe "vector"
-    permission.rag.fusionApplies shouldBe false
-    permission.rag.limitations.exists(_.contains("llm4s/llm4s#2716")) shouldBe true
-    plain.rag.searchMode shouldBe "hybrid"
-    plain.rag.fusionApplies shouldBe true
+    Seq(permission, plain).foreach { info =>
+      info.rag.searchMode shouldBe "hybrid"
+      info.rag.fusionApplies shouldBe true
+      info.rag.limitations shouldBe empty
+    }
   }
 
   "The provider list" should "come from the llm4s provider registry" in withContainers { pg =>
@@ -298,14 +415,16 @@ class Llm4sPipelineIntegrationSpec extends AnyFlatSpec with Matchers with PgVect
     filtered.contexts.flatMap(_.documentId) shouldBe Seq("zebra")
     none.contexts shouldBe empty
     filtered.answer shouldBe FakeLLM.Answer
-    filtered.metrics.map(_.chunksRetrieved) shouldBe Some(1)
+    // Two chunks were retrieved; the one above the threshold was used
+    filtered.metrics.map(m => m.chunksRetrieved -> m.chunksUsed) shouldBe Some(2 -> 1)
+    filtered.metrics.flatMap(_.llmLatencyMs) shouldBe defined
 
-    // What the LLM was sent: llm4s's prompt and temperature, with only the kept chunks
+    // What the LLM was sent: llm4s's prompt and the runtime temperature, with only the kept chunks
     val prompts = llm.requests.map { case (conversation, options) => (conversation.messages.last.content, options.temperature) }
     prompts.head._1 should include("Penguins")
     prompts(1)._1 should include("[1] Zebras have black and white stripes.")
     prompts(1)._1 should not include "Penguins"
-    prompts(1)._2 shouldBe 0.0
+    prompts(1)._2 shouldBe Some(testConfig(db, Some(llm)).llm.temperature)
     prompts(2)._1 should include("Context:\n\n\nQuestion: zebras have stripes")
   }
 
