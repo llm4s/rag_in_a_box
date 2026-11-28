@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Union
+from typing import Any, BinaryIO, Dict, Iterator, List, Optional, Sequence, Union
 
 import requests
 
@@ -120,6 +120,78 @@ class SyncedDocument:
     """The sync source that owns the document (``api`` by default, ``None`` for uploads)."""
 
 
+@dataclass
+class ChatSession:
+    """A chat session (``/api/v1/chat/sessions``)."""
+    id: str
+    title: Optional[str] = None
+    collection_pattern: str = "*"
+    message_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    is_archived: bool = False
+
+
+@dataclass
+class ChatMessage:
+    """A message stored in a chat session."""
+    id: str
+    session_id: str
+    role: str  # "user" or "assistant"
+    content: str
+    contexts: List[ContextItem] = field(default_factory=list)
+    rating: Optional[int] = None
+    query_id: Optional[str] = None
+    """The query-log id of an assistant message: pass it to :meth:`RagBoxClient.feedback`."""
+    created_at: Optional[datetime] = None
+    message_index: Optional[int] = None
+
+
+@dataclass
+class ChatSessionPage:
+    """One page of chat sessions (``GET /api/v1/chat/sessions``)."""
+    sessions: List[ChatSession]
+    total: int
+
+
+@dataclass
+class ChatSessionDetail:
+    """A chat session with its messages (``GET /api/v1/chat/sessions/{id}``)."""
+    session: ChatSession
+    messages: List[ChatMessage]
+
+
+@dataclass
+class ChatReply:
+    """The result of sending a message in a chat session."""
+    user_message: ChatMessage
+    assistant_message: ChatMessage
+    error: Optional[str] = None
+    """Set when the server could not answer; ``assistant_message`` then holds the error reply."""
+
+
+@dataclass
+class StreamEvent:
+    """
+    One Server-Sent Event of a streamed answer.
+
+    ``event`` is ``start``, ``context``, ``chunk``, ``answer``, ``usage``, ``complete`` or
+    ``error``; ``data`` is the event's parsed JSON body. For ``chunk`` events :attr:`text` is the
+    piece of the answer; for ``answer`` events it is the whole answer.
+    """
+    event: str
+    data: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def text(self) -> Optional[str]:
+        """The answer text of a ``chunk`` or ``answer`` event, else ``None``."""
+        if self.event == "chunk":
+            return self.data.get("chunk")
+        if self.event == "answer":
+            return self.data.get("answer")
+        return None
+
+
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -143,6 +215,67 @@ def _context(ctx: Dict[str, Any]) -> ContextItem:
         document_id=ctx.get("documentId"),
         chunk_index=ctx.get("chunkIndex"),
     )
+
+
+def _chat_session(s: Dict[str, Any]) -> ChatSession:
+    return ChatSession(
+        id=s["id"],
+        title=s.get("title"),
+        collection_pattern=s.get("collectionPattern", "*"),
+        message_count=s.get("messageCount", 0),
+        created_at=_parse_time(s.get("createdAt")),
+        updated_at=_parse_time(s.get("updatedAt")),
+        is_archived=s.get("isArchived", False),
+    )
+
+
+def _chat_message(m: Dict[str, Any]) -> ChatMessage:
+    return ChatMessage(
+        id=m["id"],
+        session_id=m["sessionId"],
+        role=m["role"],
+        content=m["content"],
+        contexts=[_context(c) for c in m.get("contexts") or []],
+        rating=m.get("rating"),
+        query_id=m.get("queryLogId"),
+        created_at=_parse_time(m.get("createdAt")),
+        message_index=m.get("messageIndex"),
+    )
+
+
+def _iter_sse(response: requests.Response) -> Iterator[StreamEvent]:
+    """Parse a ``text/event-stream`` response into events; closes the response when done."""
+    try:
+        event: Optional[str] = None
+        data_lines: List[str] = []
+        for raw in response.iter_lines(decode_unicode=False):
+            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            if line == "":
+                if event is not None or data_lines:
+                    yield _sse_event(event, data_lines)
+                event, data_lines = None, []
+            elif line.startswith(":"):
+                continue  # comment / keep-alive
+            elif line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                value = line[5:]
+                data_lines.append(value[1:] if value.startswith(" ") else value)
+        if event is not None or data_lines:
+            yield _sse_event(event, data_lines)
+    finally:
+        response.close()
+
+
+def _sse_event(event: Optional[str], data_lines: List[str]) -> StreamEvent:
+    payload = "\n".join(data_lines)
+    try:
+        data = json.loads(payload) if payload else {}
+    except ValueError:
+        data = {"raw": payload}
+    if not isinstance(data, dict):
+        data = {"value": data}
+    return StreamEvent(event=event or "message", data=data)
 
 
 def _synced(doc: Dict[str, Any]) -> SyncedDocument:
@@ -496,20 +629,7 @@ class RagBoxClient:
         Returns:
             QueryResult with answer and supporting contexts
         """
-        data: Dict[str, Any] = {"question": question}
-        if top_k:
-            data["topK"] = top_k
-        if collection:
-            data["collection"] = collection
-        if not include_metadata:
-            data["includeMetadata"] = False
-        overrides: Dict[str, Any] = {}
-        if similarity_threshold is not None:
-            overrides["similarityThreshold"] = similarity_threshold
-        if temperature is not None:
-            overrides["llmTemperature"] = temperature
-        if overrides:
-            data["overrides"] = overrides
+        data = self._query_body(question, top_k, collection, include_metadata, similarity_threshold, temperature)
 
         response = self._request("POST", "/api/v1/query", json=data)
         result = response.json()
@@ -524,6 +644,64 @@ class RagBoxClient:
             total_tokens=usage.get("totalTokens") if usage else None,
             query_id=result.get("queryId"),
         )
+
+    @staticmethod
+    def _query_body(
+        question: str,
+        top_k: Optional[int],
+        collection: Optional[str],
+        include_metadata: bool,
+        similarity_threshold: Optional[float],
+        temperature: Optional[float],
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"question": question}
+        if top_k:
+            data["topK"] = top_k
+        if collection:
+            data["collection"] = collection
+        if not include_metadata:
+            data["includeMetadata"] = False
+        overrides: Dict[str, Any] = {}
+        if similarity_threshold is not None:
+            overrides["similarityThreshold"] = similarity_threshold
+        if temperature is not None:
+            overrides["llmTemperature"] = temperature
+        if overrides:
+            data["overrides"] = overrides
+        return data
+
+    def query_stream(
+        self,
+        question: str,
+        top_k: Optional[int] = None,
+        collection: Optional[str] = None,
+        include_metadata: bool = True,
+        similarity_threshold: Optional[float] = None,
+        temperature: Optional[float] = None,
+    ) -> Iterator[StreamEvent]:
+        """
+        Query with the answer streamed as Server-Sent Events (``POST /api/v1/query/stream``).
+
+        Takes the same arguments as :meth:`query` and yields :class:`StreamEvent` objects in the
+        order the server sends them: ``start``, a ``context`` per chunk, a ``chunk`` per piece of
+        the answer, then ``answer``, ``usage`` (if reported) and ``complete``. A failure after the
+        stream has started arrives as an ``error`` event. Errors before it starts (bad request,
+        auth) raise :class:`RagBoxError`.
+
+        Example:
+            for event in client.query_stream("What is PostgreSQL?"):
+                if event.event == "chunk":
+                    print(event.text, end="", flush=True)
+        """
+        data = self._query_body(question, top_k, collection, include_metadata, similarity_threshold, temperature)
+        return self._stream("POST", "/api/v1/query/stream", json=data)
+
+    def _stream(self, method: str, path: str, **kwargs) -> Iterator[StreamEvent]:
+        """Open a streaming request now (so errors raise here) and return its event iterator."""
+        kwargs.setdefault("headers", {})["Accept"] = "text/event-stream"
+        # The timeout bounds connecting and each wait for data, not the whole stream
+        response = self._request(method, path, stream=True, **kwargs)
+        return _iter_sse(response)
 
     def feedback(
         self,
@@ -580,6 +758,139 @@ class RagBoxClient:
 
         contexts = [_context(ctx) for ctx in result.get("results", [])]
         return SearchResult(results=contexts, count=result.get("count", len(contexts)))
+
+    # ============================================================
+    # Chat Operations
+    # ============================================================
+
+    def create_chat_session(
+        self,
+        title: Optional[str] = None,
+        collection: Optional[str] = None,
+    ) -> ChatSession:
+        """
+        Create a chat session (``POST /api/v1/chat/sessions``).
+
+        Args:
+            title: Optional title (set from the first message when omitted)
+            collection: Optional collection or pattern the session's questions search
+        """
+        data: Dict[str, Any] = {}
+        if title:
+            data["title"] = title
+        if collection:
+            data["collectionPattern"] = collection
+        response = self._request("POST", "/api/v1/chat/sessions", json=data)
+        return _chat_session(response.json()["session"])
+
+    def list_chat_sessions(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        include_archived: bool = False,
+    ) -> ChatSessionPage:
+        """List chat sessions, most recently updated first (``GET /api/v1/chat/sessions``)."""
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if include_archived:
+            params["includeArchived"] = "true"
+        body = self._request("GET", "/api/v1/chat/sessions", params=params or None).json()
+        return ChatSessionPage(
+            sessions=[_chat_session(s) for s in body.get("sessions", [])],
+            total=body.get("total", 0),
+        )
+
+    def get_chat_session(
+        self,
+        session_id: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> ChatSessionDetail:
+        """A session with its latest messages (``GET /api/v1/chat/sessions/{id}``)."""
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        body = self._request(
+            "GET", f"/api/v1/chat/sessions/{quote(session_id, safe='')}", params=params or None
+        ).json()
+        return ChatSessionDetail(
+            session=_chat_session(body["session"]),
+            messages=[_chat_message(m) for m in body.get("messages", [])],
+        )
+
+    def update_chat_session(
+        self,
+        session_id: str,
+        title: Optional[str] = None,
+        collection: Optional[str] = None,
+        is_archived: Optional[bool] = None,
+    ) -> ChatSession:
+        """Change a session's title, collection or archived flag (``PUT /api/v1/chat/sessions/{id}``)."""
+        data: Dict[str, Any] = {}
+        if title is not None:
+            data["title"] = title
+        if collection is not None:
+            data["collectionPattern"] = collection
+        if is_archived is not None:
+            data["isArchived"] = is_archived
+        response = self._request(
+            "PUT", f"/api/v1/chat/sessions/{quote(session_id, safe='')}", json=data
+        )
+        return _chat_session(response.json())
+
+    def delete_chat_session(self, session_id: str) -> None:
+        """Delete a chat session (``DELETE /api/v1/chat/sessions/{id}``)."""
+        self._request("DELETE", f"/api/v1/chat/sessions/{quote(session_id, safe='')}")
+
+    def send_message(self, session_id: str, content: str) -> ChatReply:
+        """
+        Send a message and wait for the answer
+        (``POST /api/v1/chat/sessions/{id}/messages``).
+
+        The session's earlier messages are used as conversation history. If the server could
+        not answer, the reply's ``error`` is set and ``assistant_message`` holds the error text.
+        """
+        body = self._request(
+            "POST",
+            f"/api/v1/chat/sessions/{quote(session_id, safe='')}/messages",
+            json={"content": content},
+        ).json()
+        return ChatReply(
+            user_message=_chat_message(body["userMessage"]),
+            assistant_message=_chat_message(body["assistantMessage"]),
+            error=body.get("error"),
+        )
+
+    def send_message_stream(self, session_id: str, content: str) -> Iterator[StreamEvent]:
+        """
+        Send a message with the answer streamed as Server-Sent Events
+        (``POST /api/v1/chat/sessions/{id}/messages/stream``).
+
+        Yields the same :class:`StreamEvent` types as :meth:`query_stream`; the ``start`` event
+        also carries ``userMessageId``. The question and the finished answer are stored in the
+        session like :meth:`send_message`'s.
+        """
+        return self._stream(
+            "POST",
+            f"/api/v1/chat/sessions/{quote(session_id, safe='')}/messages/stream",
+            json={"content": content},
+        )
+
+    def rate_message(self, message_id: str, rating: int) -> Dict[str, Any]:
+        """
+        Rate a chat message, 1 to 5 (``PUT /api/v1/chat/messages/{id}/rate``).
+
+        Returns:
+            ``{"success", "message"}``
+        """
+        return self._request(
+            "PUT", f"/api/v1/chat/messages/{quote(message_id, safe='')}/rate", json={"rating": rating}
+        ).json()
 
     # ============================================================
     # Sync Operations (administrators, or rat_ tokens with sync:read / sync:write)

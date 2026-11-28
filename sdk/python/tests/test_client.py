@@ -382,3 +382,220 @@ def test_sync_scope_all_sends_no_source(monkeypatch):
         match=[matchers.json_params_matcher({"keepDocumentIds": [], "dryRun": True, "scope": "all"})],
     )
     assert client.sync(keep_ids=[], dry_run=True, scope="all")["scope"] == "all"
+
+
+# ---------------------------------------------------------------- chat sessions
+
+SESSION = {
+    "id": "s1", "title": "Hello", "collectionPattern": "docs", "messageCount": 2,
+    "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:01:00Z", "isArchived": False,
+}
+
+
+def _message(id, role, content, **extra):
+    return {"id": id, "sessionId": "s1", "role": role, "content": content,
+            "createdAt": "2026-01-01T00:00:00Z", "messageIndex": 0, **extra}
+
+
+@responses.activate
+def test_create_chat_session(client):
+    responses.post(
+        f"{BASE}/api/v1/chat/sessions",
+        status=201,
+        json={"session": SESSION, "message": "Session created"},
+        match=[matchers.json_params_matcher({"title": "Hello", "collectionPattern": "docs"})],
+    )
+    session = client.create_chat_session(title="Hello", collection="docs")
+    assert session.id == "s1"
+    assert session.collection_pattern == "docs"
+    assert session.message_count == 2
+    assert session.created_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@responses.activate
+def test_list_chat_sessions(client):
+    responses.get(
+        f"{BASE}/api/v1/chat/sessions",
+        json={"sessions": [SESSION], "total": 7},
+        match=[matchers.query_param_matcher({"limit": 1, "offset": 2, "includeArchived": "true"})],
+    )
+    page = client.list_chat_sessions(limit=1, offset=2, include_archived=True)
+    assert page.total == 7
+    assert [s.id for s in page.sessions] == ["s1"]
+
+
+@responses.activate
+def test_get_chat_session_with_messages(client):
+    responses.get(
+        f"{BASE}/api/v1/chat/sessions/s1",
+        json={"session": SESSION, "messages": [
+            _message("m1", "user", "hi"),
+            _message("m2", "assistant", "hello", queryLogId="q1", rating=5,
+                     contexts=[{"content": "c", "score": 0.9, "metadata": {}}]),
+        ]},
+    )
+    detail = client.get_chat_session("s1")
+    assert detail.session.title == "Hello"
+    assert [m.role for m in detail.messages] == ["user", "assistant"]
+    assert detail.messages[1].query_id == "q1"
+    assert detail.messages[1].rating == 5
+    assert detail.messages[1].contexts[0].content == "c"
+
+
+@responses.activate
+def test_update_and_delete_chat_session(client):
+    responses.put(
+        f"{BASE}/api/v1/chat/sessions/s%2F1",
+        json={**SESSION, "id": "s/1", "isArchived": True},
+        match=[matchers.json_params_matcher({"title": "New", "isArchived": True})],
+    )
+    responses.delete(f"{BASE}/api/v1/chat/sessions/s%2F1", json={"success": True, "message": "Session deleted"})
+    session = client.update_chat_session("s/1", title="New", is_archived=True)
+    assert session.is_archived is True
+    client.delete_chat_session("s/1")
+
+
+@responses.activate
+def test_missing_chat_session_raises(client):
+    responses.get(
+        f"{BASE}/api/v1/chat/sessions/nope",
+        status=404,
+        json={"error": "not_found", "message": "Session 'nope' not found"},
+    )
+    with pytest.raises(RagBoxError) as info:
+        client.get_chat_session("nope")
+    assert info.value.status_code == 404
+
+
+@responses.activate
+def test_send_message(client):
+    responses.post(
+        f"{BASE}/api/v1/chat/sessions/s1/messages",
+        json={"userMessage": _message("m1", "user", "hi"),
+              "assistantMessage": _message("m2", "assistant", "hello", queryLogId="q1")},
+        match=[matchers.json_params_matcher({"content": "hi"})],
+    )
+    reply = client.send_message("s1", "hi")
+    assert reply.user_message.content == "hi"
+    assert reply.assistant_message.content == "hello"
+    assert reply.assistant_message.query_id == "q1"
+    assert reply.error is None
+
+
+@responses.activate
+def test_send_message_reports_a_server_side_answer_failure(client):
+    responses.post(
+        f"{BASE}/api/v1/chat/sessions/s1/messages",
+        json={"userMessage": _message("m1", "user", "hi"),
+              "assistantMessage": _message("m2", "assistant", "Sorry, I encountered an error: boom"),
+              "error": "boom"},
+    )
+    assert client.send_message("s1", "hi").error == "boom"
+
+
+@responses.activate
+def test_rate_message(client):
+    responses.put(
+        f"{BASE}/api/v1/chat/messages/m2/rate",
+        json={"success": True, "message": "Rating saved"},
+        match=[matchers.json_params_matcher({"rating": 4})],
+    )
+    assert client.rate_message("m2", 4)["success"] is True
+
+
+# ---------------------------------------------------------------- streaming
+
+SSE = (
+    'event: start\ndata: {"queryId":"q1","timestamp":"2026-01-01T00:00:00Z"}\n\n'
+    'event: context\ndata: {"context":{"content":"c","score":0.9,"metadata":{}},"index":0}\n\n'
+    'event: chunk\ndata: {"chunk":"Hel"}\n\n'
+    ': keep-alive\n\n'
+    'event: chunk\ndata: {"chunk":"lo \\u00e9"}\n\n'
+    'event: answer\ndata: {"answer":"Hello \\u00e9"}\n\n'
+    'event: complete\ndata: {"queryId":"q1","totalContexts":1}\n\n'
+)
+
+
+@responses.activate
+def test_query_stream_yields_typed_events(client):
+    responses.post(
+        f"{BASE}/api/v1/query/stream",
+        body=SSE.encode("utf-8"),
+        content_type="text/event-stream",
+        match=[matchers.json_params_matcher({"question": "q", "topK": 3, "overrides": {"llmTemperature": 0.2}})],
+    )
+    events = list(client.query_stream("q", top_k=3, temperature=0.2))
+    assert [e.event for e in events] == ["start", "context", "chunk", "chunk", "answer", "complete"]
+    assert events[0].data["queryId"] == "q1"
+    assert events[1].data["context"]["content"] == "c"
+    assert "".join(e.text for e in events if e.event == "chunk") == "Hello é"
+    assert events[4].text == "Hello é"
+    assert events[5].text is None
+    assert responses.calls[0].request.headers["Accept"] == "text/event-stream"
+
+
+@responses.activate
+def test_query_stream_raises_before_streaming_on_an_error_status(client):
+    responses.post(
+        f"{BASE}/api/v1/query/stream",
+        status=400,
+        json={"error": "bad_request", "message": "Query too long"},
+    )
+    with pytest.raises(RagBoxError) as info:
+        client.query_stream("q")  # raises on the call itself, not on first iteration
+    assert info.value.status_code == 400
+
+
+@responses.activate
+def test_stream_error_event_is_yielded_last(client):
+    responses.post(
+        f"{BASE}/api/v1/query/stream",
+        body=(
+            'event: start\ndata: {"queryId":"q1"}\n\n'
+            'event: error\ndata: {"error":"query_failed","message":"LLM down"}\n\n'
+        ).encode(),
+        content_type="text/event-stream",
+    )
+    events = list(client.query_stream("q"))
+    assert events[-1].event == "error"
+    assert events[-1].data["message"] == "LLM down"
+
+
+@responses.activate
+def test_stream_handles_crlf_and_a_final_event_without_blank_line(client):
+    responses.post(
+        f"{BASE}/api/v1/query/stream",
+        body=b'event: chunk\r\ndata: {"chunk":"a"}\r\n\r\nevent: answer\r\ndata: {"answer":"a"}',
+        content_type="text/event-stream",
+    )
+    events = list(client.query_stream("q"))
+    assert [e.text for e in events] == ["a", "a"]
+
+
+@responses.activate
+def test_send_message_stream(client):
+    responses.post(
+        f"{BASE}/api/v1/chat/sessions/s1/messages/stream",
+        body=(
+            'event: start\ndata: {"queryId":"q1","userMessageId":"m1"}\n\n'
+            'event: chunk\ndata: {"chunk":"Hi"}\n\n'
+            'event: complete\ndata: {"queryId":"q1","totalContexts":0}\n\n'
+        ).encode(),
+        content_type="text/event-stream",
+        match=[matchers.json_params_matcher({"content": "hello"})],
+    )
+    events = list(client.send_message_stream("s1", "hello"))
+    assert events[0].data["userMessageId"] == "m1"
+    assert events[1].text == "Hi"
+    assert events[-1].event == "complete"
+
+
+@responses.activate
+def test_send_message_stream_unknown_session_raises(client):
+    responses.post(
+        f"{BASE}/api/v1/chat/sessions/nope/messages/stream",
+        status=404,
+        json={"error": "not_found", "message": "Session 'nope' not found"},
+    )
+    with pytest.raises(RagBoxError):
+        client.send_message_stream("nope", "hi")
