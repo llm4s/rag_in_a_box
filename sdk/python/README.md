@@ -71,6 +71,43 @@ except RagBoxError as e:
     print(e.status_code, e.error, e.message)  # e.g. 403 forbidden Admin access required
 ```
 
+## Chat Sessions
+
+Chat sessions keep the conversation history on the server, so follow-up questions work:
+
+```python
+session = client.create_chat_session(title="Support", collection="docs/*")
+
+reply = client.send_message(session.id, "What is PostgreSQL?")
+print(reply.assistant_message.content)
+
+# Later: read the history, rate an answer, clean up
+detail = client.get_chat_session(session.id)
+client.rate_message(reply.assistant_message.id, 5)
+client.delete_chat_session(session.id)
+```
+
+## Streaming
+
+`query_stream` and `send_message_stream` return an iterator of `StreamEvent` objects (`event`
+name, parsed `data`, and `text` for `chunk`/`answer` events). Events arrive in order: `start`,
+a `context` per chunk, a `chunk` per piece of the answer, then `answer`, `usage` (if reported)
+and `complete`. A failure after the stream has started is an `error` event; errors before it
+(bad request, auth, unknown session) raise `RagBoxError` as usual.
+
+```python
+for event in client.query_stream("What is PostgreSQL?"):
+    if event.event == "chunk":
+        print(event.text, end="", flush=True)
+    elif event.event == "error":
+        raise RuntimeError(event.data["message"])
+
+# The same in a chat session
+for event in client.send_message_stream(session.id, "And how do I back it up?"):
+    if event.event == "chunk":
+        print(event.text, end="", flush=True)
+```
+
 ## Uploading Files
 
 `upload_file` sends a file to `POST /api/v1/documents/upload`; the server extracts the text
@@ -165,7 +202,21 @@ client = RagBoxClient(base_url="http://localhost:8080", timeout=30, api_key=None
 |--------|----------|-------------|
 | `query(question, top_k, collection, include_metadata, similarity_threshold, temperature)` | `POST /api/v1/query` | Query with answer generation; `QueryResult.query_id` is the query-log id |
 | `feedback(query_id, rating, comment, relevant_chunks)` | `POST /api/v1/feedback` | Rate one of your queries' answers |
+| `query_stream(question, top_k, collection, include_metadata, similarity_threshold, temperature)` | `POST /api/v1/query/stream` | Like `query`, the answer streamed as `StreamEvent`s (SSE) |
 | `search(query, top_k, collection)` | `POST /api/v1/search` | Search without LLM |
+
+#### Chat Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `create_chat_session(title, collection)` | `POST /api/v1/chat/sessions` | Create a session (`ChatSession`) |
+| `list_chat_sessions(limit, offset, include_archived)` | `GET /api/v1/chat/sessions` | One page of your sessions (`ChatSessionPage`) |
+| `get_chat_session(session_id, limit, offset)` | `GET /api/v1/chat/sessions/{id}` | A session with its latest messages (`ChatSessionDetail`) |
+| `update_chat_session(session_id, title, collection, is_archived)` | `PUT /api/v1/chat/sessions/{id}` | Change title, collection or archived flag |
+| `delete_chat_session(session_id)` | `DELETE /api/v1/chat/sessions/{id}` | Delete a session |
+| `send_message(session_id, content)` | `POST /api/v1/chat/sessions/{id}/messages` | Send a message, wait for the answer (`ChatReply`) |
+| `send_message_stream(session_id, content)` | `POST /api/v1/chat/sessions/{id}/messages/stream` | Send a message, the answer streamed as `StreamEvent`s (SSE) |
+| `rate_message(message_id, rating)` | `PUT /api/v1/chat/messages/{id}/rate` | Rate an answer, 1 to 5 |
 
 #### Sync Operations
 
